@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>数字孪生电力系统 · AGC / PAS</title><link rel="stylesheet" href="/styles.css" /></head>
+<body data-page="control">
+  <main class="shell">
+    <header class="topbar"><div><span class="eyebrow">AGC · PAS CONTROL</span><h1>AGC / PAS 控制</h1><p>遥调目标、负荷切除和并网设备遥控</p></div><div class="clock"><strong id="simTime">00:00:00</strong><span id="runState">运行中</span><div class="clock-actions"><button data-clock="start">启动</button><button data-clock="pause">暂停</button><button data-clock="step">单步</button><button data-clock="reset">归零</button></div></div></header>
+    <nav class="nav"><a href="/">总览</a><a href="/model.html">模型管理</a><a href="/curves.html">曲线设置</a><a class="active" href="/control.html">AGC / PAS</a><a href="/devices.html">设备与拓扑</a><a href="/scada.html">SCADA / IEC 104</a></nav>
+    <section class="page-heading"><div><span class="eyebrow">CONTROL</span><h2>控制指令台</h2><p>Web 指令与 IEC 104 YK/YT 指令使用同一套数字孪生控制入口。</p></div><span id="commandStatus" class="badge">等待指令</span></section>
+    <section class="tabs" data-tabs>
+      <div class="tab-buttons" role="tablist"><button class="tab-button active" data-tab="setpoints" role="tab">遥调目标</button><button class="tab-button" data-tab="switches" role="tab">遥控开关</button><button class="tab-button" data-tab="status" role="tab">运行状态</button></div>
+      <div class="tab-panel active" data-panel="setpoints"><article class="card"><div class="card-title">AGC / PAS 遥调</div><div class="control large-control"><label>AGC 发电目标 <output id="genOutput">145</output> kW<input id="genSetpoint" type="range" min="0" max="300" step="1" value="145" /></label><button data-command="yt" data-point="1">下发 AGC</button></div><div class="control large-control"><label>储能功率 <output id="batteryOutput">0</output> kW<input id="batterySetpoint" type="range" min="-200" max="200" step="1" value="0" /></label><button data-command="yt" data-point="2">下发储能</button></div><div class="control large-control"><label>负荷切除 <output id="shedOutput">0</output> %<input id="shedSetpoint" type="range" min="0" max="60" step="1" value="0" /></label><button data-command="yt" data-point="3">下发 PAS</button></div></article></div>
+      <div class="tab-panel" data-panel="switches"><article class="card"><div class="card-title">遥控开关</div><p class="hint">命令会立即重新计算功率平衡，并通过 IEC 104 上送新的 YX/YC。</p><div class="switch-stack"><button data-command="yk" data-point="1">并网断路器</button><button data-command="yk" data-point="2">柴油机启停</button><button data-command="yk" data-point="3">储能投退</button></div><div id="controlState" class="state-list"></div></article></div>
+      <div class="tab-panel" data-panel="status"><section class="status-grid"><article class="card"><div class="card-title">AGC 状态</div><div id="agcSummary"></div></article><article class="card"><div class="card-title">PAS / 网络状态</div><div id="pasSummary"></div></article><article class="card"><div class="card-title">潮流计算</div><div id="controlFlow"></div></article></section></div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

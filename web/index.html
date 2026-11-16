@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>数字孪生电力系统 · 运行总览</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body data-page="dashboard">
+  <main class="shell">
+    <header class="topbar">
+      <div><span class="eyebrow">SCADA · AGC · PAS</span><h1>环境相依数字孪生电力系统</h1><p>运行总览</p></div>
+      <div class="clock"><strong id="simTime">00:00:00</strong><span id="runState">运行中</span><div class="clock-actions"><button data-clock="start">启动</button><button data-clock="pause">暂停</button><button data-clock="step">单步</button><button data-clock="reset">归零</button></div><label class="speed-control">速度 <output id="speedOutput">1.0</output>x<input id="speedSetpoint" type="range" min="0.1" max="20" step="0.1" value="1" /></label></div>
+    </header>
+    <nav class="nav"><a class="active" href="/">总览</a><a href="/model.html">模型管理</a><a href="/curves.html">曲线设置</a><a href="/control.html">AGC / PAS</a><a href="/devices.html">设备与拓扑</a><a href="/scada.html">SCADA / IEC 104</a></nav>
+    <section class="tabs" data-tabs>
+      <div class="tab-buttons" role="tablist"><button class="tab-button active" data-tab="overview" role="tab">运行状态</button><button class="tab-button" data-tab="trend" role="tab">功率趋势</button><button class="tab-button" data-tab="diagnostics" role="tab">计算与告警</button></div>
+      <div class="tab-panel active" data-panel="overview">
+        <section class="status-grid">
+          <article class="card hero"><div class="card-title">系统频率 <span id="alarmBadge" class="badge ok">正常</span></div><div class="hero-value"><strong id="frequency">--</strong><span>Hz</span></div><div class="hero-meta"><span>ACE <b id="ace">--</b> MW</span><span>联络线 <b id="tieFlow">--</b> kW</span><span>SOC <b id="soc">--</b>%</span></div></article>
+          <article class="card"><div class="card-title">环境输入</div><dl><div><dt>风速</dt><dd><b id="windSpeed">--</b> m/s</dd></div><div><dt>太阳辐照</dt><dd><b id="solar">--</b> W/m²</dd></div><div><dt>气温</dt><dd><b id="temperature">--</b> °C</dd></div><div><dt>负荷</dt><dd><b id="load">--</b> kW</dd></div></dl></article>
+          <article class="card"><div class="card-title">IEC 104 服务 <span id="iecBadge" class="badge">--</span></div><dl><div><dt>监听</dt><dd id="iecEndpoint">--</dd></div><div><dt>客户端</dt><dd id="iecClients">--</dd></div><div><dt>点数</dt><dd id="iecPoints">--</dd></div><div><dt>最新上送</dt><dd id="iecSeq">--</dd></div></dl><div class="card-actions"><button id="iecStart">启动</button><button id="iecStop">停止</button></div></article>
+        </section>
+        <article class="card model-overview"><div class="card-title">当前模型</div><div class="metric-grid"><div><span>名称</span><strong id="modelName">--</strong></div><div><span>设备</span><strong id="deviceCount">--</strong></div><div><span>拓扑节点</span><strong id="nodeCount">--</strong></div><div><span>曲线记录</span><strong id="curveCount">--</strong></div></div><div class="quick-links"><a href="/model.html">导入模型 / 生成点表 →</a><a href="/control.html">进入 AGC / PAS 控制 →</a><a href="/scada.html">查看四遥点和协议状态 →</a></div></article>
+      </div>
+      <div class="tab-panel" data-panel="trend"><article class="card chart-card"><div class="card-title">实时功率平衡 <small>最近 10 分钟</small></div><canvas id="trend" width="900" height="280"></canvas><div class="legend"><span><i class="wind"></i>风电</span><span><i class="pv"></i>光伏</span><span><i class="diesel"></i>柴油机</span><span><i class="battery"></i>储能</span><span><i class="load-line"></i>负荷</span></div></article></div>
+      <div class="tab-panel" data-panel="diagnostics"><section class="bottom-grid"><article class="card"><div class="card-title">功率流状态</div><div id="flowSummary"></div></article><article class="card"><div class="card-title">运行告警</div><div id="alarms" class="alarms"></div></article></section></div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
