@@ -26,7 +26,7 @@ def _load_server_class(scada_root: Path):
 
 
 class ScdfeIEC104Bridge:
-    """Publish point values and receive yk/yt commands through scdfe_s."""
+    """Publish real-time points and receive device yk commands through scdfe_s."""
 
     def __init__(
         self,
@@ -71,7 +71,7 @@ class ScdfeIEC104Bridge:
                 kind,
                 point_no,
                 data_type=int(point.get("data_type", 1 if kind in {"yx", "yk"} else 13)),
-                value=self.twin.point_values()[kind][point_no],
+                value=self.twin.point_values().get(kind, {}).get(point_no, point.get("initial", point.get("value", False if kind in {"yx", "yk"} else 0.0))),
                 report_ms=1000 if kind in {"yx", "yc"} else 0,
                 command_handler=handler,
             )

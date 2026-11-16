@@ -116,12 +116,6 @@ class Handler(BaseHTTPRequestHandler):
                     "named": snapshot["measurements"],
                     "iec104": self.app.bridge.status() if self.app.bridge else {"available": False},
                 })
-            if path == "/api/agc":
-                snapshot = self.app.twin.snapshot(history_limit=1)
-                return self._send(200, {"clock": snapshot["clock"], "frequency_hz": snapshot["network"]["frequency_hz"], "ace_mw": snapshot["network"]["ace_mw"], "generation": snapshot["generation"], "reserve": snapshot["reserve"], "controls": snapshot["controls"]})
-            if path == "/api/pas":
-                snapshot = self.app.twin.snapshot(history_limit=1)
-                return self._send(200, {"clock": snapshot["clock"], "network": snapshot["network"], "states": snapshot["states"], "weather": snapshot["weather"], "alarms": snapshot["alarms"]})
             if path == "/api/history":
                 limit = int(parse_qs(parsed.query).get("limit", [120])[0])
                 return self._send(200, {"items": self.app.twin.history(limit)})

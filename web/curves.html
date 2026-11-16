@@ -4,11 +4,11 @@
 <body data-page="curves">
   <main class="shell">
     <header class="topbar"><div><span class="eyebrow">ENVIRONMENT CURVES</span><h1>曲线设置</h1><p>环境、负荷和柴发出力曲线</p></div><div class="clock"><strong id="simTime">00:00:00</strong><span id="runState">运行中</span><div class="clock-actions"><button data-clock="start">启动</button><button data-clock="pause">暂停</button><button data-clock="step">单步</button></div></div></header>
-    <nav class="nav"><a href="/">总览</a><a href="/model.html">模型管理</a><a class="active" href="/curves.html">曲线设置</a><a href="/control.html">AGC / PAS</a><a href="/devices.html">设备与拓扑</a><a href="/scada.html">SCADA / IEC 104</a></nav>
+    <nav class="nav"><a href="/">总览</a><a href="/model.html">模型管理</a><a class="active" href="/curves.html">曲线设置</a><a href="/devices.html">设备与拓扑</a><a href="/scada.html">SCADA / IEC 104</a></nav>
     <section class="page-heading"><div><span class="eyebrow">CURVES</span><h2>实时环境输入</h2><p>按仿真日内分钟插值；保存后立即影响后续仿真步进。</p></div><span id="curveStatus" class="badge">未读取</span></section>
     <section class="tabs" data-tabs>
       <div class="tab-buttons" role="tablist"><button class="tab-button active" data-tab="editor" role="tab">曲线编辑</button><button class="tab-button" data-tab="realtime" role="tab">实时效果</button></div>
-      <div class="tab-panel active" data-panel="editor"><article class="card"><div class="card-title">曲线 JSON</div><p class="hint">weather：wind_speed_mps、solar_irradiance_w_m2、air_temp_c、load_kw；load：load_kw；diesel：diesel_kw。</p><textarea id="curveEditor" class="large-editor" rows="25" spellcheck="false"></textarea><div class="card-actions"><button id="loadCurves">读取当前曲线</button><button id="saveCurves" class="primary">保存曲线</button></div><p id="curveMessage" class="notice"></p></article></div>
+      <div class="tab-panel active" data-panel="editor"><article class="card"><div class="card-title">曲线 JSON</div><p class="hint">weather：wind_speed_mps、solar_irradiance_w_m2、air_temp_c、load_kw；load：load_kw；diesel：diesel_kw；battery：battery_kw。</p><textarea id="curveEditor" class="large-editor" rows="25" spellcheck="false"></textarea><div class="card-actions"><button id="loadCurves">读取当前曲线</button><button id="saveCurves" class="primary">保存曲线</button></div><p id="curveMessage" class="notice"></p></article></div>
       <div class="tab-panel" data-panel="realtime"><article class="card"><div class="card-title">当前环境</div><div id="curveSnapshot"></div><div class="card-title section-title">实时功率</div><div id="curveGeneration"></div><div class="card-title section-title">仿真速度</div><label class="range-wide">速度 <output id="speedOutput">1.0</output>x<input id="speedSetpoint" type="range" min="0.1" max="20" step="0.1" value="1" /></label></article></div>
     </section>
   </main>

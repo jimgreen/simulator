@@ -1,4 +1,4 @@
-"""One-click generation of a scdfe_s IEC104 four-remote point table."""
+"""One-click generation of a scdfe_s IEC104 real-time point table."""
 
 from __future__ import annotations
 

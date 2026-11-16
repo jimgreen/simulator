@@ -3,8 +3,8 @@
 <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>数字孪生电力系统 · 设备与拓扑</title><link rel="stylesheet" href="/styles.css" /></head>
 <body data-page="devices">
   <main class="shell">
-    <header class="topbar"><div><span class="eyebrow">DEVICES · TOPOLOGY · PAS</span><h1>设备与拓扑</h1><p>设备投运状态、拓扑联锁和功率平衡结果</p></div><div class="clock"><strong id="simTime">00:00:00</strong><span id="runState">运行中</span><div class="clock-actions"><button data-clock="start">启动</button><button data-clock="pause">暂停</button><button data-clock="step">单步</button></div></div></header>
-    <nav class="nav"><a href="/">总览</a><a href="/model.html">模型管理</a><a href="/curves.html">曲线设置</a><a href="/control.html">AGC / PAS</a><a class="active" href="/devices.html">设备与拓扑</a><a href="/scada.html">SCADA / IEC 104</a></nav>
+    <header class="topbar"><div><span class="eyebrow">DEVICES · TOPOLOGY</span><h1>设备与拓扑</h1><p>设备投运状态、拓扑联锁和功率平衡结果</p></div><div class="clock"><strong id="simTime">00:00:00</strong><span id="runState">运行中</span><div class="clock-actions"><button data-clock="start">启动</button><button data-clock="pause">暂停</button><button data-clock="step">单步</button></div></div></header>
+    <nav class="nav"><a href="/">总览</a><a href="/model.html">模型管理</a><a href="/curves.html">曲线设置</a><a class="active" href="/devices.html">设备与拓扑</a><a href="/scada.html">SCADA / IEC 104</a></nav>
     <section class="page-heading"><div><span class="eyebrow">DEVICES</span><h2>设备投运与拓扑状态</h2><p>设备状态变化、拓扑联锁和潮流计算在同一个状态模型中闭环。</p></div><span id="deviceStatus" class="badge ok">实时</span></section>
     <section class="tabs" data-tabs>
       <div class="tab-buttons" role="tablist"><button class="tab-button active" data-tab="device" role="tab">设备投退</button><button class="tab-button" data-tab="topology" role="tab">拓扑编辑</button><button class="tab-button" data-tab="flow" role="tab">潮流与状态</button></div>

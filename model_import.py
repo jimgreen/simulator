@@ -94,13 +94,14 @@ def _default_curves() -> dict[str, list[dict[str, float]]]:
         ],
         "load": [],
         "diesel": [],
+        "battery": [],
     }
 
 
 def _normalize_curves(payload: Mapping[str, Any]) -> dict[str, list[dict[str, float]]]:
     curves = _default_curves()
     source = payload.get("curves") if isinstance(payload.get("curves"), Mapping) else payload
-    for key in ("weather", "load", "diesel"):
+    for key in ("weather", "load", "diesel", "battery"):
         values = source.get(key) if isinstance(source, Mapping) else None
         if isinstance(values, list):
             normalized = []
@@ -275,7 +276,7 @@ def generate_runtime_points(model: Mapping[str, Any], base_points: list[dict[str
         points.append({"kind": "yc", "point_no": next_yc, "name": f"{device_id}_p_kw", "unit": "kW", "data_type": 13, "description": f"{label} 有功出力", "device_id": device_id})
         next_yc += 1
     for item in model.get("points", []):
-        if isinstance(item, Mapping) and item.get("kind") in {"yc", "yx", "yk", "yt"}:
+        if isinstance(item, Mapping) and item.get("kind") in {"yc", "yx", "yk"}:
             try:
                 point = dict(item)
                 key = (str(point["kind"]), int(point.get("point_no", point.get("pnt_no"))))

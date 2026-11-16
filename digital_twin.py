@@ -1,10 +1,10 @@
 """A small, deterministic environment-aware power-system digital twin.
 
 The original polar-microgrid simulator contains a large E-file model and a
-resident load-flow kernel.  This module keeps the parts needed by SCADA, AGC
-and PAS integration in a standalone process: weather/load driving, renewable
-capability curves, a dispatch/balance calculation, state evolution and a
-stable IEC 104 point map.
+resident load-flow kernel.  This module keeps the parts needed by SCADA and
+IEC 104 integration in a standalone process: weather/load driving, renewable
+capability curves, a balance calculation, state evolution and a stable
+IEC 104 point map.
 """
 
 from __future__ import annotations
@@ -80,8 +80,8 @@ class PointDefinition:
     description: str
 
 
-# The point numbers are intentionally stable.  SCADA/AGC/PAS integrations can
-# keep their address map while the implementation behind the values evolves.
+# The point numbers are intentionally stable so SCADA integrations can keep
+# their address map while the implementation behind the values evolves.
 POINTS: tuple[PointDefinition, ...] = (
     PointDefinition("yx", 1, "tie_breaker_closed", "bool", 1, "并网断路器合位"),
     PointDefinition("yx", 2, "diesel_running", "bool", 1, "柴油机运行状态"),
@@ -97,16 +97,10 @@ POINTS: tuple[PointDefinition, ...] = (
     PointDefinition("yc", 8, "battery_kw", "kW", 13, "储能出力（放电为正）"),
     PointDefinition("yc", 9, "tie_flow_kw", "kW", 13, "联络线潮流（购电为正）"),
     PointDefinition("yc", 10, "soc_pct", "%", 13, "储能荷电状态"),
-    PointDefinition("yc", 11, "ace_mw", "MW", 13, "区域控制偏差"),
-    PointDefinition("yc", 12, "reserve_up_kw", "kW", 13, "上调备用"),
-    PointDefinition("yc", 13, "reserve_down_kw", "kW", 13, "下调备用"),
-    PointDefinition("yc", 14, "phase_angle_deg", "deg", 13, "联络线相角"),
+    PointDefinition("yc", 11, "phase_angle_deg", "deg", 13, "联络线相角"),
     PointDefinition("yk", 1, "tie_breaker_command", "bool", 45, "遥控并网断路器"),
     PointDefinition("yk", 2, "diesel_command", "bool", 45, "遥控柴油机启停"),
     PointDefinition("yk", 3, "battery_command", "bool", 45, "遥控储能投退"),
-    PointDefinition("yt", 1, "agc_generation_setpoint", "kW", 50, "AGC 发电目标"),
-    PointDefinition("yt", 2, "battery_power_setpoint", "kW", 50, "AGC 储能功率目标"),
-    PointDefinition("yt", 3, "load_shed_percent", "%", 50, "PAS 负荷切除比例"),
 )
 
 
@@ -137,10 +131,6 @@ class DigitalTwin:
         self.grid_available = True
         self.soc = 0.68
         self._battery_energy_kwh = 240.0
-        self.agc_generation_setpoint_kw = 145.0
-        self._agc_generation_commanded = False
-        self.battery_power_setpoint_kw = 0.0
-        self.load_shed_percent = 0.0
         self._state = self._calculate_state()
 
     def _weather(self) -> dict[str, float]:
@@ -262,29 +252,25 @@ class DigitalTwin:
         wind_capacity = self._family_capacity("wind", 92.0)
         pv_capacity = self._family_capacity("pv", 78.0)
         diesel_capacity = self._family_capacity("diesel", 220.0)
-        battery_capacity = self._family_capacity("battery", 80.0)
         wind = wind_available_power(weather["wind_speed_mps"], wind_capacity) if self._device_is_running("wind") else 0.0
         pv = pv_available_power(weather["solar_irradiance_w_m2"], weather["air_temp_c"], pv_capacity) if self._device_is_running("pv") else 0.0
         available_renewable = wind + pv
-        demand = weather["load_kw"] * (1.0 - clamp(self.load_shed_percent, 0.0, 60.0) / 100.0)
+        demand = weather["load_kw"]
         diesel_curve = self._curve_at("diesel", self.sim_seconds / 60.0)
-        diesel_target = self.agc_generation_setpoint_kw
-        if diesel_curve and not self._agc_generation_commanded:
-            diesel_target = diesel_curve.get("diesel_kw", diesel_target)
+        diesel_target = diesel_curve.get("diesel_kw", min(diesel_capacity, 145.0)) if diesel_curve else min(diesel_capacity, 145.0)
         diesel = clamp(diesel_target, 0.0, diesel_capacity) if self.diesel_running and self._device_is_running("diesel") else 0.0
-        battery = clamp(self.battery_power_setpoint_kw, -battery_capacity, battery_capacity) if self.battery_enabled and self._device_is_running("battery") else 0.0
+        battery_curve = self._curve_at("battery", self.sim_seconds / 60.0)
+        battery_target = battery_curve.get("battery_kw", 0.0) if battery_curve else 0.0
+        battery = clamp(battery_target, -self._family_capacity("battery", 80.0), self._family_capacity("battery", 80.0)) if self.battery_enabled and self._device_is_running("battery") else 0.0
         # A positive tie flow means importing from the external grid.  When the
-        # breaker is open, the island controller uses the battery to balance the
-        # residual and reports a frequency deviation instead.
+        # breaker is open, the remaining balance error appears as a frequency
+        # deviation.
         residual = demand - available_renewable - diesel - battery
         tie_flow = residual if self.tie_breaker_closed and self.grid_available else 0.0
         frequency = 50.0 - (residual / 900.0 if not self.tie_breaker_closed else tie_flow / 5000.0)
         frequency = clamp(frequency, 47.0, 52.0)
         voltage1 = clamp(10.5 - abs(tie_flow) * 0.0018, 9.2, 10.8)
         voltage2 = clamp(0.4 - abs(battery) * 0.00055, 0.32, 0.42)
-        ace_mw = (frequency - 50.0) * 0.8 + tie_flow / 1000.0
-        reserve_up = max(0.0, diesel_capacity - diesel) + (battery_capacity - max(0.0, battery))
-        reserve_down = max(0.0, diesel) + (battery_capacity + min(0.0, battery))
         phase_angle = clamp(tie_flow * 0.035, -30.0, 30.0)
         mismatch = demand - available_renewable - diesel - battery - tie_flow
         self._power_flow_count += 1
@@ -311,11 +297,6 @@ class DigitalTwin:
                 "bus1_voltage_kv": round(voltage1, 4),
                 "bus2_voltage_kv": round(voltage2, 4),
                 "phase_angle_deg": round(phase_angle, 4),
-                "ace_mw": round(ace_mw, 5),
-            },
-            "reserve": {
-                "up_kw": round(reserve_up, 3),
-                "down_kw": round(reserve_down, 3),
             },
             "states": {
                 "tie_breaker_closed": self.tie_breaker_closed,
@@ -332,7 +313,6 @@ class DigitalTwin:
     def _measurement_values(self, state: dict[str, Any]) -> dict[str, float | bool]:
         network = state["network"]
         generation = state["generation"]
-        reserve = state["reserve"]
         states = state["states"]
         return {
             "tie_breaker_closed": states["tie_breaker_closed"],
@@ -349,9 +329,6 @@ class DigitalTwin:
             "battery_kw": generation["battery_kw"],
             "tie_flow_kw": network["tie_flow_kw"],
             "soc_pct": state["soc_pct"],
-            "ace_mw": network["ace_mw"],
-            "reserve_up_kw": reserve["up_kw"],
-            "reserve_down_kw": reserve["down_kw"],
             "phase_angle_deg": network["phase_angle_deg"],
         }
 
@@ -416,7 +393,6 @@ class DigitalTwin:
             elif action == "reset":
                 self.sim_seconds = 0.0
                 self.soc = 0.68
-                self._agc_generation_commanded = False
                 self._state = self._calculate_state()
                 self._history.clear()
                 self._alarms.clear()
@@ -461,20 +437,8 @@ class DigitalTwin:
                     self.battery_enabled = enabled
                 else:
                     raise ValueError(f"未知遥控点: {point_no}")
-            elif kind == "yt":
-                numeric = float(value)
-                if point_no == 1:
-                    self.agc_generation_setpoint_kw = clamp(numeric, 0.0, self._family_capacity("diesel", 220.0))
-                    self._agc_generation_commanded = True
-                elif point_no == 2:
-                    capacity = self._family_capacity("battery", 80.0)
-                    self.battery_power_setpoint_kw = clamp(numeric, -capacity, capacity)
-                elif point_no == 3:
-                    self.load_shed_percent = clamp(numeric, 0.0, 60.0)
-                else:
-                    raise ValueError(f"未知遥调点: {point_no}")
             else:
-                raise ValueError("数字孪生只接受 yk/yt 控制命令")
+                raise ValueError("数字孪生只接受设备遥控命令")
             self._state = self._calculate_state()
             return {"accepted": True, "kind": kind, "point_no": point_no, "value": value, "selected": bool(selected)}
 
@@ -530,7 +494,6 @@ class DigitalTwin:
             self.model = normalize_model(model, source_name=str(model.get("source", "imported-model")))
             self.curves = self.model["curves"]
             self._battery_energy_kwh = self._battery_energy_capacity()
-            self._agc_generation_commanded = False
             self._runtime_points = generate_runtime_points(self.model, [point.__dict__.copy() for point in POINTS])
             self.reconcile_topology()
             self._state = self._calculate_state()
@@ -559,12 +522,6 @@ class DigitalTwin:
                 result[kind][point_no] = self.diesel_running
             elif name == "battery_command":
                 result[kind][point_no] = self.battery_enabled
-            elif name == "agc_generation_setpoint":
-                result[kind][point_no] = self.agc_generation_setpoint_kw
-            elif name == "battery_power_setpoint":
-                result[kind][point_no] = self.battery_power_setpoint_kw
-            elif name == "load_shed_percent":
-                result[kind][point_no] = self.load_shed_percent
             elif point.get("device_id"):
                 device = devices.get(str(point["device_id"]), {})
                 family = str(device.get("type", "other"))
@@ -590,16 +547,10 @@ class DigitalTwin:
                 "weather": state["weather"],
                 "generation": state["generation"],
                 "network": state["network"],
-                "reserve": state["reserve"],
                 "states": state["states"],
                 "soc_pct": state["soc_pct"],
                 "measurements": values,
                 "point_values": self.point_values(),
-                "controls": {
-                    "agc_generation_setpoint_kw": self.agc_generation_setpoint_kw,
-                    "battery_power_setpoint_kw": self.battery_power_setpoint_kw,
-                    "load_shed_percent": self.load_shed_percent,
-                },
                 "alarms": list(self._alarms),
                 "history": list(self._history)[-max(1, min(int(history_limit), 600)):],
                 "sequence": self._seq,
