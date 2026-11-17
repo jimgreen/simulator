@@ -11,6 +11,8 @@ python .\server.py --host 0.0.0.0 --port 8780 --scada-root D:\codex\scada --iec1
 
 浏览器访问 `http://127.0.0.1:8780/`。只运行 Web 仿真时加 `--no-iec104`，也可以执行 `.\start.ps1` 使用默认参数。
 
+完整功能说明见 [`web/simulator_functionality.html`](web/simulator_functionality.html)，服务启动后可通过 `http://127.0.0.1:8780/simulator_functionality.html` 打开。
+
 默认 IEC 104 公共地址为 1、RTU 标识为 104。模型导入或点表生成后会动态重建 IEC 104 运行点表。
 
 Web 界面按功能拆分为多个页面：`/` 运行总览、`/model.html` 模型管理、`/curves.html` 曲线设置、`/devices.html` 设备与拓扑、`/scada.html` SCADA/IEC 104。每页保留仿真时钟和统一导航；页面内部使用功能标签切换，固定在浏览器视口内，不显示整体横向或纵向滚动条。
