@@ -63,7 +63,16 @@ function renderDashboard(snapshot, health) {
   const hasAlarms = (snapshot.alarms || []).length > 0; setText('alarmBadge', hasAlarms ? '有告警' : '正常'); if ($('alarmBadge')) $('alarmBadge').className = 'badge ' + (hasAlarms ? 'error' : 'ok');
   setText('iecBadge', iec.running ? '运行中' : '已停止'); if ($('iecBadge')) $('iecBadge').className = 'badge ' + (iec.running ? 'ok' : ''); setText('iecEndpoint', (iec.bind_ip || '--') + ':' + (iec.port || '--')); setText('iecClients', iec.connections == null ? '--' : iec.connections); setText('iecPoints', iec.point_count == null ? '--' : iec.point_count); setText('iecSeq', iec.last_publish_seq == null ? '--' : iec.last_publish_seq);
   setHtml('flowSummary', '<dl><div><dt>状态</dt><dd>' + (flow.converged ? '收敛' : '未收敛') + '</dd></div><div><dt>迭代次数</dt><dd>' + (flow.iterations == null ? '--' : flow.iterations) + '</dd></div><div><dt>不平衡</dt><dd>' + fmt(flow.mismatch_kw,3) + ' kW</dd></div></dl>');
-  setHtml('alarms', snapshot.alarms && snapshot.alarms.length ? snapshot.alarms.slice(0,8).map(alarm => '<div class="alarm ' + (alarm.severity === 'warning' ? 'warning' : '') + '"><b>' + esc(alarm.code) + '</b> ' + esc(alarm.message) + '<small>仿真时刻 ' + alarm.time + 's</small></div>').join('') : '<p>当前无告警</p>'); drawTrend(snapshot.history || []);
+  setHtml('alarms', snapshot.alarms && snapshot.alarms.length ? snapshot.alarms.slice(0,8).map(alarm => '<div class="alarm ' + (alarm.severity === 'warning' ? 'warning' : '') + '"><b>' + esc(alarm.code) + '</b> ' + esc(alarm.message) + '<small>仿真时刻 ' + alarm.time + 's</small></div>').join('') : '<p>当前无告警</p>'); renderEvents(snapshot.events || []); drawTrend(snapshot.history || []);
+}
+function renderEvents(events) {
+  setHtml('eventLog', events && events.length ? events.map(event => '<div class="event-row"><time>' + esc(event.sim_time || '--') + '</time><span class="event-kind">' + esc(event.kind || 'event') + '</span><span class="event-message">' + esc(event.message || '') + '</span><span class="event-source">' + esc(event.source || 'system') + '</span></div>').join('') : '<p>暂无操作记录</p>');
+}
+function bindScenarios() {
+  document.querySelectorAll('[data-scenario]').forEach(button => button.addEventListener('click', async () => {
+    try { const result = await api('/api/scenario', { method:'POST', body:JSON.stringify({ name: button.dataset.scenario, source:'web' }) }); notice('scenarioMessage', '已切换：' + result.label); await refresh(); }
+    catch (error) { notice('scenarioMessage', error.message, true); }
+  }));
 }
 
 function renderModel(snapshot, pointSummary) {
@@ -112,4 +121,4 @@ async function refresh() {
   state.refreshing = true;
   try { const requests = [api('/api/overview')]; if (page === 'model' || page === 'scada') requests.push(page === 'model' ? api('/api/scdfe/points') : api('/api/points')); const result = await Promise.all(requests); const overview = result[0], snapshot = overview.snapshot, health = overview.health; state.snapshot = snapshot; state.health = health; updateClock(snapshot); if (page === 'dashboard') renderDashboard(snapshot,health); if (page === 'model') { state.pointSummary = result[1]; renderModel(snapshot,result[1]); } if (page === 'curves') renderCurves(snapshot); if (page === 'devices') renderDevices(snapshot); if (page === 'scada') { state.points = result[1].items || []; state.pointSummary = await api('/api/scdfe/points'); renderScada(snapshot,health,state.pointSummary); } } catch (error) { console.error(error); } finally { state.refreshing = false; }
 }
-bindClock(); bindShortcuts(); bindTabs(); bindIecControls(); if (page === 'model') bindModel(); if (page === 'curves') { bindCurves(); bindCurveTools(); } if (page === 'devices') bindDevices(); if (page === 'scada') bindScada(); refresh(); setInterval(refresh,1000);
+bindClock(); bindShortcuts(); bindTabs(); bindIecControls(); if (page === 'dashboard') bindScenarios(); if (page === 'model') bindModel(); if (page === 'curves') { bindCurves(); bindCurveTools(); } if (page === 'devices') bindDevices(); if (page === 'scada') bindScada(); refresh(); setInterval(refresh,1000);

@@ -229,6 +229,7 @@
         <div class="card table-wrap"><table><thead><tr><th>方法</th><th>路径</th><th>用途</th><th>关键参数 / 返回</th></tr></thead><tbody>
           <tr><td>GET</td><td><code>/api/health</code></td><td>服务健康、模型摘要和 IEC 104 状态。</td><td><small>status、model、iec104</small></td></tr>
           <tr><td>GET</td><td><code>/api/overview</code></td><td>一次返回运行快照和健康状态。</td><td><small>Web 总览轮询入口，减少重复 HTTP 请求</small></td></tr>
+          <tr><td>GET</td><td><code>/api/events</code></td><td>读取最近操作、场景、遥控和联锁记录。</td><td><small><code>?limit=50</code>；记录来源、仿真时刻和详细参数</small></td></tr>
           <tr><td>GET</td><td><code>/api/snapshot</code></td><td>完整快照和历史趋势。</td><td><small><code>?history=120</code>；clock、weather、generation、network、states、point_values、alarms、power_flow</small></td></tr>
           <tr><td>GET</td><td><code>/api/history</code></td><td>独立读取历史序列。</td><td><small><code>?limit=120</code></small></td></tr>
           <tr><td>GET</td><td><code>/api/scada/telemetry</code></td><td>按 YC/YX 点号返回实时遥测遥信。</td><td><small>sequence、sim_time、yc、yx、named、iec104</small></td></tr>
@@ -239,6 +240,7 @@
           <tr><td>GET / POST</td><td><code>/api/curves</code></td><td>读取或保存四类曲线。</td><td><small>POST：<code>{curves: {weather, load, diesel, battery}}</code></small></td></tr>
           <tr><td>GET / POST</td><td><code>/api/devices</code> / <code>/api/devices/state</code></td><td>查看设备或切换投运状态。</td><td><small>POST：<code>{device_id, running}</code></small></td></tr>
           <tr><td>POST</td><td><code>/api/devices/states</code></td><td>批量切换设备投运状态。</td><td><small><code>{states:[{device_id,running}]}</code>；只执行一次联锁和功率计算</small></td></tr>
+          <tr><td>POST</td><td><code>/api/scenario</code></td><td>一键切换常用运行场景。</td><td><small><code>{name:"grid|island|blackout|restart|all_stop"}</code></small></td></tr>
           <tr><td>GET / POST</td><td><code>/api/topology</code></td><td>读取或保存节点、支路拓扑。</td><td><small>保存后执行联锁并重新计算</small></td></tr>
           <tr><td>GET / POST</td><td><code>/api/scdfe/points</code> / <code>/api/scdfe/points/generate</code></td><td>查看或生成 scdfe_s 点表。</td><td><small>POST 可传 <code>{replace:true, rtu_id:104, channel_id:104}</code></small></td></tr>
           <tr><td>POST</td><td><code>/api/commands</code></td><td>执行数字孪生遥控。</td><td><small><code>{kind:"yk", point_no:1|2|3, value:0|1, selected}</code></small></td></tr>

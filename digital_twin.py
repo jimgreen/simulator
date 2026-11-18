@@ -121,12 +121,17 @@ class DigitalTwin:
         self._seq = 0
         self._alarms: deque[dict[str, Any]] = deque(maxlen=100)
         self._history: deque[dict[str, Any]] = deque(maxlen=600)
+        self._events: deque[dict[str, Any]] = deque(maxlen=200)
         self.model = normalize_model(model or {"name": "默认环境模型", "devices": [], "topology": {}, "curves": _default_curves()}, source_name="builtin")
         self.curves = self.model["curves"]
         self._curve_minutes: dict[str, list[float]] = {}
+        self._device_index: dict[str, dict[str, Any]] = {}
+        self._device_names: dict[str, dict[str, Any]] = {}
+        self._family_index: dict[str, list[dict[str, Any]]] = {}
         self._topology_nodes: dict[str, dict[str, Any]] = {}
         self._topology_edges: dict[str, list[dict[str, Any]]] = {}
         self._rebuild_curve_index()
+        self._rebuild_device_index()
         self._rebuild_topology_index()
         self._runtime_points = generate_runtime_points(self.model, [point.__dict__.copy() for point in POINTS])
         self._power_flow_count = 0
@@ -209,6 +214,17 @@ class DigitalTwin:
             if isinstance(rows, list) and rows
         }
 
+    def _rebuild_device_index(self) -> None:
+        """Index devices by id, name and family for fast per-step calculations."""
+
+        devices = [item for item in self.model.get("devices", []) if isinstance(item, dict)]
+        self._device_index = {str(item.get("id")): item for item in devices if item.get("id") is not None}
+        self._device_names = {str(item.get("name")): item for item in devices if item.get("name")}
+        families: dict[str, list[dict[str, Any]]] = {}
+        for item in devices:
+            families.setdefault(str(item.get("type", "")).lower(), []).append(item)
+        self._family_index = families
+
     def _rebuild_topology_index(self) -> None:
         """Index topology once instead of scanning every edge per device measurement."""
 
@@ -231,7 +247,7 @@ class DigitalTwin:
         self._topology_edges = linked
 
     def _family_devices(self, family: str, *, running_only: bool = False) -> list[dict[str, Any]]:
-        devices = [item for item in self.model.get("devices", []) if str(item.get("type", "")).lower() == family]
+        devices = self._family_index.get(family, [])
         if running_only:
             devices = [item for item in devices if _as_bool(item.get("run", True)) and self._topology_allows(item)]
         return devices
@@ -266,7 +282,7 @@ class DigitalTwin:
             share = float(output) / len(devices) if total_capacity <= 0.0 else None
             for item, capacity in zip(devices, capacities):
                 result[str(item.get("id"))] = round(share if share is not None else float(output) * capacity / total_capacity, 3)
-        for item in self.model.get("devices", []):
+        for item in self._device_index.values():
             result.setdefault(str(item.get("id")), 0.0)
         return result
 
@@ -382,6 +398,16 @@ class DigitalTwin:
             "message": message,
         })
 
+    def _record_event(self, kind: str, message: str, *, source: str = "system", details: dict[str, Any] | None = None) -> None:
+        self._events.appendleft({
+            "seq": self._seq,
+            "sim_time": self.clock()["sim_time"],
+            "kind": str(kind),
+            "source": str(source),
+            "message": str(message),
+            "details": dict(details or {}),
+        })
+
     def tick(self, elapsed_seconds: float | None = None, *, force: bool = False) -> bool:
         with self._lock:
             now = time.monotonic()
@@ -437,6 +463,7 @@ class DigitalTwin:
                 self._state = self._calculate_state()
                 self._history.clear()
                 self._alarms.clear()
+                self._record_event("clock", "仿真时钟归零", source="web")
             elif action == "step":
                 self._step_requested = True
                 self.tick(force=True)
@@ -444,6 +471,8 @@ class DigitalTwin:
                 self.speed = clamp(float(value or 1.0), 0.1, 20.0)
             else:
                 raise ValueError(f"未知时钟操作: {action}")
+            if action in {"start", "pause", "stop", "step", "speed"}:
+                self._record_event("clock", f"仿真时钟操作：{action}", source="web", details={"value": value, "speed": self.speed})
             return self.clock()
 
     def clock(self) -> dict[str, Any]:
@@ -481,21 +510,22 @@ class DigitalTwin:
             else:
                 raise ValueError("数字孪生只接受设备遥控命令")
             self._state = self._calculate_state()
+            self._record_event("command", f"执行 {kind.upper()} 点 {point_no}", source="iec104" if selected else "web", details={"point_no": point_no, "value": value, "selected": bool(selected)})
             return {"accepted": True, "kind": kind, "point_no": point_no, "value": value, "selected": bool(selected)}
 
     def set_device_state(self, device_id: str, running: bool, *, source: str = "web") -> dict[str, Any]:
         with self._lock:
             wanted = str(device_id)
             changed = None
-            for item in self.model.get("devices", []):
-                if str(item.get("id")) == wanted or str(item.get("name")) == wanted:
-                    item["run"] = _as_bool(running)
-                    changed = dict(item)
-                    break
+            item = self._device_index.get(wanted) or self._device_names.get(wanted)
+            if item is not None:
+                item["run"] = _as_bool(running)
+                changed = dict(item)
             if changed is None:
                 raise ValueError(f"未知设备: {device_id}")
             self.reconcile_topology()
             self._state = self._calculate_state()
+            self._record_event("device", f"设备{'投入' if changed.get('run') else '退出'}：{changed.get('name', wanted)}", source=source, details={"device_id": changed.get("id"), "running": bool(changed.get("run"))})
             return {"accepted": True, "source": source, "device": changed}
 
     def set_devices_state(self, states: list[dict[str, Any]], *, source: str = "web") -> dict[str, Any]:
@@ -504,23 +534,13 @@ class DigitalTwin:
         if not isinstance(states, list) or not states:
             raise ValueError("states 必须是非空数组")
         with self._lock:
-            by_key = {
-                str(item.get("id")): item
-                for item in self.model.get("devices", [])
-                if isinstance(item, dict)
-            }
-            by_key.update({
-                str(item.get("name")): item
-                for item in self.model.get("devices", [])
-                if isinstance(item, dict) and item.get("name")
-            })
             changed = []
             resolved = []
             for entry in states:
                 if not isinstance(entry, dict):
                     raise ValueError("states 项必须是对象")
                 wanted = str(entry.get("device_id", entry.get("id", "")))
-                item = by_key.get(wanted)
+                item = self._device_index.get(wanted) or self._device_names.get(wanted)
                 if item is None:
                     raise ValueError(f"未知设备: {wanted}")
                 resolved.append((item, entry))
@@ -529,6 +549,7 @@ class DigitalTwin:
                 changed.append(dict(item))
             topology_changes = self.reconcile_topology()
             self._state = self._calculate_state()
+            self._record_event("device-batch", f"批量更新 {len(changed)} 个设备状态", source=source, details={"count": len(changed), "topology_changes": len(topology_changes)})
             return {
                 "accepted": True,
                 "source": source,
@@ -545,9 +566,11 @@ class DigitalTwin:
             if not isinstance(edges, list):
                 raise ValueError("topology.edges 必须是数组")
             self.model["topology"] = {"nodes": list(topology.get("nodes", [])), "edges": list(edges)}
+            self._rebuild_device_index()
             self._rebuild_topology_index()
             changes = self.reconcile_topology()
             self._state = self._calculate_state()
+            self._record_event("topology", f"拓扑更新，联锁退出 {len(changes)} 个设备", source="web", details={"device_changes": len(changes)})
             return {"topology": self.model["topology"], "device_changes": changes}
 
     def reconcile_topology(self) -> list[dict[str, Any]]:
@@ -569,6 +592,7 @@ class DigitalTwin:
             self.model["curves"] = self.curves
             self._rebuild_curve_index()
             self._state = self._calculate_state()
+            self._record_event("curves", "环境与设备曲线已更新", source="web", details={"curve_counts": {key: len(value) for key, value in self.curves.items()}})
             return self.curves
 
     def load_model(self, model: dict[str, Any]) -> dict[str, Any]:
@@ -576,6 +600,7 @@ class DigitalTwin:
             self.model = normalize_model(model, source_name=str(model.get("source", "imported-model")))
             self.curves = self.model["curves"]
             self._rebuild_curve_index()
+            self._rebuild_device_index()
             self._rebuild_topology_index()
             self._battery_energy_kwh = self._battery_energy_capacity()
             self._runtime_points = generate_runtime_points(self.model, [point.__dict__.copy() for point in POINTS])
@@ -583,7 +608,44 @@ class DigitalTwin:
             self._state = self._calculate_state()
             self._history.clear()
             self._alarms.clear()
+            self._events.clear()
+            self._record_event("model", f"模型已加载：{self.model.get('name')}", source="web", details={"device_count": len(self.model.get("devices", []))})
             return self.model_summary()
+
+    def apply_scenario(self, name: str, *, source: str = "web") -> dict[str, Any]:
+        """Apply a common operating mode atomically and recalculate once."""
+
+        scenario = str(name or "").strip().lower()
+        labels = {"grid": "并网模式", "island": "孤网模式", "restart": "设备恢复", "all_stop": "设备全停", "blackout": "外部电网失电"}
+        if scenario not in labels:
+            raise ValueError(f"未知运行场景: {name}")
+        with self._lock:
+            if scenario == "grid":
+                self.tie_breaker_closed = True
+                self.grid_available = True
+            elif scenario == "island":
+                self.tie_breaker_closed = False
+                self.grid_available = True
+            elif scenario == "blackout":
+                self.tie_breaker_closed = False
+                self.grid_available = False
+            elif scenario == "restart":
+                self.tie_breaker_closed = True
+                self.grid_available = True
+                self.diesel_running = True
+                self.battery_enabled = True
+                for item in self._device_index.values():
+                    item["run"] = True
+            elif scenario == "all_stop":
+                self.tie_breaker_closed = False
+                self.diesel_running = False
+                self.battery_enabled = False
+                for item in self._device_index.values():
+                    item["run"] = False
+            self.reconcile_topology()
+            self._state = self._calculate_state()
+            self._record_event("scenario", f"切换运行场景：{labels[scenario]}", source=source, details={"scenario": scenario})
+            return {"accepted": True, "scenario": scenario, "label": labels[scenario], "clock": self.clock(), "states": self._state["states"]}
 
     def model_summary(self) -> dict[str, Any]:
         return {"name": self.model.get("name"), "source": self.model.get("source"), "metadata": self.model.get("metadata", {}), "device_count": len(self.model.get("devices", [])), "topology": self.model.get("topology", {}), "curve_counts": {key: len(value) for key, value in self.curves.items()}}
@@ -640,6 +702,7 @@ class DigitalTwin:
                 "measurements": values,
                 "point_values": self.point_values(),
                 "alarms": list(self._alarms),
+                "events": list(self._events)[:30],
                 "history": list(self._history)[-max(1, min(int(history_limit), 600)):],
                 "sequence": self._seq,
                 "model": self.model_summary(),
@@ -651,6 +714,10 @@ class DigitalTwin:
     def history(self, limit: int = 120) -> list[dict[str, Any]]:
         with self._lock:
             return list(self._history)[-max(1, min(int(limit), 600)):]
+
+    def events(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self._events)[:max(1, min(int(limit), 200))]
 
     def points(self) -> list[dict[str, Any]]:
         with self._lock:

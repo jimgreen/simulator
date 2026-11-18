@@ -125,6 +125,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/history":
                 limit = int(parse_qs(parsed.query).get("limit", [120])[0])
                 return self._send(200, {"items": self.app.twin.history(limit)})
+            if path == "/api/events":
+                limit = int(parse_qs(parsed.query).get("limit", [50])[0])
+                return self._send(200, {"items": self.app.twin.events(limit)})
             if path == "/api/points":
                 return self._send(200, {"items": self.app.twin.points()})
             if path == "/api/model":
@@ -197,6 +200,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, result)
             if parsed.path == "/api/devices/states":
                 result = self.app.twin.set_devices_state(body.get("states"), source="web")
+                if self.app.bridge is not None:
+                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+                return self._send(200, result)
+            if parsed.path == "/api/scenario":
+                result = self.app.twin.apply_scenario(body.get("name"), source=str(body.get("source", "web")))
                 if self.app.bridge is not None:
                     self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
                 return self._send(200, result)
