@@ -157,7 +157,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static("index.html", "text/html; charset=utf-8")
             if path.endswith(".html") and path.count("/") == 1:
                 return self._static(path[1:], "text/html; charset=utf-8")
-            if path in {"/app.js", "/styles.css", "/diagram.js", "/diagram.css", "/boundary.js"}:
+            if path in {"/app.js", "/nav.js", "/styles.css", "/diagram.js", "/diagram.css", "/boundary.js"}:
                 return self._static(path[1:], "application/javascript; charset=utf-8" if path.endswith(".js") else "text/css; charset=utf-8")
             return self._send(404, {"error": "not_found"})
         except Exception as exc:

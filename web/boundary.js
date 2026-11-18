@@ -28,7 +28,7 @@
   document.getElementById('boundaryPrevious').onclick=()=>{pageIndex=Math.max(0,pageIndex-1);preview();};
   document.getElementById('boundaryNext').onclick=()=>{pageIndex++;preview();};
   document.getElementById('boundarySeries').onchange=()=>{pageIndex=0;preview();};
-  document.querySelector('[data-tab="boundary"]').addEventListener('click',()=>requestAnimationFrame(preview));
+  document.querySelector('[data-tab="boundary"]')?.addEventListener('click',()=>requestAnimationFrame(preview));
   window.addEventListener('resize',()=>{pageIndex=0;preview();});
   document.getElementById('importBoundary').onclick=async()=>{
     const file=document.getElementById('boundaryFile').files[0];if(!file)return message('请选择边界数据文件',true);

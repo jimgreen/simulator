@@ -15,7 +15,7 @@ python .\server.py --host 0.0.0.0 --port 8780 --scada-root D:\codex\scada --iec1
 
 默认 IEC 104 公共地址为 1、RTU 标识为 104。模型导入或点表生成后会动态重建 IEC 104 运行点表。
 
-Web 界面按功能拆分为多个页面：`/` 运行总览、`/model.html` 模型管理、`/curves.html` 曲线设置、`/devices.html` 设备与拓扑、`/scada.html` SCADA/IEC 104。每页保留仿真时钟和统一导航；页面内部使用功能标签切换，固定在浏览器视口内，不显示整体横向或纵向滚动条。
+Web 界面按功能拆分为多个独立 HTML 页面：`/` 总览、`/trend.html` 趋势、`/diagnostics.html` 诊断、`/events.html` 事件、`/model.html` 模型导入、`/model-summary.html` 模型摘要、`/curves.html` 曲线编辑、`/boundary.html` 边界导入、`/realtime.html` 实时曲线、`/diagram.html` 电网图形、`/devices.html` 设备操作、`/topology.html` 拓扑编辑、`/flow.html` 潮流状态、`/scada.html` IEC 104 服务和 `/points.html` 四遥点表。每页保留仿真时钟和统一导航，页面之间不再把不同功能挤在同一个 HTML 中；页面固定在浏览器视口内，不显示整体横向或纵向滚动条。
 
 ## 功能
 

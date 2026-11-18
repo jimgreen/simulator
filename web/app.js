@@ -200,6 +200,24 @@ function bindScada() { document.querySelectorAll('[data-point-kind]').forEach(bu
 async function refresh() {
   if (state.refreshing) return;
   state.refreshing = true;
-  try { const profile = page === 'dashboard' ? 'dashboard' : page === 'devices' ? 'devices' : 'full'; const requests = [api('/api/overview?profile=' + profile)]; if (page === 'model' || page === 'scada') requests.push(page === 'model' ? api('/api/scdfe/points') : api('/api/points')); const result = await Promise.all(requests); const overview = result[0], snapshot = overview.snapshot, health = overview.health; state.snapshot = snapshot; state.health = health; updateClock(snapshot); if (page === 'dashboard') renderDashboard(snapshot,health); if (page === 'model') { state.pointSummary = result[1]; renderModel(snapshot,result[1]); } if (page === 'curves') renderCurves(snapshot); if (page === 'devices') renderDevices(snapshot); if (page === 'scada') { state.points = result[1].items || []; state.pointSummary = await api('/api/scdfe/points'); renderScada(snapshot,health,state.pointSummary); } } catch (error) { console.error(error); } finally { state.refreshing = false; }
+  try {
+    const dashboardPages = new Set(['dashboard','trend','diagnostics','events']);
+    const devicePages = new Set(['devices','topology','flow']);
+    const modelPages = new Set(['model','model-summary']);
+    const curvePages = new Set(['curves','boundary','realtime']);
+    const profile = dashboardPages.has(page) ? 'dashboard' : devicePages.has(page) || modelPages.has(page) ? 'devices' : 'full';
+    const needsPoints = page === 'model' || page === 'model-summary' || page === 'scada' || page === 'points';
+    const requests = [api('/api/overview?profile=' + profile)];
+    if (needsPoints) requests.push(page === 'model' ? api('/api/scdfe/points') : api('/api/points'));
+    const result = await Promise.all(requests);
+    const overview = result[0], snapshot = overview.snapshot, health = overview.health;
+    state.snapshot = snapshot; state.health = health; updateClock(snapshot);
+    if (dashboardPages.has(page)) renderDashboard(snapshot,health);
+    if (page === 'trend') drawTrend(snapshot.history || []);
+    if (modelPages.has(page)) { state.pointSummary = result[1]; renderModel(snapshot,result[1]); }
+    if (curvePages.has(page)) renderCurves(snapshot);
+    if (devicePages.has(page)) renderDevices(snapshot);
+    if (page === 'scada' || page === 'points') { state.points = result[1].items || []; state.pointSummary = await api('/api/scdfe/points'); renderScada(snapshot,health,state.pointSummary); }
+  } catch (error) { console.error(error); } finally { state.refreshing = false; }
 }
-bindClock(); bindShortcuts(); bindTabs(); bindIecControls(); if (page === 'dashboard') bindScenarios(); if (page === 'model') bindModel(); if (page === 'curves') { bindCurves(); bindCurveTools(); } if (page === 'devices') bindDevices(); if (page === 'scada') bindScada(); refresh(); setInterval(refresh,1000);
+bindClock(); bindShortcuts(); bindTabs(); bindIecControls(); if (['dashboard'].includes(page)) bindScenarios(); if (page === 'model') bindModel(); if (page === 'curves') { bindCurves(); bindCurveTools(); } if (['devices','topology','flow'].includes(page)) bindDevices(); if (['scada','points'].includes(page)) bindScada(); refresh(); setInterval(refresh,1000);
