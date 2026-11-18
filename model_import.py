@@ -416,7 +416,10 @@ def normalize_model(payload, *, source_name="model.json"):
         device["closed_status"] = _bool(item.get("closed_status", item.get("status", True)))
         device["aliases"] = list(item.get("aliases", []))
         parameters = device.get("parameters", {})
-        for field in ("rated_wind_speed", "cut_in_wind_speed", "cut_out_wind_speed", "temperature_coefficient", "soc"):
+        if not isinstance(parameters, Mapping):
+            raise ValueError(f"{device['id']} 参数必须是对象")
+        parameters = device["parameters"] = dict(parameters)
+        for field in ("rated_wind_speed", "cut_in_wind_speed", "cut_out_wind_speed", "temperature_coefficient", "soc", "charge_discharge_efficiency", "soc_lower_limit", "soc_upper_limit"):
             if field in parameters:
                 try:
                     value = float(parameters[field])
@@ -425,6 +428,33 @@ def normalize_model(payload, *, source_name="model.json"):
                 except (ValueError, TypeError):
                     raise ValueError(f"{device['id']} 参数 {field} 必须是有限数值") from None
                 parameters[field] = value
+        efficiency = float(parameters.get("charge_discharge_efficiency", 1.0))
+        lower = float(parameters.get("soc_lower_limit", 0.1))
+        upper = float(parameters.get("soc_upper_limit", 0.95))
+        if not 0.0 < efficiency <= 1.0:
+            raise ValueError(f"{device['id']} 参数 charge_discharge_efficiency 应在 (0, 1] 内")
+        if not 0.0 <= lower < upper <= 1.0:
+            raise ValueError(f"{device['id']} 参数 SOC 上下限无效")
+        if "soc" in parameters and not 0.0 <= parameters["soc"] <= 1.0:
+            raise ValueError(f"{device['id']} 参数 soc 应在 0–1 内")
+        manual = item.get("manual_p_kw")
+        if item.get("control_mode") == "manual" and manual is not None:
+            try:
+                manual = float(manual)
+            except (TypeError, ValueError):
+                raise ValueError(f"{device['id']} 手动功率必须是有限数值") from None
+            if not math.isfinite(manual):
+                raise ValueError(f"{device['id']} 手动功率必须是有限数值")
+            limit = max(0.0, float(device.get("p_max_kw") or device.get("rated_kw", 0.0) or 0.0))
+            if device["type"] == "battery":
+                valid = -limit <= manual <= limit
+            else:
+                valid = 0.0 <= manual <= limit
+            if device["type"] in {"wind", "pv", "diesel", "battery", "generator", "load"} and not valid:
+                raise ValueError(f"{device['id']} 手动功率超出额定范围")
+            device["control_mode"], device["manual_p_kw"] = "manual", manual
+        else:
+            device["control_mode"], device["manual_p_kw"] = "curve", None
         devices.append(device)
     topology = deepcopy(payload.get("topology") or {"nodes": [], "edges": []})
     for key in ("nodes", "edges"):
@@ -507,6 +537,14 @@ def generate_runtime_points(model: Mapping[str, Any], base_points: list[dict[str
             continue
         points.append({"kind": "yc", "point_no": next_yc, "name": f"{device_id}_p_kw", "unit": "kW", "data_type": 13, "description": f"{label} 有功出力", "device_id": device_id})
         next_yc += 1
+    # Append storage SOC points after the established device point sequence so
+    # existing IOAs remain stable when per-device SOC is enabled.
+    for device in model.get("devices", []):
+        if isinstance(device, Mapping) and device.get("type") == "battery":
+            device_id = str(device.get("id", device.get("name", "battery")))
+            label = str(device.get("name", device_id))
+            points.append({"kind": "yc", "point_no": next_yc, "name": f"{device_id}_soc_pct", "unit": "%", "data_type": 13, "description": f"{label} 荷电状态", "device_id": device_id})
+            next_yc += 1
     for item in model.get("points", []):
         if isinstance(item, Mapping) and item.get("kind") in {"yc", "yx", "yk"}:
             try:

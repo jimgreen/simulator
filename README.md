@@ -22,13 +22,13 @@ Web 界面按功能拆分为多个页面：`/` 运行总览、`/model.html` 模�
 - 导入 JSON、power_simu_web 定义 ZIP 或 E-file，并按设备和模型点扩展运行点表。
 - 一键写入 `scdfe_s` 的 `fes_yc_define`、`fes_yx_define`、`fes_yk_define` 和 IEC 104 地址映射。
 - 风速、辐照、气温、负荷、柴发和储能功率曲线插值；风光出力随环境和导入设备容量变化。
-- 储能充放电功率和 SOC 更新，支持 `energy_kwh`/`capacity_kwh`。
+- 储能按设备独立积分 SOC，支持容量、充放电效率、SOC 上下限和加权系统 SOC 汇总。
 - IEC 104 或 Web 遥控设备投运状态，支持并网断路器、柴油机和储能设备操作。
 - 拓扑节点/支路联锁；拓扑孤岛设备自动退出并重新计算功率平衡。
 - 每次状态变化执行嵌入式功率平衡，提供收敛、迭代次数、不平衡量并主动上送 YC/YX。
 - 仿真时钟启动、暂停、单步、归零和 0.1～20 倍速度控制。
-- 页面支持设备批量投退、曲线预设、JSON 导出、快照导出，以及空格暂停、N 单步、Ctrl+E 导出快照快捷键。
-- Web 轮询使用聚合概览接口；曲线采用预排序索引和二分插值，拓扑设备判定采用索引查询，减少重复扫描。
+- 页面支持设备搜索、类型/状态筛选、分页、跨页勾选、批量投退/分合闸、单设备功率设定和跟随曲线；还支持曲线预设、JSON 导出、快照导出，以及空格暂停、N 单步、Ctrl+E 导出快照快捷键。
+- Web 轮询使用聚合概览接口；曲线按通道预编译并二分插值，拓扑设备判定采用索引查询，计算分支避免重复的内置出力计算，减少每步重复扫描。
 - 总览页支持并网、孤网、外部电网失电、设备恢复、设备全停五种一键场景，并记录操作来源与结果。
 
 ## 外部模型、边界与电网图形
@@ -54,7 +54,7 @@ mti 语义优先，支持命名测量 data-meas-name / data-scada-name / data-re
 仅模型或 SVG 版本改变时重新编译绑定，轮询只更新数值和状态。
 上传 SVG 的内嵌脚本、事件处理器和外部活动资源会被清除；实时驱动由 simulator 的 diagram.js 提供。
 
-- 设备右键：实时状态、投入/退出；开关额外提供分闸/合闸，退出状态禁止合闸。
+- 设备右键：实时状态、投入/退出；开关额外提供分闸/合闸，电源设备可设定功率或恢复跟随曲线，退出状态禁止合闸。
 - 空白右键：适应窗口、缩放、测量数值显示/隐藏、刷新。
 - 操作同步设备和拓扑，重算功率并调用 scdfe_s 桥接发布 YC/YX；暂停时也可操作。
 - 设备投运请求与拓扑可运行状态分开，解除隔离后可自动恢复请求为投入的设备。
@@ -66,7 +66,7 @@ action 支持 start、stop、open、close。
 
 当前计算引擎仍为简化功率平衡，并未移植参考工程的完整 AC/DC 潮流求解器。
 节点电压、无功、支路电流/潮流等未计算量在 SVG 中显示 `--`，不使用导出模型的初始零值冒充实时值。
-储能 SOC 目前为系统汇总值；拓扑判定为节点与相邻支路联锁，并非完整孤岛带电分析。
+储能 SOC 按设备独立计算并按能量加权汇总；拓扑判定为节点与相邻支路联锁，并非完整孤岛带电分析。
 氢热等非电力源曲线保留并提示，不参与电力计算；control.e 定义保留，未提供任意控制脚本执行。
 导入内容与最近 200 条操作记录驻留内存，服务重启后需重新导入模型包。
 
@@ -110,11 +110,12 @@ action 支持 start、stop、open、close。
 - `GET/POST /api/curves`：读取或更新 `weather`、`load`、`diesel`、`battery` 曲线。
 - `GET /api/devices`、`POST /api/devices/state`：查看并切换设备投运状态。
 - `POST /api/devices/states`：批量切换多个设备投运状态，并只执行一次拓扑联锁和功率计算。
+- `POST /api/devices/actions`：原子执行混合设备操作。请求为 `{"actions":[{"device_id":"diesel-1","action":"set_power","value":25}]}`；action 支持 `start`、`stop`、`open`、`close`、`set_power`、`follow_curve`，整批校验失败时不改变任何设备。
 - `POST /api/scenario`：执行 `grid`、`island`、`blackout`、`restart`、`all_stop` 一键运行场景。
 - `GET/POST /api/topology`：查看或更新拓扑节点/支路；更新后会触发联锁和功率计算。
 - `GET /api/scdfe/points`、`POST /api/scdfe/points/generate`：查看并一键生成 `scdfe_s` 实时点定义。
 - `POST /api/commands`：设备遥控命令，例如 `{"kind":"yk","point_no":2,"value":1}`。
-- `POST /api/clock`：`start`、`pause`、`step`、`reset`、`speed`（`value` 为速度倍数）。
+- `POST /api/clock`：`start`、`pause`、`step`、`reset`、`speed`（`value` 为速度倍数）和 `seek`（`value` 为秒数或 `HH:MM[:SS]`）。单步始终推进一个配置步长，速度只作用于后台时钟。
 - `GET /api/iec104/status`、`POST /api/iec104/start`、`POST /api/iec104/stop`：IEC 104 服务控制。
 
 ## 数据流

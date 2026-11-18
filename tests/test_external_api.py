@@ -44,6 +44,16 @@ class ExternalAPITest(unittest.TestCase):
         self.assertEqual(published['events'][0]['kind'], 'switch')
         self.assertFalse(published['topology']['edges'][0]['closed'])
 
+    def test_mixed_device_actions_route_publishes_once(self):
+        diesel = next(d for d in self.twin.snapshot()['devices'] if d['type'] == 'wind')
+        result = self.post('/api/devices/actions', {'actions': [
+            {'device_id': diesel['id'], 'action': 'set_power', 'value': 12},
+        ], 'model_revision': self.twin.snapshot()['model_revision']})
+        self.assertTrue(result['accepted'])
+        self.assertEqual(result['devices'][0]['control_mode'], 'manual')
+        self.assertEqual(result['devices'][0]['manual_p_kw'], 12)
+        self.assertEqual(self.bridge.publish.call_count, 1)
+
     def test_boundary_api_publishes_and_invalid_import_is_atomic(self):
         payload = {'filename': 'weather.csv', 'data_base64': base64.b64encode(b'time,temperature\n00:00,-8').decode()}
         self.post('/api/boundary/import', payload)

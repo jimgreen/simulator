@@ -33,6 +33,12 @@ canvas { width:100%; height:280px; display:block; background:linear-gradient(#fb
 .section-title { margin-top:24px; padding-top:14px; border-top:1px solid var(--line); }
 .range-wide { display:block; color:var(--muted); font-size:13px; }
 .range-wide input { width:100%; }
+.device-toolbar { display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-bottom:8px; }
+.device-toolbar input { flex:1 1 180px; min-width:140px; border:1px solid var(--line); border-radius:6px; padding:7px 9px; }
+.device-toolbar select { min-width:110px; }
+.device-actions { display:flex; gap:5px; flex-wrap:wrap; }
+.device-table input[type=number] { width:82px; padding:5px; border:1px solid var(--line); border-radius:5px; }
+.device-table .selected-row { background:#eef8f7; }
 @media (max-width:650px) { .shell { padding:14px 12px 24px; } .nav { gap:4px; } .nav a { padding:7px 9px; } .page-heading { flex-direction:column; } .metric-grid.compact { grid-template-columns:repeat(2, 1fr); } }
 html, body { width:100%; height:100%; overflow:hidden; }
 .boundary-card { display:flex; flex-direction:column; gap:6px; }

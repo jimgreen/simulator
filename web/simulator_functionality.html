@@ -168,13 +168,13 @@
           <article class="card"><h3>模型定义 ZIP</h3><p>model.e 优先；支持 meas.e、control.e、curves.e / curves.json、diagram.svg。单个 E 文件与 simulator JSON 也可导入。AC/DC 节点编号隔离，保留设备 block、idx、名称和参数。新模型没有 SVG 时清空旧图形。</p></article>
           <article class="card"><h3>风光荷温边界</h3><p>CSV、TSV、JSON、weather.e、curves.e 和 ZIP；支持 UTF-8 / GB18030。时间为日内分钟或 HH:MM[:SS]。支持按名称匹配负荷、按设备类型与名称匹配源功率，部分通道导入保留其他通道。</p></article>
           <article class="card"><h3>操作路径</h3><p>模型管理 → 导入定义包 → 曲线设置 / 外部边界导入 → 预览分页 → 实时效果。编辑器按曲线与记录分页，保存后立即重算；错误时间、重复时刻和无效数值会拒绝应用。</p></article>
-          <article class="card"><h3>计算范围</h3><p>功率按设备边界、风光能力和投运状态计算，当前仍为简化功率平衡。节点电压、无功、支路潮流等未计算量显示 --。储能 SOC 为系统汇总值；氢热源曲线保留并提示，暂不参与计算。</p></article>
+          <article class="card"><h3>计算范围</h3><p>功率按设备边界、风光能力和投运状态计算，当前仍为简化功率平衡。节点电压、无功、支路潮流等未计算量显示 --。储能按设备独立积分 SOC，再按能量加权汇总；氢热源曲线保留并提示，暂不参与计算。</p></article>
         </div>
       </section>
       <section class="panel" data-panel="diagram">
         <div class="lead"><div><h2>电网图形与右键菜单</h2><p>独立页面 /diagram.html · 滚轮缩放 · 拖拽平移 · 设备定位</p></div></div>
         <div class="grid grid-2">
-          <article class="card"><h3>设备右键</h3><p>查看实时状态、投入与退出。开关增加合闸与分闸，显示 closed_status 实际合位。操作后同步拓扑、重算并调用 scdfe_s 桥接发布遥测遥信；暂停状态下也可操作。</p></article>
+          <article class="card"><h3>设备右键</h3><p>查看实时状态、投入与退出。开关增加合闸与分闸，电源设备可设定功率或恢复跟随曲线，显示 closed_status 实际合位。操作后同步拓扑、重算并调用 scdfe_s 桥接发布遥测遥信；暂停状态下也可操作。</p></article>
           <article class="card"><h3>空白右键</h3><p>适应窗口、放大、缩小、显示 / 隐藏测量数值、刷新。Esc 关闭菜单，菜单自动限制在可视窗口内。工具栏提供同样的常用入口。</p></article>
           <article class="card"><h3>SVG 实时驱动</h3><p>dev-id、use[id][name] 匹配设备；dev 下的 mti 优先于 mt，支持命名测量。实时更新功率、SOC、状态；退出灰显，开关切换 _state_0 / _state_1 图符。图形版本变化时才重编译绑定。</p></article>
           <article class="card"><h3>使用边界</h3><p>上传 SVG 的脚本、事件与外部活动资源会清除，实时更新由网页脚本提供。图形可随 ZIP 一并导入，也可单独加载。导入内容与近期操作记录驻留内存，重启后需重新导入。</p></article>
@@ -187,9 +187,9 @@
           <article class="card algorithm"><h3>功率平衡与网络量</h3><p>内置嵌入式平衡模型替代外部潮流内核，输出收敛标志、迭代次数和不平衡量。</p><div class="formula">residual = load - wind - pv - diesel - battery<br>tie_flow = residual（并网断路器合位且电网可用）<br>mismatch = load - wind - pv - diesel - battery - tie_flow</div><div class="badge-row"><span class="badge">频率 47～52 Hz 限幅</span><span class="badge">母线电压</span><span class="badge">联络线相角</span></div></article>
         </div>
         <div class="grid grid-3" style="margin-top:14px">
-          <article class="card"><h3>储能 SOC</h3><p>储能功率为正代表放电，负值代表充电。每个步长按能量容量积分，并将 SOC 限制在 10%～95%。</p><div class="formula">soc ← clamp(soc - battery_kw × Δt / 3600 / energy_kwh, 0.10, 0.95)</div></article>
+          <article class="card"><h3>储能 SOC</h3><p>储能功率为正代表放电，负值代表充电。每个设备按自身能量容量、效率和上下限积分，系统 SOC 按能量加权汇总。</p><div class="formula">放电：soc ← clamp(soc - P × Δt / (3600 × E × η))<br>充电：soc ← clamp(soc - P × Δt × η / (3600 × E))</div></article>
           <article class="card"><h3>设备投运与拓扑</h3><p>Web 可直接切换设备投运状态；拓扑节点退出或相关支路断开时，联锁逻辑会把孤岛设备置为退出。</p><div class="formula">node.run = false → device.run = false<br>edge.closed &amp;&amp; edge.run → 允许设备接入</div></article>
-          <article class="card"><h3>仿真时钟</h3><p>支持启动、暂停、单步、归零和速度调整。仿真时间按 24 小时循环，历史最多保留 600 条记录。</p><div class="badge-row"><span class="badge">start</span><span class="badge">pause</span><span class="badge">step</span><span class="badge">reset</span><span class="badge">speed</span></div></article>
+          <article class="card"><h3>仿真时钟</h3><p>支持启动、暂停、单步、归零、跳转和速度调整。单步始终推进一个配置步长，速度只作用于后台时钟；仿真时间按 24 小时循环，历史最多保留 600 条记录。</p><div class="badge-row"><span class="badge">start</span><span class="badge">pause</span><span class="badge">step</span><span class="badge">seek</span><span class="badge">reset</span><span class="badge">speed</span></div></article>
         </div>
         <div class="section-title"><h3>快照中可用的主要数据</h3><span>GET /api/snapshot</span></div>
         <div class="grid grid-3">
@@ -205,7 +205,7 @@
           <article class="card page-card"><span class="route">/</span><h3>运行总览</h3><p class="purpose">显示系统频率、联络线潮流、SOC、环境输入、IEC 104 状态和当前模型摘要。</p><ul class="list"><li>运行状态：实时指标和告警。</li><li>功率趋势：最近 10 分钟曲线。</li><li>计算与告警：潮流收敛和报警列表。</li></ul></article>
           <article class="card page-card"><span class="route">/model.html</span><h3>模型管理</h3><p class="purpose">导入模型并根据最新模型刷新运行点；一键写入 scdfe_s 四遥定义。</p><ul class="list"><li>支持 JSON、ZIP、E-file。</li><li>查看模型摘要和导入设备。</li><li>查看 YC/YX/YK/YT 数量。</li></ul></article>
           <article class="card page-card"><span class="route">/curves.html</span><h3>曲线设置</h3><p class="purpose">编辑 weather、load、diesel、battery 四类曲线 JSON，保存后立即作用于下一次仿真计算。</p><ul class="list"><li>按 minute 排序。</li><li>支持读取、编辑、保存。</li></ul></article>
-          <article class="card page-card"><span class="route">/devices.html</span><h3>设备与拓扑</h3><p class="purpose">查看设备实时出力和投退状态，修改拓扑节点/支路并触发联锁与功率计算。</p><ul class="list"><li>投运/退出设备。</li><li>保存 topology JSON。</li><li>查看潮流状态。</li></ul></article>
+          <article class="card page-card"><span class="route">/devices.html</span><h3>设备与拓扑</h3><p class="purpose">用搜索、类型/状态筛选和分页快速定位设备，查看实时出力与逐储能 SOC，并触发联锁和功率计算。</p><ul class="list"><li>跨页勾选后批量投退或开关分合闸。</li><li>单设备功率设定、跟随曲线。</li><li>保存 topology JSON，查看潮流状态。</li></ul></article>
           <article class="card page-card"><span class="route">/scada.html</span><h3>SCADA / IEC 104</h3><p class="purpose">查看 IEC 104 服务、YC/YX/YK 点定义和实时值，控制服务启动与停止。</p><ul class="list"><li>按点类筛选。</li><li>查看监听地址、RTU、客户端和最新上送序号。</li></ul></article>
           <article class="card page-card boundary"><h3><strong>界面边界</strong></h3><p class="purpose">页面不包含 AGC/PAS 控制面板。设备遥控仅用于并网断路器、柴油机和储能投退，属于数字孪生基础状态操作。</p><div class="badge-row"><span class="badge yk">YK 遥控</span><span class="badge">无 AGC</span><span class="badge">无 PAS</span></div></article>
         </div>
@@ -260,11 +260,12 @@
           <tr><td>GET / POST</td><td><code>/api/curves</code></td><td>读取或保存四类曲线。</td><td><small>POST：<code>{curves: {weather, load, diesel, battery}}</code></small></td></tr>
           <tr><td>GET / POST</td><td><code>/api/devices</code> / <code>/api/devices/state</code></td><td>查看设备或切换投运状态。</td><td><small>POST：<code>{device_id, running}</code></small></td></tr>
           <tr><td>POST</td><td><code>/api/devices/states</code></td><td>批量切换设备投运状态。</td><td><small><code>{states:[{device_id,running}]}</code>；只执行一次联锁和功率计算</small></td></tr>
+          <tr><td>POST</td><td><code>/api/devices/actions</code></td><td>原子执行混合设备操作。</td><td><small>支持 start、stop、open、close、set_power、follow_curve；整批校验失败不改变状态</small></td></tr>
           <tr><td>POST</td><td><code>/api/scenario</code></td><td>一键切换常用运行场景。</td><td><small><code>{name:"grid|island|blackout|restart|all_stop"}</code></small></td></tr>
           <tr><td>GET / POST</td><td><code>/api/topology</code></td><td>读取或保存节点、支路拓扑。</td><td><small>保存后执行联锁并重新计算</small></td></tr>
           <tr><td>GET / POST</td><td><code>/api/scdfe/points</code> / <code>/api/scdfe/points/generate</code></td><td>查看或生成 scdfe_s 点表。</td><td><small>POST 可传 <code>{replace:true, rtu_id:104, channel_id:104}</code></small></td></tr>
           <tr><td>POST</td><td><code>/api/commands</code></td><td>执行数字孪生遥控。</td><td><small><code>{kind:"yk", point_no:1|2|3, value:0|1, selected}</code></small></td></tr>
-          <tr><td>POST</td><td><code>/api/clock</code></td><td>控制仿真时钟。</td><td><small><code>{action:"start|pause|step|reset|speed", value}</code></small></td></tr>
+          <tr><td>POST</td><td><code>/api/clock</code></td><td>控制仿真时钟。</td><td><small><code>{action:"start|pause|step|reset|speed|seek", value}</code>；seek 接受秒数或 HH:MM[:SS]</small></td></tr>
           <tr><td>GET / POST</td><td><code>/api/iec104/status</code>、<code>/start</code>、<code>/stop</code></td><td>查询或控制 IEC 104 服务。</td><td><small>依赖 D:\codex\scada 的 IEC104Server</small></td></tr>
         </tbody></table></div>
         <div class="section-title"><h3>命令示例</h3><span>关闭并网断路器对应的 YK1</span></div>

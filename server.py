@@ -222,7 +222,12 @@ class Handler(BaseHTTPRequestHandler):
                     self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
                 return self._send(200, result)
             if parsed.path == "/api/devices/operate":
-                result = self.app.twin.operate_device(body.get("device_id"), body.get("action"), model_revision=body.get("model_revision"))
+                result = self.app.twin.operate_device(body.get("device_id"), body.get("action"), value=body.get("value"), model_revision=body.get("model_revision"))
+                if self.app.bridge is not None:
+                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+                return self._send(200, result)
+            if parsed.path == "/api/devices/actions":
+                result = self.app.twin.apply_device_actions(body.get("actions"), model_revision=body.get("model_revision"), source="web")
                 if self.app.bridge is not None:
                     self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
                 return self._send(200, result)
