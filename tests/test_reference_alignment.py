@@ -73,6 +73,18 @@ class ReferenceAlignmentTest(unittest.TestCase):
         self.assertNotIn('point_values', light)
         self.assertNotIn('diagram_measurements', light)
 
+    def test_dashboard_snapshot_is_compact_but_keeps_runtime_summary(self):
+        twin = DigitalTwin(model=load_model_bytes(E_MODEL))
+        dashboard = twin.snapshot(profile='dashboard')
+        self.assertEqual(dashboard['model']['device_count'], 2)
+        self.assertEqual(dashboard['model']['node_count'], 0)
+        self.assertIn('generation', dashboard)
+        self.assertIn('history', dashboard)
+        self.assertNotIn('devices', dashboard)
+        self.assertNotIn('topology', dashboard)
+        self.assertNotIn('point_values', dashboard)
+        self.assertNotIn('diagram_measurements', dashboard)
+
     def test_builtin_storage_still_evolves(self):
         twin = DigitalTwin()
         twin.merge_curves({'battery':[{'minute':0,'battery_kw':10}]})

@@ -1026,7 +1026,17 @@ class DigitalTwin:
             return {"accepted": True, "scenario": scenario, "label": labels[scenario], "clock": self.clock(), "states": self._state["states"]}
 
     def model_summary(self) -> dict[str, Any]:
-        return {"name": self.model.get("name"), "source": self.model.get("source"), "metadata": self.model.get("metadata", {}), "device_count": len(self.model.get("devices", [])), "topology": self.model.get("topology", {}), "curve_counts": {key: len(value) for key, value in self.curves.items()}}
+        topology = self.model.get("topology", {})
+        return {
+            "name": self.model.get("name"),
+            "source": self.model.get("source"),
+            "metadata": self.model.get("metadata", {}),
+            "device_count": len(self.model.get("devices", [])),
+            "node_count": len(topology.get("nodes", [])) if isinstance(topology, dict) else 0,
+            "edge_count": len(topology.get("edges", [])) if isinstance(topology, dict) else 0,
+            "topology": topology,
+            "curve_counts": {key: len(value) for key, value in self.curves.items()},
+        }
 
     def point_values(self) -> dict[str, dict[int, Any]]:
         with self._lock:
@@ -1091,26 +1101,31 @@ class DigitalTwin:
     def snapshot(self, *, history_limit: int = 120, profile: str = "full") -> dict[str, Any]:
         with self._lock:
             profile = str(profile or "full").lower()
-            if profile not in {"full", "devices", "light", "lightweight"}:
-                raise ValueError("snapshot profile 应为 full 或 devices")
+            if profile not in {"full", "devices", "light", "lightweight", "dashboard"}:
+                raise ValueError("snapshot profile 应为 full、devices 或 dashboard")
             state = self._state
             values = self._measurement_values(state)
             device_outputs = state.get("device_outputs", {})
             devices = []
-            for item in self.model.get("devices", []):
-                row = dict(item)
-                row["running"] = _as_bool(item.get("run", True)) and self._topology_allows(item)
-                row["p_kw"] = device_outputs.get(item["id"])
-                row["available_kw"] = state.get("device_available", {}).get(item["id"])
-                row["requested_p_kw"] = self._device_requested.get(item["id"], row.get("p_set_kw", 0.0))
-                row["limit_reasons"] = list(self._device_limit_reasons.get(item["id"], []))
-                storage = self._storage_states.get(str(item["id"]))
-                row["soc_pct"] = round(storage["soc"] * 100.0, 3) if storage else None
-                row["control_mode"] = item.get("control_mode", "curve") if item["type"] not in {"switch", "node", "other"} else None
-                row["manual_p_kw"] = item.get("manual_p_kw") if row["control_mode"] == "manual" else None
-                row.pop("parameters", None)
-                row.pop("fields", None)
-                devices.append(row)
+            include_devices = profile in {"full", "devices", "light", "lightweight"}
+            if include_devices:
+                for item in self.model.get("devices", []):
+                    row = dict(item)
+                    row["running"] = _as_bool(item.get("run", True)) and self._topology_allows(item)
+                    row["p_kw"] = device_outputs.get(item["id"])
+                    row["available_kw"] = state.get("device_available", {}).get(item["id"])
+                    row["requested_p_kw"] = self._device_requested.get(item["id"], row.get("p_set_kw", 0.0))
+                    row["limit_reasons"] = list(self._device_limit_reasons.get(item["id"], []))
+                    storage = self._storage_states.get(str(item["id"]))
+                    row["soc_pct"] = round(storage["soc"] * 100.0, 3) if storage else None
+                    row["control_mode"] = item.get("control_mode", "curve") if item["type"] not in {"switch", "node", "other"} else None
+                    row["manual_p_kw"] = item.get("manual_p_kw") if row["control_mode"] == "manual" else None
+                    row.pop("parameters", None)
+                    row.pop("fields", None)
+                    devices.append(row)
+            model = self.model_summary()
+            if profile == "dashboard":
+                model.pop("topology", None)
             result = {
                 "clock": self.clock(),
                 "weather": state["weather"],
@@ -1123,15 +1138,17 @@ class DigitalTwin:
                 "events": list(self._events)[:30],
                 "history": [] if profile in {"devices", "light", "lightweight"} or int(history_limit) <= 0 else list(self._history)[-min(int(history_limit), 600):],
                 "sequence": self._seq,
-                "model": self.model_summary(),
-                "devices": devices,
-                "topology": self.model.get("topology", {}),
+                "model": model,
                 "power_flow": dict(self._last_power_flow),
-                "diagram": self._diagram_metadata(),
                 "boundary_source": self.boundary_source,
                 "revision": self._revision,
                 "model_revision": self._model_revision,
             }
+            if include_devices:
+                result["devices"] = devices
+                result["topology"] = self.model.get("topology", {})
+            if profile != "dashboard":
+                result["diagram"] = self._diagram_metadata()
             if profile in {"full"}:
                 result["point_values"] = self.point_values()
                 result["diagram_measurements"] = self._diagram_measurements(devices)
