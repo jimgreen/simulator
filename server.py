@@ -104,14 +104,17 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 return self._send(200, {"status": "ok", "service": "environment-aware-digital-twin", "model": self.app.twin.model_summary(), "iec104": self.app.bridge.status() if self.app.bridge else {"available": False}})
             if path == "/api/overview":
-                snapshot = self.app.twin.snapshot(history_limit=120)
+                profile = parse_qs(parsed.query).get("profile", ["full"])[0]
+                snapshot = self.app.twin.snapshot(history_limit=120, profile=profile)
                 return self._send(200, {
                     "snapshot": snapshot,
                     "health": {"status": "ok", "service": "environment-aware-digital-twin", "model": snapshot["model"], "iec104": self.app.bridge.status() if self.app.bridge else {"available": False}},
                 })
             if path == "/api/snapshot":
-                limit = int(parse_qs(parsed.query).get("history", [120])[0])
-                return self._send(200, self.app.twin.snapshot(history_limit=limit))
+                query = parse_qs(parsed.query)
+                limit = int(query.get("history", [120])[0])
+                profile = query.get("profile", ["full"])[0]
+                return self._send(200, self.app.twin.snapshot(history_limit=limit, profile=profile))
             if path == "/api/scada/telemetry":
                 snapshot = self.app.twin.snapshot(history_limit=1)
                 point_values = snapshot["point_values"]

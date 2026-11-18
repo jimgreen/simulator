@@ -362,16 +362,50 @@ def _from_ebook(files, source_name):
                 edges.append({"id": device_id, "from": f"ACNode:{row['ac_node']}", "to": f"DCNode:{row['dc_node']}", "run": device["run"], "closed": True, "kind": block})
     if not devices:
         raise ValueError("E 模型没有可识别的设备或节点")
-    indexed = {d["id"]: d for d in devices}
-    for block, rows in blocks.items():
-        if block in {"ACStorageGen", "DCStorageGen", "ACWindGen", "DCWindGen", "ACPVGen", "DCPVGen", "ACDieselGen", "DCDieselGen"}:
-            prefix = block[:2]
-            for row in rows:
-                device = indexed.get(f"{prefix}Generator:{row.get('idx_' + prefix.lower() + 'generator')}")
-                if device:
-                    device["parameters"] = dict(row)
-                    if "energy_capacity" in row:
-                        device["energy_kwh"] = _number(row["energy_capacity"])
+    source_index = {
+        (str(device.get("block", "")), str(device.get("idx", ""))): device
+        for device in devices
+        if device.get("block") in {"ACGenerator", "DCGenerator"}
+    }
+    technology_blocks = {
+        "ACWindGen": ("ACGenerator", "idx_acgenerator", "wind"),
+        "DCWindGen": ("DCGenerator", "idx_dcgenerator", "wind"),
+        "ACPVGen": ("ACGenerator", "idx_acgenerator", "pv"),
+        "DCPVGen": ("DCGenerator", "idx_dcgenerator", "pv"),
+        "ACStorageGen": ("ACGenerator", "idx_acgenerator", "battery"),
+        "DCStorageGen": ("DCGenerator", "idx_dcgenerator", "battery"),
+        "ACDieselGen": ("ACGenerator", "idx_acgenerator", "diesel"),
+        "DCDieselGen": ("DCGenerator", "idx_dcgenerator", "diesel"),
+    }
+    mapped_families = {}
+    for block, (source_block, reference_field, family) in technology_blocks.items():
+        for row in blocks.get(block, []):
+            reference = str(row.get(reference_field, "")).strip()
+            device = source_index.get((source_block, reference))
+            if device is None:
+                raise ValueError(f"E 模型 {block} 引用了不存在的 {source_block} 编号: {reference or '<空>'}")
+            identity = str(device["id"])
+            previous = mapped_families.get(identity)
+            if previous is not None and previous != family:
+                raise ValueError(f"设备 {identity} 同时映射为 {previous} 和 {family}")
+            mapped_families[identity] = family
+            device["type"] = family
+            parameters = dict(device.get("parameters") or {})
+            parameters.update(row)
+            # The reference implementation accepts both spellings found in
+            # historical E-file exports and exposes one canonical field.
+            if "state_of_charge" in parameters and "soc" not in parameters:
+                parameters["soc"] = parameters["state_of_charge"]
+            if "temperature_coefficient" in parameters and "temp_coefficient" not in parameters:
+                parameters["temp_coefficient"] = parameters["temperature_coefficient"]
+            device["parameters"] = parameters
+            if "energy_capacity" in row:
+                device["energy_kwh"] = _number(row["energy_capacity"])
+            for source_field, target_field in (("rated_power", "rated_kw"), ("p_max", "p_max_kw")):
+                if source_field in row and _number(row[source_field]) > 0:
+                    device[target_field] = _number(row[source_field]) * factor
+    # A generator without a technology parameter row remains a generic source;
+    # name text is deliberately not used to infer wind/PV/storage semantics.
     curves = _default_curves()
     for name in ("curves.e", "curves.json", "weather.e"):
         if name in files:
@@ -413,13 +447,15 @@ def normalize_model(payload, *, source_name="model.json"):
             device[field] = _number(item.get(field, item.get(fallback, 0)))
         if not device["rated_kw"]:
             device["rated_kw"] = device["p_max_kw"]
+        if not device["p_max_kw"]:
+            device["p_max_kw"] = device["rated_kw"]
         device["closed_status"] = _bool(item.get("closed_status", item.get("status", True)))
         device["aliases"] = list(item.get("aliases", []))
         parameters = device.get("parameters", {})
         if not isinstance(parameters, Mapping):
             raise ValueError(f"{device['id']} 参数必须是对象")
         parameters = device["parameters"] = dict(parameters)
-        for field in ("rated_wind_speed", "cut_in_wind_speed", "cut_out_wind_speed", "temperature_coefficient", "soc", "charge_discharge_efficiency", "soc_lower_limit", "soc_upper_limit"):
+        for field in ("rated_wind_speed", "cut_in_wind_speed", "cut_out_wind_speed", "power_curve_exponent", "temperature_coefficient", "temp_coefficient", "reference_irradiance", "reference_temperature", "max_charge_power", "max_discharge_power", "rated_power", "p_min", "p_max", "soc", "state_of_charge", "charge_discharge_efficiency", "soc_lower_limit", "soc_upper_limit"):
             if field in parameters:
                 try:
                     value = float(parameters[field])
@@ -428,6 +464,10 @@ def normalize_model(payload, *, source_name="model.json"):
                 except (ValueError, TypeError):
                     raise ValueError(f"{device['id']} 参数 {field} 必须是有限数值") from None
                 parameters[field] = value
+        if "state_of_charge" in parameters and "soc" not in parameters:
+            parameters["soc"] = parameters["state_of_charge"]
+        if "temperature_coefficient" in parameters and "temp_coefficient" not in parameters:
+            parameters["temp_coefficient"] = parameters["temperature_coefficient"]
         efficiency = float(parameters.get("charge_discharge_efficiency", 1.0))
         lower = float(parameters.get("soc_lower_limit", 0.1))
         upper = float(parameters.get("soc_upper_limit", 0.95))

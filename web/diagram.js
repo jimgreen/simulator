@@ -150,6 +150,12 @@
       if (device.type === 'switch') {
         add('合闸', () => operate(device.id,'close'), busy || device.closed_status || !device.run);
         add('分闸', () => operate(device.id,'open'), busy || !device.closed_status);
+      } else if (['wind','pv','diesel','battery','generator','load'].includes(device.type)) {
+        add('设定功率', () => {
+          const value = window.prompt('输入有功功率（kW；储能可输入负值充电）', device.requested_p_kw ?? device.p_kw ?? 0);
+          if (value !== null && value.trim() !== '') operate(device.id, 'set_power', Number(value));
+        }, busy || !device.run);
+        if (device.control_mode === 'manual') add('恢复跟随曲线', () => operate(device.id, 'follow_curve'), busy);
       }
     } else {
       add('适应窗口', fit); add('放大', () => zoom(.8)); add('缩小', () => zoom(1.25));
@@ -161,10 +167,10 @@
     menu.style.top = Math.max(8,Math.min(y,window.innerHeight-menu.offsetHeight-8))+'px';
     menu.querySelector('button:not(:disabled)')?.focus();
   }
-  async function operate(id, action) {
+  async function operate(id, action, value) {
     if (busy) return;
     busy = true;
-    try { await api('/api/devices/operate', {device_id:id, action, model_revision:menuRevision}); await refresh(); message('已执行：' + ({start:'投入',stop:'退出',open:'分闸',close:'合闸'}[action]) + '，状态与实时点已更新'); }
+    try { await api('/api/devices/operate', {device_id:id, action, value, model_revision:menuRevision}); await refresh(); message('已执行：' + ({start:'投入',stop:'退出',open:'分闸',close:'合闸',set_power:'功率设定',follow_curve:'恢复曲线'}[action]) + '，状态与实时点已更新'); }
     catch (error) { message(error.message,true); }
     finally { busy = false; }
   }
@@ -172,7 +178,7 @@
     const d = currentDevice();
     if (!d) { $('deviceDialog').close(); return; }
     $('deviceTitle').textContent = d.name;
-    const details = [['编号', d.id],['设备类型',d.block || d.type],['请求状态',d.run ? '投入':'退出'],['实时状态',d.running ? '运行':'退出 / 拓扑隔离'],['实际分合',d.type === 'switch' ? (d.closed_status ? '合位':'分位') : '--'],['有功',valueText(d.p_kw)+' kW'],['可用上限',valueText(d.available_kw)+' kW'],['储能 SOC',valueText(d.soc_pct)+' %']];
+    const details = [['编号', d.id],['设备类型',d.block || d.type],['请求状态',d.run ? '投入':'退出'],['实时状态',d.running ? '运行':'退出 / 拓扑隔离'],['实际分合',d.type === 'switch' ? (d.closed_status ? '合位':'分位') : '--'],['请求功率',valueText(d.requested_p_kw)+' kW'],['实际有功',valueText(d.p_kw)+' kW'],['可用上限',valueText(d.available_kw)+' kW'],['限制原因',(d.limit_reasons || []).join('、') || '--'],['控制方式',d.control_mode || '--'],['储能 SOC',valueText(d.soc_pct)+' %']];
     $('deviceDetails').replaceChildren(...details.map(([label,value]) => { const row=document.createElement('div'), dt=document.createElement('dt'), dd=document.createElement('dd');dt.textContent=label;dd.textContent=value;row.append(dt,dd);return row; }));
     if (open && !$('deviceDialog').open) $('deviceDialog').showModal();
   }

@@ -29,6 +29,7 @@ def wind_available_power(
     rated_speed_mps: float = 15.0,
     cut_in_mps: float = 3.0,
     cut_out_mps: float = 30.0,
+    exponent: float = 3.0,
 ) -> float:
     """Cubic wind-turbine capability curve used by the source simulator."""
 
@@ -39,7 +40,7 @@ def wind_available_power(
     if speed >= rated_speed_mps:
         return rated
     span = max(1e-9, rated_speed_mps - cut_in_mps)
-    return rated * ((speed - cut_in_mps) / span) ** 3
+    return rated * ((speed - cut_in_mps) / span) ** max(0.1, float(exponent))
 
 
 def pv_available_power(
@@ -47,12 +48,15 @@ def pv_available_power(
     air_temp_c: float,
     rated_kw: float,
     temperature_coefficient: float = -0.004,
+    reference_irradiance: float = 1000.0,
+    reference_temperature: float = 25.0,
 ) -> float:
     """PV capability with a simple cell-temperature correction."""
 
     irradiance = max(0.0, float(irradiance_w_m2))
-    temperature_factor = max(0.0, 1.0 + temperature_coefficient * (float(air_temp_c) - 25.0))
-    return max(0.0, float(rated_kw) * irradiance / 1000.0 * temperature_factor)
+    reference = max(1e-9, float(reference_irradiance))
+    temperature_factor = max(0.0, 1.0 + temperature_coefficient * (float(air_temp_c) - float(reference_temperature)))
+    return max(0.0, float(rated_kw) * irradiance / reference * temperature_factor)
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -146,6 +150,8 @@ class DigitalTwin:
         self.grid_available = True
         self._battery_energy_kwh = 240.0
         self._storage_states: dict[str, dict[str, float]] = {}
+        self._device_requested: dict[str, float] = {}
+        self._device_limit_reasons: dict[str, list[str]] = {}
         self._initialize_storage_states()
         self.soc = self._initial_soc()
         self._model_revision = 1
@@ -309,6 +315,13 @@ class DigitalTwin:
             lower = clamp(parameters.get("soc_lower_limit", 0.1), 0.0, 0.99)
             upper = clamp(parameters.get("soc_upper_limit", 0.95), lower + 1e-6, 1.0)
             efficiency = clamp(parameters.get("charge_discharge_efficiency", 1.0), 1e-6, 1.0)
+            max_charge = max(0.0, float(parameters.get("max_charge_power", 0.0) or 0.0))
+            max_discharge = max(0.0, float(parameters.get("max_discharge_power", 0.0) or 0.0))
+            fallback_power = float(item.get("p_max_kw") or item.get("rated_kw", 0.0) or 0.0)
+            if max_charge <= 0.0:
+                max_charge = max(0.0, fallback_power)
+            if max_discharge <= 0.0:
+                max_discharge = max(0.0, fallback_power)
             old = (preserve or {}).get(identity)
             initial = float(parameters.get("soc", old["initial_soc"] if old else .68))
             initial = clamp(initial, lower, upper)
@@ -316,6 +329,7 @@ class DigitalTwin:
             states[identity] = {
                 "soc": current, "initial_soc": initial, "energy_kwh": energy,
                 "efficiency": efficiency, "lower": lower, "upper": upper,
+                "max_charge_power": max_charge, "max_discharge_power": max_discharge,
             }
         self._storage_states = states
 
@@ -367,6 +381,8 @@ class DigitalTwin:
     def _imported_outputs(self, weather):
         """Evaluate each electrical source/load once using indexed boundary curves."""
         outputs, available = {}, {}
+        self._device_requested = {}
+        self._device_limit_reasons = {}
         loads = self._family_devices("load", running_only=True)
         total_rating = sum(float(d.get("rated_kw", 0.0) or 0.0) for d in self._family_devices("load"))
         has_total_load = self._has_total_load_curve
@@ -381,13 +397,27 @@ class DigitalTwin:
             rating = max(0.0, float(device.get("p_max_kw") or device.get("rated_kw", 0.0) or 0.0))
             parameters = device.get("parameters", {})
             capacity = rating
+            reasons: list[str] = []
             if family == "wind":
                 capacity = wind_available_power(weather["wind_speed_mps"], rating,
                     float(parameters.get("rated_wind_speed", 15)), float(parameters.get("cut_in_wind_speed", 3)),
-                    float(parameters.get("cut_out_wind_speed", 30)))
+                    float(parameters.get("cut_out_wind_speed", 30)),
+                    float(parameters.get("power_curve_exponent", 3.0)))
+                if capacity < rating - 1e-9:
+                    reasons.append("weather_limit")
             elif family == "pv":
                 capacity = min(rating, pv_available_power(weather["solar_irradiance_w_m2"], weather["air_temp_c"], rating,
-                    float(parameters.get("temperature_coefficient", -.004))))
+                    float(parameters.get("temp_coefficient", parameters.get("temperature_coefficient", -.004))),
+                    float(parameters.get("reference_irradiance", 1000.0)),
+                    float(parameters.get("reference_temperature", 25.0))))
+                if capacity < rating - 1e-9:
+                    reasons.append("weather_limit")
+            elif family == "battery":
+                storage = self._storage_states.get(str(identity))
+                if storage is not None:
+                    capacity = min(rating or max(storage["max_discharge_power"], storage["max_charge_power"]), storage["max_discharge_power"])
+                    if capacity < rating - 1e-9:
+                        reasons.append("power_limit")
             available[identity] = capacity if running else 0
             curve = self._curve_at(self._device_curve_keys.get(identity, ""), minute)
             target = curve.get("p_kw", curve.get("value"))
@@ -406,19 +436,33 @@ class DigitalTwin:
                     target = device.get("p_set_kw", capacity if family in {"wind", "pv"} else 0)
             if device.get("control_mode") == "manual" and device.get("manual_p_kw") is not None:
                 target = float(device["manual_p_kw"])
+            requested = float(target or 0.0)
+            self._device_requested[identity] = requested
             if family == "battery":
                 running = running and self.battery_enabled
                 storage = self._storage_states.get(str(identity))
                 if storage is not None:
                     if target > 0:
                         available_energy = max(0.0, storage["soc"] - storage["lower"]) * storage["energy_kwh"] * 3600.0
-                        target = min(float(target), available_energy / max(self.step_seconds, 1e-9))
+                        energy_limit = available_energy * storage["efficiency"] / max(self.step_seconds, 1e-9)
+                        target = min(float(target), storage["max_discharge_power"], energy_limit)
+                        if target < requested - 1e-9:
+                            reasons.append("energy_limit" if energy_limit < storage["max_discharge_power"] else "power_limit")
                     elif target < 0:
                         available_energy = max(0.0, storage["upper"] - storage["soc"]) * storage["energy_kwh"] * 3600.0
-                        target = -min(abs(float(target)), available_energy * storage["efficiency"] / max(self.step_seconds, 1e-9))
+                        energy_limit = available_energy / max(storage["efficiency"], 1e-9) / max(self.step_seconds, 1e-9)
+                        target = -min(abs(float(target)), storage["max_charge_power"], energy_limit)
+                        if target > requested + 1e-9:
+                            reasons.append("energy_limit" if energy_limit < storage["max_charge_power"] else "power_limit")
             if family == "diesel":
                 running = running and self.diesel_running
-            outputs[identity] = round(clamp(target, -rating if family == "battery" else 0, capacity) if running else 0, 3)
+            actual = clamp(target, -rating if family == "battery" else 0, capacity) if running else 0
+            if not running and abs(requested) > 1e-9:
+                reasons.append("status_limit")
+            elif abs(actual - requested) > 1e-9 and "power_limit" not in reasons and "energy_limit" not in reasons:
+                reasons.append("capability_limit")
+            self._device_limit_reasons[identity] = list(dict.fromkeys(reasons))
+            outputs[identity] = round(actual, 3)
         return outputs, available
 
     def _calculate_state(self) -> dict[str, Any]:
@@ -564,7 +608,13 @@ class DigitalTwin:
                 else:
                     delta = -power * dt * storage["efficiency"] / max(3600.0 * storage["energy_kwh"], 1e-9)
                 storage["soc"] = clamp(storage["soc"] + delta, storage["lower"], storage["upper"])
-            self.soc = self._storage_soc()
+            if self._storage_states:
+                self.soc = self._storage_soc()
+            else:
+                # Keep the built-in curve useful even when no explicit battery
+                # device exists in the imported model.
+                battery_power = float(state_before.get("generation", {}).get("battery_kw", 0.0) or 0.0)
+                self.soc = clamp(self.soc - battery_power * dt / max(3600.0 * self._battery_energy_kwh, 1e-9), 0.1, 0.95)
             self._state = self._calculate_state()
             self._seq += 1
             self._last_wall = now
@@ -638,7 +688,7 @@ class DigitalTwin:
                 raise ValueError("时钟跳转值无效") from exc
             if not 0 <= numbers[1] < 60 or (len(numbers) == 3 and not 0 <= numbers[2] < 60):
                 raise ValueError("时钟跳转的分钟和秒必须在 0–59")
-            seconds = numbers[0] * (3600 if len(numbers) == 3 else 60) + numbers[1] * (60 if len(numbers) == 3 else 1)
+            seconds = numbers[0] * 3600 + numbers[1] * 60
             if len(numbers) == 3:
                 seconds += numbers[2]
         if not math.isfinite(seconds) or not 0 <= seconds < 86400:
@@ -1038,8 +1088,11 @@ class DigitalTwin:
             result[definition.get("name", "")] = {"value": value, "meas_type": metric}
         return result
 
-    def snapshot(self, *, history_limit: int = 120) -> dict[str, Any]:
+    def snapshot(self, *, history_limit: int = 120, profile: str = "full") -> dict[str, Any]:
         with self._lock:
+            profile = str(profile or "full").lower()
+            if profile not in {"full", "devices", "light", "lightweight"}:
+                raise ValueError("snapshot profile 应为 full 或 devices")
             state = self._state
             values = self._measurement_values(state)
             device_outputs = state.get("device_outputs", {})
@@ -1049,6 +1102,8 @@ class DigitalTwin:
                 row["running"] = _as_bool(item.get("run", True)) and self._topology_allows(item)
                 row["p_kw"] = device_outputs.get(item["id"])
                 row["available_kw"] = state.get("device_available", {}).get(item["id"])
+                row["requested_p_kw"] = self._device_requested.get(item["id"], row.get("p_set_kw", 0.0))
+                row["limit_reasons"] = list(self._device_limit_reasons.get(item["id"], []))
                 storage = self._storage_states.get(str(item["id"]))
                 row["soc_pct"] = round(storage["soc"] * 100.0, 3) if storage else None
                 row["control_mode"] = item.get("control_mode", "curve") if item["type"] not in {"switch", "node", "other"} else None
@@ -1056,7 +1111,7 @@ class DigitalTwin:
                 row.pop("parameters", None)
                 row.pop("fields", None)
                 devices.append(row)
-            return {
+            result = {
                 "clock": self.clock(),
                 "weather": state["weather"],
                 "generation": state["generation"],
@@ -1064,10 +1119,9 @@ class DigitalTwin:
                 "states": state["states"],
                 "soc_pct": state["soc_pct"],
                 "measurements": values,
-                "point_values": self.point_values(),
                 "alarms": list(self._alarms),
                 "events": list(self._events)[:30],
-                "history": list(self._history)[-max(0, min(int(history_limit), 600)):],
+                "history": [] if profile in {"devices", "light", "lightweight"} or int(history_limit) <= 0 else list(self._history)[-min(int(history_limit), 600):],
                 "sequence": self._seq,
                 "model": self.model_summary(),
                 "devices": devices,
@@ -1077,8 +1131,11 @@ class DigitalTwin:
                 "boundary_source": self.boundary_source,
                 "revision": self._revision,
                 "model_revision": self._model_revision,
-                "diagram_measurements": self._diagram_measurements(devices),
             }
+            if profile in {"full"}:
+                result["point_values"] = self.point_values()
+                result["diagram_measurements"] = self._diagram_measurements(devices)
+            return result
 
     def history(self, limit: int = 120) -> list[dict[str, Any]]:
         with self._lock:
