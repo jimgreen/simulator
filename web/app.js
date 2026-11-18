@@ -1,11 +1,31 @@
 const page = document.body.dataset.page || 'dashboard';
 const state = { snapshot: null, points: [], health: null, curves: null, pointSummary: null, pointKind: 'yc', refreshing: false };
 const $ = id => document.getElementById(id);
-const fmt = (value, digits = 1) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : '--';
+const fmt = (value, digits = 1) => value != null && value !== '' && Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : '--';
 const esc = value => String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
 const json = value => JSON.stringify(value, null, 2);
 function setText(id, value) { const node = $(id); if (node) node.textContent = value; }
-function setHtml(id, value) { const node = $(id); if (node) node.innerHTML = value; }
+const tablePages = {};
+function setHtml(id, value) { const node = $(id); if (node) { node.innerHTML = value; if (node.classList.contains('table-wrap')) requestAnimationFrame(() => paginateTable(node)); } }
+function paginateTable(node) {
+  const table=node.querySelector('table'); if(!table || !node.offsetHeight)return;
+  const rows=[...table.querySelectorAll('tbody tr')], card=node.closest('.card');
+  const available=Math.min(420, (card?.getBoundingClientRect().bottom || window.innerHeight-20)-node.getBoundingClientRect().top-55);
+  const rowHeight=rows.find(row=>!row.hidden)?.getBoundingClientRect().height || 36;
+  const size=Math.max(1,Math.floor((available-32)/Math.max(30,rowHeight))), total=Math.max(1,Math.ceil(rows.length/size));
+  let index=Math.min(tablePages[node.id] || 0,total-1);
+  rows.forEach((row,i)=>{row.hidden=i<index*size || i>=(index+1)*size;});
+  node.style.maxHeight='none';
+  let pager=node.nextElementSibling;
+  if(!pager?.classList.contains('table-pager')){pager=document.createElement('div');pager.className='table-pager';node.after(pager);}
+  pager.replaceChildren();
+  const previous=document.createElement('button'),next=document.createElement('button'),status=document.createElement('span');
+  previous.textContent='上一页';next.textContent='下一页';status.textContent=(index+1)+' / '+total+' · '+rows.length+' 条';
+  previous.disabled=index===0;next.disabled=index===total-1;
+  previous.onclick=()=>{tablePages[node.id]=index-1;paginateTable(node);};
+  next.onclick=()=>{tablePages[node.id]=index+1;paginateTable(node);};
+  pager.append(previous,status,next);
+}
 function notice(id, message, error) { const node = $(id); if (!node) return; node.textContent = message; node.className = 'notice' + (error ? ' error-text' : ''); }
 async function api(path, options = {}) { const response = await fetch(path, { headers: { 'Content-Type':'application/json', ...(options.headers || {}) }, ...options }); const data = await response.json(); if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status)); return data; }
 
@@ -82,16 +102,61 @@ function renderModel(snapshot, pointSummary) {
   if (pointSummary) setHtml('pointSummary', ['yc','yx','yk'].map(kind => '<div><span>' + kind.toUpperCase() + '</span><strong>' + (pointSummary[kind] || 0) + '</strong></div>').join(''));
 }
 function bindModel() {
-  $('importModel')?.addEventListener('click', async () => { const file = $('modelFile')?.files[0]; if (!file) return alert('请选择模型文件'); try { const bytes = new Uint8Array(await file.arrayBuffer()); let binary = ''; for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index,index + 0x8000)); const result = await api('/api/model/import', { method:'POST', body:JSON.stringify({ filename:file.name, data_base64:btoa(binary) }) }); notice('importStatus', '已导入 ' + result.model.name + '，运行点 ' + result.points + ' 个'); await refresh(); } catch (error) { notice('importStatus', error.message, true); } });
+  $('importModel')?.addEventListener('click', async () => { const file = $('modelFile')?.files[0]; if (!file) return alert('请选择模型文件'); try { const bytes = new Uint8Array(await file.arrayBuffer()); let binary = ''; for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index,index + 0x8000)); const result = await api('/api/model/import', { method:'POST', body:JSON.stringify({ filename:file.name, data_base64:btoa(binary) }) }); notice('importStatus', '已导入 ' + result.model.name + '，运行点 ' + result.points + ' 个' + ((result.model.metadata?.warnings || []).length ? '；' + result.model.metadata.warnings.join('；') : '')); await refresh(); } catch (error) { notice('importStatus', error.message, true); } });
   $('generatePoints')?.addEventListener('click', async () => { try { const result = await api('/api/scdfe/points/generate', { method:'POST', body:JSON.stringify({ replace:true }) }); notice('pointTableStatus', 'scdfe_s 已生成 ' + result.total + ' 个点'); await refresh(); } catch (error) { notice('pointTableStatus', error.message, true); } });
 }
 
 function renderCurves(snapshot) {
   const weather = snapshot.weather || {}, generation = snapshot.generation || {}; setHtml('curveSnapshot', '<dl><div><dt>风速</dt><dd>' + fmt(weather.wind_speed_mps,2) + ' m/s</dd></div><div><dt>太阳辐照</dt><dd>' + fmt(weather.solar_irradiance_w_m2,0) + ' W/m²</dd></div><div><dt>气温</dt><dd>' + fmt(weather.air_temp_c,1) + ' °C</dd></div><div><dt>负荷</dt><dd>' + fmt(weather.load_kw,1) + ' kW</dd></div></dl>'); setHtml('curveGeneration', '<dl><div><dt>风电</dt><dd>' + fmt(generation.wind_kw,1) + ' kW</dd></div><div><dt>光伏</dt><dd>' + fmt(generation.pv_kw,1) + ' kW</dd></div><div><dt>柴油机</dt><dd>' + fmt(generation.diesel_kw,1) + ' kW</dd></div><div><dt>储能</dt><dd>' + fmt(generation.battery_kw,1) + ' kW</dd></div></dl>');
-  const editor = $('curveEditor'); if (editor && document.activeElement !== editor && state.curves) editor.value = json(state.curves);
+  // Keep unsaved curve edits intact across realtime refreshes.
 }
-async function loadCurves() { const result = await api('/api/curves'); state.curves = result.curves; if ($('curveEditor')) $('curveEditor').value = json(result.curves); setText('curveStatus','已读取'); }
-function bindCurves() { $('loadCurves')?.addEventListener('click', () => loadCurves().catch(error => notice('curveMessage',error.message,true))); $('saveCurves')?.addEventListener('click', async () => { try { const curves = JSON.parse($('curveEditor').value); await api('/api/curves',{method:'POST',body:JSON.stringify({curves})}); state.curves = curves; notice('curveMessage','曲线已保存，后续仿真步进将使用新曲线'); setText('curveStatus','已保存'); await refresh(); } catch (error) { notice('curveMessage','曲线 JSON 无效或保存失败：' + error.message,true); } }); loadCurves().catch(error => notice('curveMessage',error.message,true)); }
+let curveEditorKey = '', curveEditorPage = 0, curveEditorCount = 0;
+const curveEditorSize = 6;
+function storeCurvePage() {
+  if (!curveEditorKey) return;
+  const rows = JSON.parse($('curveEditor').value);
+  if (!Array.isArray(rows)) throw new Error('当前页应为曲线记录数组');
+  state.curves[curveEditorKey].splice(curveEditorPage*curveEditorSize, curveEditorCount, ...rows);
+  curveEditorCount = rows.length;
+}
+function showCurvePage(reset=false) {
+  if (reset) {
+    curveEditorKey = Object.keys(state.curves)[0] || 'weather';
+    curveEditorPage = 0;
+    $('curveEditorSeries').replaceChildren(...Object.keys(state.curves).map(key => {
+      const option=document.createElement('option');option.value=key;option.textContent=key;return option;
+    }));
+  }
+  const rows=state.curves[curveEditorKey] || [], pages=Math.max(1,Math.ceil(rows.length/curveEditorSize));
+  curveEditorPage=Math.min(curveEditorPage,pages-1);
+  const visible=rows.slice(curveEditorPage*curveEditorSize,(curveEditorPage+1)*curveEditorSize);
+  curveEditorCount=visible.length;
+  $('curveEditor').value='[\n'+visible.map(row=>'  '+JSON.stringify(row)).join(',\n')+'\n]';
+  $('curveEditorSeries').value=curveEditorKey;
+  $('curveEditorPage').textContent=(curveEditorPage+1)+' / '+pages;
+  $('curveEditorPrevious').disabled=curveEditorPage===0;
+  $('curveEditorNext').disabled=curveEditorPage===pages-1;
+}
+async function loadCurves() {
+  const result=await api('/api/curves'); state.curves=result.curves; showCurvePage(true); setText('curveStatus','已读取');
+}
+function bindCurves() {
+  $('loadCurves')?.addEventListener('click',()=>loadCurves().catch(error=>notice('curveMessage',error.message,true)));
+  $('curveEditorSeries').onchange=()=>{
+    const key=$('curveEditorSeries').value;
+    try{storeCurvePage();curveEditorKey=key;curveEditorPage=0;showCurvePage();}
+    catch(error){$('curveEditorSeries').value=curveEditorKey;notice('curveMessage',error.message,true);}
+  };
+  for(const [id,step] of [['curveEditorPrevious',-1],['curveEditorNext',1]]) $(id).onclick=()=>{
+    try{storeCurvePage();curveEditorPage+=step;showCurvePage();}catch(error){notice('curveMessage',error.message,true);}
+  };
+  $('saveCurves')?.addEventListener('click',async()=>{
+    try{storeCurvePage();const result=await api('/api/curves',{method:'POST',body:JSON.stringify({curves:state.curves})});
+      state.curves=result.curves;showCurvePage();notice('curveMessage','所有曲线已保存，实时仿真已更新');setText('curveStatus','已保存');await refresh();
+    }catch(error){notice('curveMessage','保存失败：'+error.message,true);}
+  });
+  loadCurves().catch(error=>notice('curveMessage',error.message,true));
+}
 const curvePresets = {
   daylight: { weather: [{ minute: 0, wind_speed_mps: 6, solar_irradiance_w_m2: 0, air_temp_c: -22, load_kw: 155 }, { minute: 720, wind_speed_mps: 5, solar_irradiance_w_m2: 900, air_temp_c: -14, load_kw: 185 }, { minute: 1439, wind_speed_mps: 6, solar_irradiance_w_m2: 0, air_temp_c: -22, load_kw: 155 }], load: [], diesel: [{ minute: 0, diesel_kw: 80 }, { minute: 720, diesel_kw: 60 }], battery: [{ minute: 0, battery_kw: -15 }, { minute: 720, battery_kw: 20 }] },
   storm: { weather: [{ minute: 0, wind_speed_mps: 18, solar_irradiance_w_m2: 0, air_temp_c: -25, load_kw: 140 }, { minute: 720, wind_speed_mps: 24, solar_irradiance_w_m2: 80, air_temp_c: -18, load_kw: 160 }, { minute: 1439, wind_speed_mps: 18, solar_irradiance_w_m2: 0, air_temp_c: -25, load_kw: 140 }], load: [], diesel: [{ minute: 0, diesel_kw: 120 }], battery: [{ minute: 0, battery_kw: 0 }] },
@@ -99,8 +164,8 @@ const curvePresets = {
   island: { weather: [{ minute: 0, wind_speed_mps: 8, solar_irradiance_w_m2: 0, air_temp_c: -20, load_kw: 135 }, { minute: 720, wind_speed_mps: 9, solar_irradiance_w_m2: 650, air_temp_c: -14, load_kw: 150 }, { minute: 1439, wind_speed_mps: 8, solar_irradiance_w_m2: 0, air_temp_c: -20, load_kw: 135 }], load: [], diesel: [{ minute: 0, diesel_kw: 100 }], battery: [{ minute: 0, battery_kw: -55 }, { minute: 360, battery_kw: 15 }, { minute: 1080, battery_kw: 75 }] }
 };
 function bindCurveTools() {
-  $('applyCurvePreset')?.addEventListener('click', () => { const key = $('curvePreset')?.value; if (!key || !curvePresets[key]) return notice('curveMessage', '请选择曲线预设', true); state.curves = curvePresets[key]; $('curveEditor').value = json(state.curves); notice('curveMessage', '预设已填充，请点击保存曲线生效'); });
-  $('downloadCurves')?.addEventListener('click', () => { try { downloadJson('simulator-curves.json', JSON.parse($('curveEditor').value)); } catch (error) { notice('curveMessage', '当前曲线 JSON 无效', true); } });
+  $('applyCurvePreset')?.addEventListener('click', () => { const key = $('curvePreset')?.value; if (!key || !curvePresets[key]) return notice('curveMessage', '请选择曲线预设', true); state.curves = JSON.parse(JSON.stringify(curvePresets[key])); showCurvePage(true); notice('curveMessage', '预设已填充，请点击保存曲线生效'); });
+  $('downloadCurves')?.addEventListener('click', () => { try { storeCurvePage(); downloadJson('simulator-curves.json', state.curves); } catch (error) { notice('curveMessage', '当前曲线 JSON 无效', true); } });
 }
 
 function renderDevices(snapshot) {

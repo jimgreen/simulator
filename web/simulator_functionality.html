@@ -131,6 +131,8 @@
       <button data-tab="engine" role="tab">数字孪生引擎</button>
       <button data-tab="web" role="tab">Web 页面</button>
       <button data-tab="model" role="tab">模型与曲线</button>
+      <button data-tab="external" role="tab">外部数据</button>
+      <button data-tab="diagram" role="tab">图形与右键</button>
       <button data-tab="iec104" role="tab">SCADA / IEC 104</button>
       <button data-tab="api" role="tab">API 参考</button>
       <button data-tab="run" role="tab">运行指引</button>
@@ -160,6 +162,24 @@
         <p class="footer-note">文档对应仓库：D:\codex\simulator · 访问路径：/simulator_functionality.html</p>
       </section>
 
+      <section class="panel" data-panel="external">
+        <div class="lead"><div><h2>外部模型与边界</h2><p>参考 power_simu_web 定义包，按设备身份绑定模型、曲线和图形。</p></div></div>
+        <div class="grid grid-2">
+          <article class="card"><h3>模型定义 ZIP</h3><p>model.e 优先；支持 meas.e、control.e、curves.e / curves.json、diagram.svg。单个 E 文件与 simulator JSON 也可导入。AC/DC 节点编号隔离，保留设备 block、idx、名称和参数。新模型没有 SVG 时清空旧图形。</p></article>
+          <article class="card"><h3>风光荷温边界</h3><p>CSV、TSV、JSON、weather.e、curves.e 和 ZIP；支持 UTF-8 / GB18030。时间为日内分钟或 HH:MM[:SS]。支持按名称匹配负荷、按设备类型与名称匹配源功率，部分通道导入保留其他通道。</p></article>
+          <article class="card"><h3>操作路径</h3><p>模型管理 → 导入定义包 → 曲线设置 / 外部边界导入 → 预览分页 → 实时效果。编辑器按曲线与记录分页，保存后立即重算；错误时间、重复时刻和无效数值会拒绝应用。</p></article>
+          <article class="card"><h3>计算范围</h3><p>功率按设备边界、风光能力和投运状态计算，当前仍为简化功率平衡。节点电压、无功、支路潮流等未计算量显示 --。储能 SOC 为系统汇总值；氢热源曲线保留并提示，暂不参与计算。</p></article>
+        </div>
+      </section>
+      <section class="panel" data-panel="diagram">
+        <div class="lead"><div><h2>电网图形与右键菜单</h2><p>独立页面 /diagram.html · 滚轮缩放 · 拖拽平移 · 设备定位</p></div></div>
+        <div class="grid grid-2">
+          <article class="card"><h3>设备右键</h3><p>查看实时状态、投入与退出。开关增加合闸与分闸，显示 closed_status 实际合位。操作后同步拓扑、重算并调用 scdfe_s 桥接发布遥测遥信；暂停状态下也可操作。</p></article>
+          <article class="card"><h3>空白右键</h3><p>适应窗口、放大、缩小、显示 / 隐藏测量数值、刷新。Esc 关闭菜单，菜单自动限制在可视窗口内。工具栏提供同样的常用入口。</p></article>
+          <article class="card"><h3>SVG 实时驱动</h3><p>dev-id、use[id][name] 匹配设备；dev 下的 mti 优先于 mt，支持命名测量。实时更新功率、SOC、状态；退出灰显，开关切换 _state_0 / _state_1 图符。图形版本变化时才重编译绑定。</p></article>
+          <article class="card"><h3>使用边界</h3><p>上传 SVG 的脚本、事件与外部活动资源会清除，实时更新由网页脚本提供。图形可随 ZIP 一并导入，也可单独加载。导入内容与近期操作记录驻留内存，重启后需重新导入。</p></article>
+        </div>
+      </section>
       <section class="panel" data-panel="engine">
         <div class="lead"><div><h2>数字孪生引擎</h2><p>状态由一个线程安全的 DigitalTwin 管理，Web 和 IEC 104 共用同一份快照。</p></div><span class="tag">状态单一来源</span></div>
         <div class="grid grid-2">

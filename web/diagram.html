@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>数字孪生 · 电网图形</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/diagram.css"></head>
+<body data-page="diagram">
+<main class="shell diagram-shell">
+  <header class="topbar"><div><span class="eyebrow">LIVE NETWORK</span><h1>电网图形</h1><p>实时状态 · 图元测量 · 右键操作</p></div><div class="clock"><strong id="simTime">--:--:--</strong><span id="runState">连接中</span><div class="clock-actions"><button data-clock="start">启动</button><button data-clock="pause">暂停</button><button data-clock="step">单步</button></div></div></header>
+  <nav class="nav"><a href="/">总览</a><a href="/model.html">模型管理</a><a href="/curves.html">曲线设置</a><a class="active" href="/diagram.html">电网图形</a><a href="/devices.html">设备与拓扑</a><a href="/scada.html">SCADA / IEC 104</a></nav>
+  <section class="diagram-toolbar" aria-label="图形工具"><input id="svgFile" type="file" accept=".svg" aria-label="选择 SVG 图形"><button id="importSvg" class="primary">加载 SVG</button><button id="fitDiagram">适应窗口</button><button id="zoomIn" aria-label="放大">＋</button><button id="zoomOut" aria-label="缩小">－</button><button id="refreshDiagram">刷新</button><label><input id="showValues" type="checkbox" checked>显示数值</label><span id="bindingStats" class="badge">未加载</span></section>
+  <div class="diagram-search"><input id="deviceSearch" placeholder="输入设备名称或编号定位" aria-label="设备名称或编号" list="deviceOptions"><datalist id="deviceOptions"></datalist><button id="locateDevice">定位设备</button><button id="selectedMenu" disabled>设备操作</button><span id="diagramSource"></span></div>
+  <section id="diagramViewport" aria-label="电网图形画布" tabindex="0"><div id="svgHost"></div><div id="diagramEmpty"><strong>加载电网图形</strong><p>导入包含 diagram.svg 的模型 ZIP，或在上方选择 SVG。</p><a href="/model.html">前往模型管理</a></div><div id="diagramTooltip" hidden></div></section>
+  <footer class="diagram-footer"><span id="diagramNotice" role="status">滚轮缩放 · 拖拽平移 · 单击选择 · 右键操作 · Esc 关闭菜单</span><span id="zoomLabel">100%</span></footer>
+</main>
+<div id="diagramMenu" class="diagram-menu" role="menu" hidden></div>
+<dialog id="deviceDialog"><div class="card-title"><span id="deviceTitle">设备信息</span><button id="closeDeviceDialog" aria-label="关闭设备信息">关闭</button></div><dl id="deviceDetails"></dl><p class="hint">“--” 表示当前计算引擎未提供该测量。功率来自边界驱动的简化平衡模型。</p></dialog>
+<script src="/diagram.js"></script>
+</body></html>

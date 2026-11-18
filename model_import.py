@@ -1,86 +1,474 @@
-"""Model package import and normalization for the standalone simulator.
-
-The importer accepts the lightweight JSON package used by this project and
-the definition ZIP exported by ``power_simu_web``.  E-file blocks are parsed
-to recover device names, operating states and topology when a package does
-not contain a JSON manifest.
-"""
-
+"""Import simulator JSON and power_simu_web E-file definition packages."""
 from __future__ import annotations
 
+from bisect import bisect_right
+from copy import deepcopy
+import csv
 import io
 import json
+import math
 from pathlib import Path
 import re
-import zipfile
 from typing import Any, Mapping
+import xml.etree.ElementTree as ET
+import zipfile
+
+MAX_INPUT = 32 * 1024 * 1024
 
 
-def _number(value: Any, default: float = 0.0) -> float:
+def _number(value, default=0.0):
     try:
-        return float(str(value).replace("%", ""))
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError("数值必须有限")
+        return result
     except (TypeError, ValueError):
         return float(default)
 
 
-def _bool(value: Any, default: bool = True) -> bool:
-    if isinstance(value, str):
-        token = value.strip().lower()
-        if token in {"0", "false", "off", "no", "open", "退出", "分"}:
-            return False
-        if token in {"1", "true", "on", "yes", "closed", "投入", "合"}:
-            return True
+def _bool(value, default=True):
     if value is None:
-        return bool(default)
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "off", "no", "open", "退出", "分"}
     return bool(value)
 
 
-def _ebook_blocks(text: str) -> dict[str, list[dict[str, str]]]:
-    blocks: dict[str, list[dict[str, str]]] = {}
-    active = None
-    headers: list[str] = []
+def _ebook_blocks(text):
+    blocks, active, headers = {}, None, []
     for raw in text.splitlines():
         line = raw.strip()
-        if not line:
-            continue
         if line.startswith("<") and line.endswith(">"):
-            tag = line[1:-1].strip()
-            if tag.startswith("/"):
-                active = None
-            else:
-                active = tag
+            active = None if line.startswith("</") else line[1:-1].strip()
+            if active:
                 blocks.setdefault(active, [])
             headers = []
-            continue
-        if active is None:
-            continue
-        if line.startswith("@"):
-            headers = line[1:].strip().split()
-        elif line.startswith("#") and headers:
-            values = line[1:].strip().split()
-            if len(values) < len(headers):
-                values.extend([""] * (len(headers) - len(values)))
+        elif active and line.startswith("@"):
+            headers = line[1:].split()
+        elif active and headers and line.startswith("#"):
+            values = line[1:].split()
+            if len(values) != len(headers):
+                raise ValueError(f"E 文件 {active} 列数不匹配")
             blocks[active].append(dict(zip(headers, values)))
     return blocks
 
 
-def _device_family(block: str, row: Mapping[str, Any]) -> str:
-    text = f"{block} {row.get('name', '')} {row.get('dev_type', '')}".lower()
-    if any(token in text for token in ("wind", "风", "wtg")):
-        return "wind"
-    if any(token in text for token in ("pv", "光伏", "solar")):
-        return "pv"
-    if any(token in text for token in ("diesel", "柴油", "柴发")):
-        return "diesel"
-    if any(token in text for token in ("storage", "储能", "battery", "蓄电")):
-        return "battery"
-    if block in {"ACLoad", "DCLoad"} or any(token in text for token in ("load", "负荷")):
-        return "load"
-    if block in {"ACSwitch", "ACBreak", "DCSwitch", "DCBreak"} or any(token in text for token in ("switch", "开关", "断路器")):
-        return "switch"
-    if block.endswith("Node") or block in {"ACRealBs", "DCRealBs"}:
+def _device_family(block, row):
+    # Structural identity must win over names such as "wind-node".
+    if block.endswith("Node") or block.endswith("RealBs"):
         return "node"
-    return "other"
+    if block in {"ACBreak", "DCBreak", "ACSwitch", "DCSwitch"}:
+        return "switch"
+    if block in {"ACLoad", "DCLoad"}:
+        return "load"
+    if block not in {"ACGenerator", "DCGenerator"}:
+        return "other"
+    text = f"{row.get('name', '')} {row.get('dev_type', '')}".lower()
+    for family, tokens in (
+        ("battery", ("storage", "储能", "battery", "蓄电")),
+        ("wind", ("wind", "风", "wtg")),
+        ("pv", ("pv", "光伏", "solar")),
+        ("diesel", ("diesel", "柴油", "柴发")),
+    ):
+        if any(token in text for token in tokens):
+            return family
+    return "generator"
+
+
+def _read_archive(data):
+    if len(data) > MAX_INPUT:
+        raise ValueError("文件不能超过 32 MB")
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            entries = [e for e in archive.infolist() if not e.is_dir()]
+            if len(entries) > 200 or sum(e.file_size for e in entries) > MAX_INPUT:
+                raise ValueError("ZIP 解压内容超过限制（200 个文件 / 32 MB）")
+            files = {}
+            for entry in entries:
+                name = Path(entry.filename.replace("\\", "/")).name.lower()
+                if name in files:
+                    raise ValueError(f"ZIP 包含重名文件: {name}")
+                files[name] = archive.read(entry)
+            return files
+    except (zipfile.BadZipFile, RuntimeError, OSError) as exc:
+        raise ValueError(f"ZIP 无法解析: {exc}") from exc
+
+
+def _decode(data):
+    if not data or len(data) > MAX_INPUT:
+        raise ValueError("文件为空或超过 32 MB")
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+    raise ValueError("文件编码应为 UTF-8 或 GB18030")
+
+
+def _time_minutes(value):
+    text = str(value).strip()
+    try:
+        if ":" in text:
+            parts = [float(p) for p in text.split(":")]
+            if len(parts) not in (2, 3) or not 0 <= parts[1] < 60 or (len(parts) == 3 and not 0 <= parts[2] < 60):
+                raise ValueError()
+            number = parts[0] * 60 + parts[1] + (parts[2] / 60 if len(parts) == 3 else 0)
+        else:
+            number = float(text)
+        if not math.isfinite(number) or not 0 <= number <= 1440:
+            raise ValueError()
+        return number
+    except (ValueError, TypeError):
+        raise ValueError(f"无效日内时间: {value}，应为 0–1440 分钟或 HH:MM:SS") from None
+
+
+ALIASES = {
+    "minute": ("minute", "time_minutes", "minutes", "time", "时间", "分钟"),
+    "wind_speed_mps": ("wind_speed_mps", "wind_speed", "wind", "风速"),
+    "solar_irradiance_w_m2": ("solar_irradiance_w_m2", "solar_irradiance", "irradiance", "solar", "ghi", "辐照度", "光照"),
+    "air_temp_c": ("air_temp_c", "air_temperature_c", "temperature_c", "temperature", "temp", "temp_c", "温度", "气温"),
+    "air_pressure_hpa": ("air_pressure_hpa", "pressure", "气压"),
+    "humidity_pct": ("humidity_pct", "humidity", "湿度"),
+    "load_kw": ("load_kw", "load", "active_load_kw", "demand_kw", "负荷"),
+    "diesel_kw": ("diesel_kw", "柴发"),
+    "battery_kw": ("battery_kw", "储能"),
+}
+WEATHER_FIELDS = set(ALIASES) - {"minute", "diesel_kw", "battery_kw"}
+
+
+def _rows(rows, fields=None):
+    if not isinstance(rows, list):
+        raise ValueError("曲线必须为数据行数组")
+    result, times = [], set()
+    aliases = {alias.lower(): key for key, names in ALIASES.items() for alias in names}
+    for index, item in enumerate(rows, 1):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"第 {index} 行必须是对象")
+        raw = {aliases.get(str(k).strip().lower(), str(k)): v for k, v in item.items()}
+        if "minute" not in raw:
+            raise ValueError(f"第 {index} 行缺少时间列")
+        minute = _time_minutes(raw["minute"])
+        row = {"minute": minute}
+        for key in (fields if fields is not None else WEATHER_FIELDS | {"diesel_kw", "battery_kw"}):
+            value = raw.get(key)
+            if value is None or str(value).strip().upper() in {"", "NA", "N/A", "NULL", "--"}:
+                continue
+            try:
+                number = float(value)
+                if not math.isfinite(number):
+                    raise ValueError()
+            except (TypeError, ValueError):
+                raise ValueError(f"第 {index} 行 {key} 不是有限数值: {value}") from None
+            if key in {"wind_speed_mps", "solar_irradiance_w_m2", "load_kw", "diesel_kw", "air_pressure_hpa"} and number < 0:
+                raise ValueError(f"第 {index} 行 {key} 不能为负")
+            if key == "humidity_pct" and not 0 <= number <= 100:
+                raise ValueError("湿度必须为 0–100%")
+            row[key] = number
+        if len(row) == 1:
+            continue
+        if minute in times:
+            raise ValueError(f"重复时间: {minute} 分钟")
+        times.add(minute)
+        result.append(row)
+    return sorted(result, key=lambda row: row["minute"])
+
+
+def _normalize_curves(payload, *, defaults=True):
+    source = payload.get("curves", payload)
+    if not isinstance(source, Mapping):
+        raise ValueError("curves 必须是对象")
+    curves = _default_curves() if defaults else {}
+    for key, fields in (("weather", WEATHER_FIELDS), ("load", {"load_kw"}), ("diesel", {"diesel_kw"}), ("battery", {"battery_kw"})):
+        if key in source:
+            curves[key] = _rows(source[key], fields)
+    for name, rows in source.get("loads", {}).items():
+        curves["load@" + str(name)] = _rows(rows, {"p_kw"})
+    for entry in source.get("sources", []):
+        if entry.get("set_type", "p_set") != "p_set" or entry.get("family", "electric") != "electric":
+            key = "unapplied@" + str(entry.get("dev_type")) + "@" + str(entry.get("dev_name")) + "@" + str(entry.get("set_type"))
+            curves[key] = _rows(entry["points"], {"value"})
+            continue
+        factor = {"kw": 1, "mw": 1000, "w": .001}.get(str(entry.get("unit", "kW")).lower())
+        if factor is None:
+            raise ValueError("源曲线功率单位应为 kW、MW 或 W")
+        key = "source@" + str(entry["dev_type"]) + "@" + str(entry.get("dev_name", entry.get("name")))
+        curves[key] = _rows(entry["points"], {"value"})
+        for row in curves[key]:
+            if "value" in row:
+                row["value"] *= factor
+    for key, rows in source.items():
+        if key.startswith(("load@", "source@", "unapplied@")):
+            curves[key] = _rows(rows, {"p_kw"} if key.startswith("load@") else {"value"})
+    return curves
+
+
+def interpolate(rows, field, minute):
+    values = [(row["minute"], row[field]) for row in rows if field in row]
+    if not values:
+        return None
+    times = [pair[0] for pair in values]
+    index = bisect_right(times, minute)
+    if index == 0:
+        return values[0][1]
+    if index == len(values):
+        return values[-1][1]
+    left, right = values[index - 1], values[index]
+    return left[1] + (right[1] - left[1]) * (minute - left[0]) / (right[0] - left[0])
+
+
+def merge_curve_fields(old, new):
+    """Replace only supplied channels, retaining other time-series exactly."""
+    fields = set().union(*(row.keys() for row in old + new)) - {"minute"}
+    replaced = set().union(*(row.keys() for row in new)) - {"minute"}
+    series = {field: new if field in replaced else old for field in fields}
+    times = sorted({row["minute"] for rows in series.values() for row in rows})
+    # Compile each channel once: O(fields * points log(points)), not quadratic.
+    indexed = {field: [(r["minute"], r[field]) for r in rows if field in r] for field, rows in series.items()}
+    positions = {field: [p[0] for p in values] for field, values in indexed.items()}
+    result = []
+    for minute in times:
+        row = {"minute": minute}
+        for field, values in indexed.items():
+            index = bisect_right(positions[field], minute)
+            if index == 0:
+                row[field] = values[0][1]
+            elif index == len(values):
+                row[field] = values[-1][1]
+            else:
+                left, right = values[index - 1], values[index]
+                row[field] = left[1] + (right[1] - left[1]) * (minute - left[0]) / (right[0] - left[0])
+        result.append(row)
+    return result
+
+
+def load_boundary_bytes(data, *, source_name="boundary.csv"):
+    if source_name.lower().endswith(".zip") or data[:2] == b"PK":
+        files = _read_archive(data)
+        candidates = [name for name in ("curves.e", "curves.json", "boundary.json", "boundary.csv", "weather.e", "weather.csv") if name in files]
+        if not candidates:
+            candidates = sorted(name for name in files if name.endswith((".json", ".csv", ".tsv", ".e")))
+        if len(candidates) != 1 and not any(name in files for name in ("curves.e", "curves.json")):
+            raise ValueError("边界 ZIP 应包含一个可识别的边界文件")
+        name = candidates[0] if candidates else ""
+        if not name:
+            raise ValueError("ZIP 中没有边界数据")
+        result = load_boundary_bytes(files[name], source_name=name)
+        result["source"] = source_name + ":" + name
+        return result
+    text = _decode(data)
+    if text.lstrip().startswith("<"):
+        blocks = _ebook_blocks(text)
+        payload = {}
+        if "EnvironmentCurve" in blocks or "Weather" in blocks:
+            payload["weather"] = blocks.get("EnvironmentCurve", blocks.get("Weather"))
+        loads = {}
+        for row in blocks.get("LoadCurve", []):
+            loads.setdefault(row["load_name"], []).append(row)
+        payload["loads"] = loads
+        sources = {}
+        for row in blocks.get("SourceCurve", []):
+            key = (row["dev_type"], row["dev_name"], row["set_type"])
+            entry = sources.setdefault(key, {**row, "points": []})
+            entry["points"].append({"minute": row["minute"], "value": row["value"]})
+        payload["sources"] = list(sources.values())
+    elif text.lstrip().startswith(("{", "[")):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"边界 JSON 无效: {exc}") from exc
+    else:
+        delimiter = "\t" if "\t" in text.splitlines()[0] else ","
+        payload = list(csv.DictReader(io.StringIO(text), delimiter=delimiter))
+    if isinstance(payload, Mapping) and ("rows" in payload or "data" in payload):
+        payload = payload.get("rows", payload.get("data"))
+    if isinstance(payload, list):
+        rows = _rows(payload)
+        payload = {key: [{"minute": r["minute"], **{f: r[f] for f in fields if f in r}} for r in rows if any(f in r for f in fields)]
+                   for key, fields in (("weather", WEATHER_FIELDS), ("diesel", {"diesel_kw"}), ("battery", {"battery_kw"}))}
+    if not isinstance(payload, Mapping):
+        raise ValueError("边界数据必须为曲线对象或数据行数组")
+    curves = _normalize_curves(payload, defaults=False)
+    if not any(curves.values()):
+        raise ValueError("边界数据没有可用记录或已识别数据列")
+    return {"source": source_name, "curves": curves, "rows": sum(map(len, curves.values())),
+            "warnings": [f"已保留但未参与电力仿真: {key[10:]}" for key in curves if key.startswith("unapplied@")]}
+
+
+def sanitize_svg(data, *, source_name="diagram.svg"):
+    if len(data) > 4 * 1024 * 1024:
+        raise ValueError("SVG 文件不能超过 4 MB")
+    text = _decode(data)
+    if re.search(r"<!DOCTYPE|<!ENTITY", text, re.I):
+        raise ValueError("SVG 不支持 DTD 或实体声明")
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as exc:
+        raise ValueError(f"SVG XML 无效: {exc}") from exc
+    def local(tag):
+        return tag.rsplit("}", 1)[-1]
+    if local(root.tag).lower() != "svg":
+        raise ValueError("根元素必须是 SVG")
+    forbidden = {"script", "foreignobject", "iframe", "object", "embed", "animate", "animatetransform", "animatemotion", "set", "a"}
+    def safe_style(value):
+        return not re.search(r"@import|expression|javascript|\\|url\s*\(\s*['\"]?(?!#)[^)]", value, re.I)
+    for parent in root.iter():
+        for child in list(parent):
+            if local(child.tag).lower() in forbidden or (local(child.tag).lower() == "style" and not safe_style(child.text or "")):
+                parent.remove(child)
+        for key, value in list(parent.attrib.items()):
+            name = local(key).lower()
+            if name.startswith("on") or name == "base" or (name in {"href", "src"} and not value.strip().startswith("#")) or not safe_style(value):
+                del parent.attrib[key]
+    ET.register_namespace("", "http://www.w3.org/2000/svg")
+    ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
+    svg = ET.tostring(root, encoding="unicode")
+    return {"source": source_name, "svg": svg, "bytes": len(svg.encode("utf-8"))}
+
+
+def _from_ebook(files, source_name):
+    blocks = _ebook_blocks(_decode(files["model.e"]))
+    info = (blocks.get("Model") or [{}])[0]
+    factor = {"kw": 1, "mw": 1000, "w": .001}.get(info.get("p_unit", "kW").lower())
+    if factor is None:
+        raise ValueError("E 模型 p_unit 应为 kW、MW 或 W")
+    devices, nodes, edges = [], [], []
+    for block, rows in blocks.items():
+        for index, row in enumerate(rows, 1):
+            if "run_stat" not in row:
+                continue
+            idx = str(row.get("idx", index))
+            family = _device_family(block, row)
+            prefix = "AC" if block.startswith("AC") else "DC" if block.startswith("DC") else re.sub(r"(Node|Source|Load|Storage)$", "", block)
+            node = row.get("node", row.get("i_node", ""))
+            node_id = f"{prefix}Node:{node}" if node else ""
+            device_id = f"{block}:{idx}"
+            device = {
+                "id": device_id, "idx": idx, "name": row.get("name", device_id),
+                "type": family, "block": block, "dev_type": row.get("dev_type", ""),
+                "aliases": [f"{block}-{idx}", device_id], "fields": dict(row),
+                "node": node_id, "run": _bool(row.get("run_stat", 1)),
+                "rated_kw": _number(row.get("rated_capacity", row.get("p_max", 0))) * factor,
+                "p_max_kw": _number(row.get("p_max", row.get("rated_capacity", 0))) * factor,
+                "p_set_kw": _number(row.get("p_set")) * factor,
+                "closed_status": _bool(row.get("closed_status", row.get("status", 1))),
+            }
+            devices.append(device)
+            if block.endswith("Node"):
+                device["node"] = device_id
+                nodes.append({"id": device_id, "name": device["name"], "run": device["run"]})
+            if "i_node" in row and "j_node" in row:
+                edges.append({"id": device_id, "from": f"{prefix}Node:{row['i_node']}", "to": f"{prefix}Node:{row['j_node']}", "run": device["run"], "closed": device["closed_status"], "kind": block})
+            elif "ac_node" in row and "dc_node" in row:
+                edges.append({"id": device_id, "from": f"ACNode:{row['ac_node']}", "to": f"DCNode:{row['dc_node']}", "run": device["run"], "closed": True, "kind": block})
+    if not devices:
+        raise ValueError("E 模型没有可识别的设备或节点")
+    indexed = {d["id"]: d for d in devices}
+    for block, rows in blocks.items():
+        if block in {"ACStorageGen", "DCStorageGen", "ACWindGen", "DCWindGen", "ACPVGen", "DCPVGen", "ACDieselGen", "DCDieselGen"}:
+            prefix = block[:2]
+            for row in rows:
+                device = indexed.get(f"{prefix}Generator:{row.get('idx_' + prefix.lower() + 'generator')}")
+                if device:
+                    device["parameters"] = dict(row)
+                    if "energy_capacity" in row:
+                        device["energy_kwh"] = _number(row["energy_capacity"])
+    curves = _default_curves()
+    for name in ("curves.e", "curves.json", "weather.e"):
+        if name in files:
+            curves.update(load_boundary_bytes(files[name], source_name=name)["curves"])
+            break
+    return normalize_model({
+        "name": info.get("name") or Path(source_name).stem,
+        "devices": devices, "topology": {"nodes": nodes, "edges": edges},
+        "curves": curves,
+        "measurements": _ebook_blocks(_decode(files["meas.e"])).get("Measurement", []) if "meas.e" in files else [],
+        "controls": _ebook_blocks(_decode(files["control.e"])) if "control.e" in files else {},
+        "metadata": {"format": "power_simu_web-e-file", "blocks": list(blocks), "units": info},
+    }, source_name=source_name)
+
+
+def normalize_model(payload, *, source_name="model.json"):
+    if not isinstance(payload.get("devices"), list):
+        raise ValueError("模型必须包含 devices 数组")
+    result = deepcopy(dict(payload))
+    devices, ids = [], set()
+    aliases = {"storage": "battery", "ess": "battery", "solar": "pv", "photovoltaic": "pv", "wind_turbine": "wind", "wtg": "wind", "diesel_generator": "diesel"}
+    for index, item in enumerate(payload["devices"], 1):
+        if not isinstance(item, Mapping):
+            raise ValueError("设备必须是对象")
+        device = deepcopy(dict(item))
+        device["id"] = str(item.get("id", item.get("name", f"device-{index}")))
+        if device["id"] in ids:
+            raise ValueError(f"重复设备 ID: {device['id']}")
+        ids.add(device["id"])
+        device["name"] = str(item.get("name", device["id"]))
+        family = str(item.get("type", item.get("family", "other"))).lower()
+        if not item.get("block") and family in {"generator", "gen"}:
+            family = "diesel"
+        device["type"] = aliases.get(family, family)
+        device["block"] = str(item.get("block", ""))
+        device["node"] = str(item.get("node", ""))
+        device["run"] = _bool(item.get("run", item.get("run_stat", True)))
+        for field, fallback in (("rated_kw", "rated_capacity"), ("p_max_kw", "p_max"), ("energy_kwh", "capacity_kwh")):
+            device[field] = _number(item.get(field, item.get(fallback, 0)))
+        if not device["rated_kw"]:
+            device["rated_kw"] = device["p_max_kw"]
+        device["closed_status"] = _bool(item.get("closed_status", item.get("status", True)))
+        device["aliases"] = list(item.get("aliases", []))
+        parameters = device.get("parameters", {})
+        for field in ("rated_wind_speed", "cut_in_wind_speed", "cut_out_wind_speed", "temperature_coefficient", "soc"):
+            if field in parameters:
+                try:
+                    value = float(parameters[field])
+                    if not math.isfinite(value):
+                        raise ValueError()
+                except (ValueError, TypeError):
+                    raise ValueError(f"{device['id']} 参数 {field} 必须是有限数值") from None
+                parameters[field] = value
+        devices.append(device)
+    topology = deepcopy(payload.get("topology") or {"nodes": [], "edges": []})
+    for key in ("nodes", "edges"):
+        if not isinstance(topology.get(key, []), list) or not all(isinstance(r, dict) for r in topology.get(key, [])):
+            raise ValueError(f"topology.{key} 必须是对象数组")
+        topology.setdefault(key, [])
+    result.update(name=str(payload.get("name") or payload.get("model_name") or Path(source_name).stem),
+                  source=source_name, devices=devices, topology=topology,
+                  curves=_normalize_curves(payload), points=deepcopy(payload.get("points", [])))
+    result["metadata"] = {**payload.get("metadata", {}), "device_count": len(devices)}
+    result["metadata"].setdefault("format", "simulator-json")
+    result["metadata"]["warnings"] = [f"已保留但未参与电力仿真: {key[10:]}" for key in result["curves"] if key.startswith("unapplied@")]
+    if payload.get("diagram"):
+        result["diagram"] = sanitize_svg(str(payload["diagram"]["svg"]).encode(), source_name=payload["diagram"].get("source", "diagram.svg"))
+    return result
+
+
+def load_model_bytes(data, *, source_name="model.json"):
+    if source_name.lower().endswith(".zip") or data[:2] == b"PK":
+        files = _read_archive(data)
+        if "model.e" in files:
+            result = _from_ebook(files, source_name)
+        elif "model.json" in files:
+            result = normalize_model(json.loads(_decode(files["model.json"])), source_name=source_name)
+            for name in ("curves.e", "curves.json", "weather.e"):
+                if name in files:
+                    result["curves"].update(load_boundary_bytes(files[name], source_name=name)["curves"])
+                    break
+            result = normalize_model(result, source_name=source_name)
+        else:
+            raise ValueError("定义 ZIP 必须包含 model.e 或 model.json")
+        if "diagram.svg" in files:
+            result["diagram"] = sanitize_svg(files["diagram.svg"], source_name="diagram.svg")
+        return result
+    text = _decode(data)
+    if text.lstrip().startswith("<"):
+        return _from_ebook({"model.e": data}, source_name)
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"模型 JSON 无效: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError("模型 JSON 根节点必须是对象")
+    return normalize_model(payload, source_name=source_name)
 
 
 def _default_curves() -> dict[str, list[dict[str, float]]]:
@@ -98,166 +486,6 @@ def _default_curves() -> dict[str, list[dict[str, float]]]:
     }
 
 
-def _normalize_curves(payload: Mapping[str, Any]) -> dict[str, list[dict[str, float]]]:
-    curves = _default_curves()
-    source = payload.get("curves") if isinstance(payload.get("curves"), Mapping) else payload
-    for key in ("weather", "load", "diesel", "battery"):
-        values = source.get(key) if isinstance(source, Mapping) else None
-        if isinstance(values, list):
-            normalized = []
-            for item in values:
-                if not isinstance(item, Mapping):
-                    continue
-                row = {str(name): _number(value) for name, value in item.items() if name != "minute"}
-                row["minute"] = _number(item.get("minute", item.get("time", 0)))
-                normalized.append(row)
-            if normalized:
-                curves[key] = sorted(normalized, key=lambda row: row["minute"])
-    # power_simu_web curves.json stores weather as a list and load curves in a
-    # separate object.  Keep the weather values and map common aliases.
-    if isinstance(payload.get("weather"), list) and not isinstance(source.get("weather"), list):
-        curves["weather"] = []
-        for item in payload["weather"]:
-            if isinstance(item, Mapping):
-                curves["weather"].append({
-                    "minute": _number(item.get("minute", item.get("time_minutes", 0))),
-                    "wind_speed_mps": _number(item.get("wind_speed_mps", item.get("wind_speed", 7))),
-                    "solar_irradiance_w_m2": _number(item.get("solar_irradiance_w_m2", item.get("solar_irradiance", 0))),
-                    "air_temp_c": _number(item.get("air_temp_c", item.get("temperature", -20))),
-                    "load_kw": _number(item.get("load_kw", item.get("load", 160))),
-                })
-    return curves
-
-
-def _from_ebook(files: Mapping[str, str], source_name: str) -> dict[str, Any]:
-    model_text = files.get("model.e", "")
-    blocks = _ebook_blocks(model_text)
-    devices = []
-    topology_nodes = []
-    topology_edges = []
-    for block, rows in blocks.items():
-        for index, row in enumerate(rows, 1):
-            name = str(row.get("name") or f"{block}-{row.get('idx', index)}")
-            family = _device_family(block, row)
-            if family == "node":
-                topology_nodes.append({"id": str(row.get("idx", index)), "name": name, "run": _bool(row.get("run_stat", 1))})
-                continue
-            if family == "other" and block not in {"ACBranch", "DCBranch", "ACTransformer", "DCTransformer"}:
-                continue
-            devices.append({
-                "id": f"{block}:{row.get('idx', index)}",
-                "name": name,
-                "type": family,
-                "block": block,
-                "node": row.get("node", row.get("i_node", "")),
-                "run": _bool(row.get("run_stat", 1)),
-                "rated_kw": _number(row.get("rated_capacity", row.get("p_max", row.get("rated_power", 0)))),
-                "p_max_kw": _number(row.get("p_max", row.get("rated_capacity", 0))),
-            })
-    for block in ("ACBranch", "DCBranch", "ACSwitch", "ACBreak"):
-        for index, row in enumerate(blocks.get(block, []), 1):
-            topology_edges.append({
-                "id": f"{block}:{row.get('idx', index)}",
-                "from": str(row.get("i_node", row.get("node", ""))),
-                "to": str(row.get("j_node", "")),
-                "run": _bool(row.get("run_stat", 1)),
-                "closed": _bool(row.get("closed_status", row.get("status", 1))),
-                "kind": block,
-            })
-    curves = _default_curves()
-    for name, text in files.items():
-        if name.lower().endswith(".json"):
-            try:
-                candidate = json.loads(text)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(candidate, Mapping):
-                curves = _normalize_curves(candidate)
-                break
-    return {
-        "name": Path(source_name).stem or "imported-model",
-        "source": source_name,
-        "devices": devices,
-        "topology": {"nodes": topology_nodes, "edges": topology_edges},
-        "curves": curves,
-        "metadata": {"format": "power_simu_web-e-file", "blocks": sorted(blocks), "device_count": len(devices)},
-    }
-
-
-def normalize_model(payload: Mapping[str, Any], *, source_name: str = "model.json") -> dict[str, Any]:
-    name = str(payload.get("name") or payload.get("model_name") or Path(source_name).stem or "imported-model").strip()
-    devices = []
-    family_aliases = {
-        "storage": "battery", "ess": "battery", "battery_storage": "battery",
-        "solar": "pv", "photovoltaic": "pv", "wind_turbine": "wind", "wtg": "wind",
-        "generator": "diesel", "diesel_generator": "diesel", "gen": "diesel",
-    }
-    for index, item in enumerate(payload.get("devices", []), 1):
-        if not isinstance(item, Mapping):
-            continue
-        family = str(item.get("type", item.get("family", "other"))).lower()
-        family = family_aliases.get(family, family)
-        devices.append({
-            "id": str(item.get("id", item.get("name", f"device-{index}"))),
-            "name": str(item.get("name", item.get("id", f"device-{index}"))),
-            "type": family,
-            "block": str(item.get("block", "")),
-            "node": str(item.get("node", "")),
-            "run": _bool(item.get("run", item.get("run_stat", True))),
-            "rated_kw": _number(item.get("rated_kw", item.get("rated_capacity", item.get("p_max", 0)))),
-            "p_max_kw": _number(item.get("p_max_kw", item.get("p_max", item.get("rated_kw", 0)))),
-            "energy_kwh": _number(item.get("energy_kwh", item.get("capacity_kwh", 0))),
-        })
-    topology = payload.get("topology") if isinstance(payload.get("topology"), Mapping) else {}
-    model = {
-        "name": name,
-        "source": source_name,
-        "devices": devices,
-        "topology": {
-            "nodes": list(topology.get("nodes", [])) if isinstance(topology.get("nodes", []), list) else [],
-            "edges": list(topology.get("edges", [])) if isinstance(topology.get("edges", []), list) else [],
-        },
-        "curves": _normalize_curves(payload),
-        "points": list(payload.get("points", [])) if isinstance(payload.get("points", []), list) else [],
-        "metadata": dict(payload.get("metadata", {})) if isinstance(payload.get("metadata"), Mapping) else {},
-    }
-    model["metadata"].update({"format": "simulator-json", "device_count": len(devices)})
-    return model
-
-
-def load_model_bytes(data: bytes, *, source_name: str = "model.json") -> dict[str, Any]:
-    if not data:
-        raise ValueError("模型文件为空")
-    name = str(source_name or "model.json")
-    if name.lower().endswith(".zip") or data[:2] == b"PK":
-        try:
-            with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                names = archive.namelist()
-                json_names = [item for item in names if item.lower().endswith(".json")]
-                preferred = next((item for item in json_names if Path(item).name.lower() in {"model.json", "manifest.json", "curves.json"}), None)
-                if preferred:
-                    payload = json.loads(archive.read(preferred).decode("utf-8-sig"))
-                    if isinstance(payload, Mapping) and ("devices" in payload or Path(preferred).name.lower() != "curves.json"):
-                        return normalize_model(payload, source_name=name)
-                files = {}
-                for item in names:
-                    base = Path(item).name.lower()
-                    if base in {"model.e", "meas.e", "curves.json", "curves.e"}:
-                        files[base] = archive.read(item).decode("utf-8-sig", "replace")
-                return _from_ebook(files, name)
-        except (zipfile.BadZipFile, OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ValueError(f"模型 ZIP 无法解析: {exc}") from exc
-    try:
-        payload = json.loads(data.decode("utf-8-sig"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        text = data.decode("utf-8-sig", "replace")
-        if "<Model>" in text or "<ACNode>" in text:
-            return _from_ebook({"model.e": text}, name)
-        raise ValueError("模型文件必须是 JSON 或 power_simu_web 定义 ZIP/E 文件")
-    if not isinstance(payload, Mapping):
-        raise ValueError("模型 JSON 根节点必须是对象")
-    return normalize_model(payload, source_name=name)
-
 
 def generate_runtime_points(model: Mapping[str, Any], base_points: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Extend the stable system points with imported device measurements."""
@@ -273,6 +501,10 @@ def generate_runtime_points(model: Mapping[str, Any], base_points: list[dict[str
         label = str(device.get("name", device_id))
         points.append({"kind": "yx", "point_no": next_yx, "name": f"{device_id}_running", "unit": "bool", "data_type": 1, "description": f"{label} 投运状态", "device_id": device_id})
         next_yx += 1
+        if device.get("type") == "switch":
+            points.append({"kind": "yx", "point_no": next_yx, "name": f"{device_id}_closed_status", "unit": "bool", "data_type": 1, "description": f"{label} 实际合位", "device_id": device_id})
+            next_yx += 1
+            continue
         points.append({"kind": "yc", "point_no": next_yc, "name": f"{device_id}_p_kw", "unit": "kW", "data_type": 13, "description": f"{label} 有功出力", "device_id": device_id})
         next_yc += 1
     for item in model.get("points", []):

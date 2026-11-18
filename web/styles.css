@@ -35,6 +35,28 @@ canvas { width:100%; height:280px; display:block; background:linear-gradient(#fb
 .range-wide input { width:100%; }
 @media (max-width:650px) { .shell { padding:14px 12px 24px; } .nav { gap:4px; } .nav a { padding:7px 9px; } .page-heading { flex-direction:column; } .metric-grid.compact { grid-template-columns:repeat(2, 1fr); } }
 html, body { width:100%; height:100%; overflow:hidden; }
+.boundary-card { display:flex; flex-direction:column; gap:6px; }
+.boundary-card .card-actions { margin-top:3px; align-items:center; flex-wrap:wrap; }
+.boundary-card select { max-width:min(360px,40vw); }
+.boundary-card .table-wrap { flex:1; min-height:80px; }
+.boundary-card .notice { margin-top:5px; overflow-wrap:anywhere; }
+body[data-page=curves] .page-heading { display:none; }
+.boundary-card .card-title { margin-bottom:4px; flex-shrink:0; }
+.boundary-card > .hint, .boundary-card > .file-row, .boundary-card > .notice { flex-shrink:0; }
+.boundary-card .table-wrap { min-height:0; max-height:none; }
+.table-pager { display:flex; align-items:center; gap:8px; margin-top:8px; font-size:12px; }
+.curve-paging { display:flex; align-items:center; gap:8px; flex-shrink:0; font-size:12px; }
+.curve-paging select { max-width:45vw; flex:1; min-width:0; }
+.table-wrap tr[hidden] { display:none; }
+.tab-panel[data-panel=editor] > .card { display:flex; flex-direction:column; gap:5px; }
+.tab-panel[data-panel=editor] .large-editor { flex:1; height:auto; min-height:50px; max-height:none; resize:none; overflow:auto; }
+.tab-panel[data-panel=editor] .card-actions, .tab-panel[data-panel=editor] .notice { margin-top:3px; flex-shrink:0; }
+@media (min-width:700px) and (max-width:1000px) {
+  .topbar { flex-direction:row; align-items:center; }
+  .clock { text-align:right; min-width:240px; }
+  .clock-actions { justify-content:flex-end; }
+  .content-grid,.admin-grid { grid-template-columns:1fr 1fr; }
+}
 body { min-height:100%; }
 *, *::before, *::after { scrollbar-width:none; -ms-overflow-style:none; }
 *::-webkit-scrollbar { width:0; height:0; display:none; }

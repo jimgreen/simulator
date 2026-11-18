@@ -31,6 +31,49 @@ Web 界面按功能拆分为多个页面：`/` 运行总览、`/model.html` 模�
 - Web 轮询使用聚合概览接口；曲线采用预排序索引和二分插值，拓扑设备判定采用索引查询，减少重复扫描。
 - 总览页支持并网、孤网、外部电网失电、设备恢复、设备全停五种一键场景，并记录操作来源与结果。
 
+## 外部模型、边界与电网图形
+
+模型管理页可导入单个 E 文件、simulator JSON 或定义 ZIP。ZIP 优先读取
+model.e，可同时携带 meas.e、control.e、curves.e（优先于 curves.json）和 diagram.svg。
+AC/DC 节点使用不同命名空间；设备保留原 block、idx、名称、参数和图形别名。
+切换模型会一起切换图形；新模型未携带图形时清空旧图形，避免操作错配。
+
+曲线设置页的“外部边界导入”支持 CSV、TSV、JSON、weather.e、curves.e、ZIP，
+UTF-8/GB18030 编码。时间为日内 0–1440 分钟或 HH:MM[:SS]，每天循环，
+区间线性插值，首尾之外保持端点值。支持风速、辐照、气温、气压、湿度、总负荷、
+柴发和储能功率，也支持参考工程 JSON 的 loads 和 sources（电力 p_set）。
+部分通道导入不会覆盖未提供的通道；NA/空值为缺失数据。重复时间、无效时间和非有限值报错。
+设备负荷曲线优先于总负荷，设备源曲线优先于同类总功率曲线；匹配不到设备的外部曲线拒绝应用。
+曲线预览和编辑均分页，编辑器按曲线选择，实时刷新不会覆盖未保存编辑。
+
+独立页面 `/diagram.html` 提供 SVG 导入、缩放、平移、适应窗口和设备定位。
+按照 power_simu_web 的规则，网页运行脚本绑定 dev-id / use[id][name] 与 dev 下的 mt/mti，
+mti 语义优先，支持命名测量 data-meas-name / data-scada-name / data-real-name。
+有功、运行状态、开关实际合位和储能 SOC 随仿真刷新，退出设备灰显；
+开关使用 `_state_0` / `_state_1` 或 data-open-href / data-closed-href 切换图符。
+仅模型或 SVG 版本改变时重新编译绑定，轮询只更新数值和状态。
+上传 SVG 的内嵌脚本、事件处理器和外部活动资源会被清除；实时驱动由 simulator 的 diagram.js 提供。
+
+- 设备右键：实时状态、投入/退出；开关额外提供分闸/合闸，退出状态禁止合闸。
+- 空白右键：适应窗口、缩放、测量数值显示/隐藏、刷新。
+- 操作同步设备和拓扑，重算功率并调用 scdfe_s 桥接发布 YC/YX；暂停时也可操作。
+- 设备投运请求与拓扑可运行状态分开，解除隔离后可自动恢复请求为投入的设备。
+
+新增接口：`GET /api/diagram`，`POST /api/diagram/import`，
+`POST /api/boundary/import`（导入均使用 filename + data_base64）；
+`POST /api/devices/operate` 使用 `{"device_id":"DCBreak:1","action":"open"}`，
+action 支持 start、stop、open、close。
+
+当前计算引擎仍为简化功率平衡，并未移植参考工程的完整 AC/DC 潮流求解器。
+节点电压、无功、支路电流/潮流等未计算量在 SVG 中显示 `--`，不使用导出模型的初始零值冒充实时值。
+储能 SOC 目前为系统汇总值；拓扑判定为节点与相邻支路联锁，并非完整孤岛带电分析。
+氢热等非电力源曲线保留并提示，不参与电力计算；control.e 定义保留，未提供任意控制脚本执行。
+导入内容与最近 200 条操作记录驻留内存，服务重启后需重新导入模型包。
+
+验证：`python -m unittest discover -s tests -v`。
+测试覆盖定义包资源、边界校验/叠加、SVG 清理、设备操作、实际遥信、
+暂停状态下桥接发布调用和导入失败保持原状态。
+
 ## 模型 JSON 示例
 
 ```json
@@ -52,7 +95,7 @@ Web 界面按功能拆分为多个页面：`/` 运行总览、`/model.html` 模�
 }
 ```
 
-有柴发曲线时，曲线直接作为柴油机出力输入；设备容量按导入模型汇总，未导入对应设备时使用内置演示容量。
+有柴发曲线时，曲线作为柴油机出力输入；设备容量按导入模型汇总。无设备的内置演示模型使用演示容量，已导入模型中不存在的发电类型不生成虚拟出力。
 
 ## Web/API
 
@@ -86,7 +129,11 @@ Web 界面按功能拆分为多个页面：`/` 运行总览、`/model.html` 模�
 
 ```powershell
 python -m py_compile digital_twin.py model_import.py scdfe_points.py iec104_bridge.py server.py
+python -m unittest discover -s tests -v
+python tests/check_iec104_wire.py
 node --check web/app.js
+node --check web/diagram.js
+node --check web/boundary.js
 ```
 
 服务进程依赖 `D:\codex\scada\server\iec104_server.py`；若该目录不可用，Web 仿真仍可用，但 IEC 104 会显示为不可用。

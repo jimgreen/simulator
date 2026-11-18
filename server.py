@@ -8,13 +8,12 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import threading
-import time
 from urllib.parse import parse_qs, urlparse
 
 from digital_twin import DigitalTwin
-from iec104_bridge import IEC104Unavailable, ScdfeIEC104Bridge
-from model_import import load_model_bytes
-from scdfe_points import ScdfePointTableError, ScdfePointTableManager
+from iec104_bridge import ScdfeIEC104Bridge
+from model_import import load_boundary_bytes, load_model_bytes, sanitize_svg
+from scdfe_points import ScdfePointTableManager
 
 
 ROOT = Path(__file__).resolve().parent
@@ -82,6 +81,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json_body(self) -> dict:
         length = int(self.headers.get("Content-Length", "0") or 0)
+        if length > 45 * 1024 * 1024:
+            raise ValueError("请求不能超过 45 MB")
         if length <= 0:
             return {}
         value = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -141,6 +142,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, self.app.twin.snapshot(history_limit=1)["topology"])
             if path == "/api/curves":
                 return self._send(200, {"curves": self.app.twin.curves})
+            if path == "/api/diagram":
+                return self._send(200, self.app.twin.diagram())
             if path == "/api/power-flow":
                 return self._send(200, self.app.twin.snapshot(history_limit=1)["power_flow"])
             if path == "/api/scdfe/points":
@@ -151,7 +154,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static("index.html", "text/html; charset=utf-8")
             if path.endswith(".html") and path.count("/") == 1:
                 return self._static(path[1:], "text/html; charset=utf-8")
-            if path in {"/app.js", "/styles.css"}:
+            if path in {"/app.js", "/styles.css", "/diagram.js", "/diagram.css", "/boundary.js"}:
                 return self._static(path[1:], "application/javascript; charset=utf-8" if path.endswith(".js") else "text/css; charset=utf-8")
             return self._send(404, {"error": "not_found"})
         except Exception as exc:
@@ -192,9 +195,34 @@ class Handler(BaseHTTPRequestHandler):
                     self.app.bridge.rebuild()
                 return self._send(200, result)
             if parsed.path == "/api/curves":
-                return self._send(200, {"curves": self.app.twin.set_curves(body)})
+                curves = self.app.twin.set_curves(body)
+                if self.app.bridge is not None:
+                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+                return self._send(200, {"curves": curves})
+            if parsed.path == "/api/boundary/import":
+                source_name = str(body.get("filename") or "boundary.csv")
+                encoded = body.get("data_base64")
+                if not encoded:
+                    raise ValueError("需要 data_base64")
+                boundary = load_boundary_bytes(base64.b64decode(str(encoded), validate=True), source_name=source_name)
+                curves = self.app.twin.merge_curves(boundary["curves"], source=boundary["source"])
+                if self.app.bridge is not None:
+                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+                return self._send(200, {**boundary, "curves": curves, "message": "外部边界数据已加载"})
+            if parsed.path == "/api/diagram/import":
+                source_name = str(body.get("filename") or "diagram.svg")
+                encoded = body.get("data_base64")
+                if not encoded:
+                    raise ValueError("需要 data_base64")
+                diagram = sanitize_svg(base64.b64decode(str(encoded), validate=True), source_name=source_name)
+                return self._send(200, {"diagram": self.app.twin.set_diagram(diagram, source="web"), "message": "SVG 电网图形已加载"})
             if parsed.path == "/api/devices/state":
-                result = self.app.twin.set_device_state(str(body.get("device_id")), bool(body.get("running")), source="web")
+                result = self.app.twin.set_device_state(str(body.get("device_id")), body.get("running"), source="web")
+                if self.app.bridge is not None:
+                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+                return self._send(200, result)
+            if parsed.path == "/api/devices/operate":
+                result = self.app.twin.operate_device(body.get("device_id"), body.get("action"), model_revision=body.get("model_revision"))
                 if self.app.bridge is not None:
                     self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
                 return self._send(200, result)
