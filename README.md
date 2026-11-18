@@ -27,6 +27,8 @@ Web 界面按功能拆分为多个页面：`/` 运行总览、`/model.html` 模�
 - 拓扑节点/支路联锁；拓扑孤岛设备自动退出并重新计算功率平衡。
 - 每次状态变化执行嵌入式功率平衡，提供收敛、迭代次数、不平衡量并主动上送 YC/YX。
 - 仿真时钟启动、暂停、单步、归零和 0.1～20 倍速度控制。
+- 页面支持设备批量投退、曲线预设、JSON 导出、快照导出，以及空格暂停、N 单步、Ctrl+E 导出快照快捷键。
+- Web 轮询使用聚合概览接口；曲线采用预排序索引和二分插值，拓扑设备判定采用索引查询，减少重复扫描。
 
 ## 模型 JSON 示例
 
@@ -54,6 +56,7 @@ Web 界面按功能拆分为多个页面：`/` 运行总览、`/model.html` 模�
 ## Web/API
 
 - `GET /api/health`：服务、模型和 IEC 104 状态。
+- `GET /api/overview`：一次返回运行快照和健康状态，适合 Web 总览轮询。
 - `GET /api/snapshot`、`GET /api/history`：完整仿真快照和历史趋势。
 - `GET /api/scada/telemetry`：按 IEC 104 点号返回实时 YC/YX，同时保留命名量测。
 - `GET /api/power-flow`：潮流计算视图。
@@ -61,6 +64,7 @@ Web 界面按功能拆分为多个页面：`/` 运行总览、`/model.html` 模�
 - `GET /api/model`、`GET /api/model/detail`、`POST /api/model/import`：模型管理；导入请求使用 `{"filename":"model.json","data_base64":"..."}` 或 `{"model":{...}}`。
 - `GET/POST /api/curves`：读取或更新 `weather`、`load`、`diesel`、`battery` 曲线。
 - `GET /api/devices`、`POST /api/devices/state`：查看并切换设备投运状态。
+- `POST /api/devices/states`：批量切换多个设备投运状态，并只执行一次拓扑联锁和功率计算。
 - `GET/POST /api/topology`：查看或更新拓扑节点/支路；更新后会触发联锁和功率计算。
 - `GET /api/scdfe/points`、`POST /api/scdfe/points/generate`：查看并一键生成 `scdfe_s` 实时点定义。
 - `POST /api/commands`：设备遥控命令，例如 `{"kind":"yk","point_no":2,"value":1}`。

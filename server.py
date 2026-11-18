@@ -102,6 +102,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/health":
                 return self._send(200, {"status": "ok", "service": "environment-aware-digital-twin", "model": self.app.twin.model_summary(), "iec104": self.app.bridge.status() if self.app.bridge else {"available": False}})
+            if path == "/api/overview":
+                snapshot = self.app.twin.snapshot(history_limit=120)
+                return self._send(200, {
+                    "snapshot": snapshot,
+                    "health": {"status": "ok", "service": "environment-aware-digital-twin", "model": snapshot["model"], "iec104": self.app.bridge.status() if self.app.bridge else {"available": False}},
+                })
             if path == "/api/snapshot":
                 limit = int(parse_qs(parsed.query).get("history", [120])[0])
                 return self._send(200, self.app.twin.snapshot(history_limit=limit))
@@ -186,6 +192,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"curves": self.app.twin.set_curves(body)})
             if parsed.path == "/api/devices/state":
                 result = self.app.twin.set_device_state(str(body.get("device_id")), bool(body.get("running")), source="web")
+                if self.app.bridge is not None:
+                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+                return self._send(200, result)
+            if parsed.path == "/api/devices/states":
+                result = self.app.twin.set_devices_state(body.get("states"), source="web")
                 if self.app.bridge is not None:
                     self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
                 return self._send(200, result)

@@ -9,6 +9,7 @@ IEC 104 point map.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections import deque
 from dataclasses import dataclass
 import math
@@ -122,6 +123,11 @@ class DigitalTwin:
         self._history: deque[dict[str, Any]] = deque(maxlen=600)
         self.model = normalize_model(model or {"name": "默认环境模型", "devices": [], "topology": {}, "curves": _default_curves()}, source_name="builtin")
         self.curves = self.model["curves"]
+        self._curve_minutes: dict[str, list[float]] = {}
+        self._topology_nodes: dict[str, dict[str, Any]] = {}
+        self._topology_edges: dict[str, list[dict[str, Any]]] = {}
+        self._rebuild_curve_index()
+        self._rebuild_topology_index()
         self._runtime_points = generate_runtime_points(self.model, [point.__dict__.copy() for point in POINTS])
         self._power_flow_count = 0
         self._last_power_flow: dict[str, Any] = {}
@@ -131,6 +137,9 @@ class DigitalTwin:
         self.grid_available = True
         self.soc = 0.68
         self._battery_energy_kwh = 240.0
+        self._revision = 0
+        self._point_values_cache_revision = -1
+        self._point_values_cache: dict[str, dict[int, Any]] | None = None
         self._state = self._calculate_state()
 
     def _weather(self) -> dict[str, float]:
@@ -170,22 +179,56 @@ class DigitalTwin:
         rows = self.curves.get(name, []) if isinstance(self.curves, dict) else []
         if not rows:
             return {}
-        rows = sorted(rows, key=lambda row: float(row.get("minute", 0.0)))
+        minutes = self._curve_minutes.get(name, [])
+        if len(minutes) != len(rows):
+            self._rebuild_curve_index()
+            minutes = self._curve_minutes.get(name, [])
         position = float(minute) % 1440.0
-        if position <= float(rows[0].get("minute", 0.0)):
+        if not minutes or position <= minutes[0]:
             return dict(rows[0])
-        if position >= float(rows[-1].get("minute", 0.0)):
+        if position >= minutes[-1]:
             return dict(rows[-1])
-        for left, right in zip(rows, rows[1:]):
-            x0 = float(left.get("minute", 0.0)); x1 = float(right.get("minute", 0.0))
-            if x0 <= position <= x1:
-                ratio = (position - x0) / max(1e-9, x1 - x0)
-                keys = set(left) | set(right)
-                return {
-                    key: float(left.get(key, right.get(key, 0.0))) + (float(right.get(key, left.get(key, 0.0))) - float(left.get(key, right.get(key, 0.0)))) * ratio
-                    for key in keys if key != "minute"
-                } | {"minute": position}
-        return dict(rows[-1])
+        right_index = bisect_right(minutes, position)
+        left = rows[right_index - 1]
+        right = rows[right_index]
+        x0 = minutes[right_index - 1]
+        x1 = minutes[right_index]
+        ratio = (position - x0) / max(1e-9, x1 - x0)
+        keys = set(left) | set(right)
+        return {
+            key: float(left.get(key, right.get(key, 0.0))) + (float(right.get(key, left.get(key, 0.0))) - float(left.get(key, right.get(key, 0.0)))) * ratio
+            for key in keys if key != "minute"
+        } | {"minute": position}
+
+    def _rebuild_curve_index(self) -> None:
+        """Cache sorted curve positions so each simulation step uses binary search."""
+
+        self._curve_minutes = {
+            name: [float(row.get("minute", 0.0)) for row in rows]
+            for name, rows in self.curves.items()
+            if isinstance(rows, list) and rows
+        }
+
+    def _rebuild_topology_index(self) -> None:
+        """Index topology once instead of scanning every edge per device measurement."""
+
+        topology = self.model.get("topology", {})
+        nodes = topology.get("nodes", []) if isinstance(topology, dict) else []
+        edges = topology.get("edges", []) if isinstance(topology, dict) else []
+        self._topology_nodes = {
+            str(item.get("id", item.get("name", ""))): item
+            for item in nodes
+            if isinstance(item, dict) and str(item.get("id", item.get("name", ""))).strip()
+        }
+        linked: dict[str, list[dict[str, Any]]] = {}
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            for endpoint in (edge.get("from", ""), edge.get("to", "")):
+                key = str(endpoint).strip()
+                if key:
+                    linked.setdefault(key, []).append(edge)
+        self._topology_edges = linked
 
     def _family_devices(self, family: str, *, running_only: bool = False) -> list[dict[str, Any]]:
         devices = [item for item in self.model.get("devices", []) if str(item.get("type", "")).lower() == family]
@@ -235,17 +278,14 @@ class DigitalTwin:
 
     def _topology_allows(self, device: dict[str, Any]) -> bool:
         node = str(device.get("node", "")).strip()
-        topology = self.model.get("topology", {})
-        nodes = topology.get("nodes", []) if isinstance(topology, dict) else []
-        if node and isinstance(nodes, list):
-            node_row = next((item for item in nodes if isinstance(item, dict) and str(item.get("id", item.get("name", ""))) == node), None)
+        if node:
+            node_row = self._topology_nodes.get(node)
             if node_row is not None and not _as_bool(node_row.get("run", True)):
                 return False
-        edges = topology.get("edges", []) if isinstance(topology, dict) else []
+        edges = self._topology_edges.get(node, [])
         if not node or not edges:
             return True
-        linked = [edge for edge in edges if str(edge.get("from", "")) == node or str(edge.get("to", "")) == node]
-        return not linked or any(_as_bool(edge.get("closed", edge.get("run", True))) and _as_bool(edge.get("run", True)) for edge in linked)
+        return any(_as_bool(edge.get("closed", edge.get("run", True))) and _as_bool(edge.get("run", True)) for edge in edges)
 
     def _calculate_state(self) -> dict[str, Any]:
         weather = self._weather()
@@ -281,6 +321,7 @@ class DigitalTwin:
             "calculation": "embedded-balance-power-flow",
             "sequence": self._seq + 1,
         }
+        self._revision += 1
         return {
             "weather": weather,
             "generation": {
@@ -457,6 +498,45 @@ class DigitalTwin:
             self._state = self._calculate_state()
             return {"accepted": True, "source": source, "device": changed}
 
+    def set_devices_state(self, states: list[dict[str, Any]], *, source: str = "web") -> dict[str, Any]:
+        """Apply several device state changes with one topology and power-flow pass."""
+
+        if not isinstance(states, list) or not states:
+            raise ValueError("states 必须是非空数组")
+        with self._lock:
+            by_key = {
+                str(item.get("id")): item
+                for item in self.model.get("devices", [])
+                if isinstance(item, dict)
+            }
+            by_key.update({
+                str(item.get("name")): item
+                for item in self.model.get("devices", [])
+                if isinstance(item, dict) and item.get("name")
+            })
+            changed = []
+            resolved = []
+            for entry in states:
+                if not isinstance(entry, dict):
+                    raise ValueError("states 项必须是对象")
+                wanted = str(entry.get("device_id", entry.get("id", "")))
+                item = by_key.get(wanted)
+                if item is None:
+                    raise ValueError(f"未知设备: {wanted}")
+                resolved.append((item, entry))
+            for item, entry in resolved:
+                item["run"] = _as_bool(entry.get("running", entry.get("run", True)))
+                changed.append(dict(item))
+            topology_changes = self.reconcile_topology()
+            self._state = self._calculate_state()
+            return {
+                "accepted": True,
+                "source": source,
+                "devices": changed,
+                "topology_changes": topology_changes,
+                "sequence": self._seq,
+            }
+
     def set_topology(self, topology: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             if not isinstance(topology, dict):
@@ -465,6 +545,7 @@ class DigitalTwin:
             if not isinstance(edges, list):
                 raise ValueError("topology.edges 必须是数组")
             self.model["topology"] = {"nodes": list(topology.get("nodes", [])), "edges": list(edges)}
+            self._rebuild_topology_index()
             changes = self.reconcile_topology()
             self._state = self._calculate_state()
             return {"topology": self.model["topology"], "device_changes": changes}
@@ -486,6 +567,7 @@ class DigitalTwin:
             from model_import import _normalize_curves
             self.curves = _normalize_curves({"curves": curves})
             self.model["curves"] = self.curves
+            self._rebuild_curve_index()
             self._state = self._calculate_state()
             return self.curves
 
@@ -493,6 +575,8 @@ class DigitalTwin:
         with self._lock:
             self.model = normalize_model(model, source_name=str(model.get("source", "imported-model")))
             self.curves = self.model["curves"]
+            self._rebuild_curve_index()
+            self._rebuild_topology_index()
             self._battery_energy_kwh = self._battery_energy_capacity()
             self._runtime_points = generate_runtime_points(self.model, [point.__dict__.copy() for point in POINTS])
             self.reconcile_topology()
@@ -505,6 +589,8 @@ class DigitalTwin:
         return {"name": self.model.get("name"), "source": self.model.get("source"), "metadata": self.model.get("metadata", {}), "device_count": len(self.model.get("devices", [])), "topology": self.model.get("topology", {}), "curve_counts": {key: len(value) for key, value in self.curves.items()}}
 
     def point_values(self) -> dict[str, dict[int, Any]]:
+        if self._point_values_cache_revision == self._revision and self._point_values_cache is not None:
+            return {kind: dict(values) for kind, values in self._point_values_cache.items()}
         values = self._measurement_values(self._state)
         result: dict[str, dict[int, Any]] = {"yx": {}, "yc": {}, "yk": {}, "yt": {}}
         generation = self._state.get("generation", {})
@@ -529,7 +615,9 @@ class DigitalTwin:
                     result[kind][point_no] = _as_bool(device.get("run", True)) and self._topology_allows(device)
                 elif name.endswith("_p_kw"):
                     result[kind][point_no] = float(device_outputs.get(str(point["device_id"]), generation.get(f"{family}_kw", 0.0)) or 0.0)
-        return result
+        self._point_values_cache_revision = self._revision
+        self._point_values_cache = result
+        return {kind: dict(values) for kind, values in result.items()}
 
     def snapshot(self, *, history_limit: int = 120) -> dict[str, Any]:
         with self._lock:
