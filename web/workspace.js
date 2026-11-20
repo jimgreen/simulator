@@ -2,11 +2,11 @@
 (() => {
   const $ = id => document.getElementById(id);
   const kinds = {database:'/model.html', boundary:'/boundary.html', diagram:'/diagram.html'};
-  const state = {directory:new URLSearchParams(location.search).get('directory') || '.', parent:null, page:1, pages:1, pageSize:8, request:0, importing:false};
+  const state = {directory:new URLSearchParams(location.search).get('directory') || '.', parent:null, page:1, pages:1, pageSize:8, request:0, importing:false, ready:false, remembered:null};
   const initialKind = new URLSearchParams(location.search).get('kind');
   if (kinds[initialKind]) $('inputKind').value = initialKind;
   function message(text, error=false) { $('workspaceMessage').textContent=text; $('workspaceMessage').title=text; $('workspaceMessage').classList.toggle('error',error); }
-  async function api(url, options) { const response=await fetch(url,options); const data=await response.json(); if(!response.ok) throw new Error(data.error || '请求失败'); return data; }
+  async function api(url, options) { const response=await fetch(url,options); const data=await response.json(); if(!response.ok) {const error=new Error(data.error || '请求失败');error.status=response.status;throw error;} return data; }
   async function importFile(path) {
     if(state.importing) return;
     state.importing=true;
@@ -42,12 +42,18 @@
   async function load(directory=state.directory,page=state.page) {
     const sequence=++state.request;
     const params=new URLSearchParams({directory,kind:$('inputKind').value,page,page_size:state.pageSize,q:$('fileSearch').value.trim()});
-    try { const data=await api('/api/workspace?'+params); if(sequence===state.request) {render(data); if($('workspaceMessage').classList.contains('error')) message('路径均相对于配置的工作区根目录。');} }
-    catch(error) { if(sequence===state.request) {$('directoryPath').value=state.directory;message(error.message,true);} }
+    try { const data=await api('/api/workspace?'+params); if(sequence===state.request) {
+      render(data); if($('workspaceMessage').classList.contains('error')) message('路径均相对于配置的工作区根目录。');
+      const selection={directory:data.directory,kind:params.get('kind')}, key=JSON.stringify(selection);
+      if(state.remembered!==key) {state.remembered=key;window.simulatorPreferences.update(selection);await window.simulatorPreferences.flush();}
+      return true;
+    }}
+    catch(error) { if(sequence===state.request) {state.loadError=error.status;$('directoryPath').value=state.directory;message(error.message,true);} }
+    return false;
   }
   function resize() {
     const size=Math.max(1,Math.min(50,Math.floor(($('workspaceTable').clientHeight-43)/42)));
-    if(size!==state.pageSize) {state.pageSize=size;load(state.directory,1);}
+    if(size!==state.pageSize) {state.pageSize=size;if(state.ready)load(state.directory,1);}
   }
   $('directoryForm').onsubmit=event=>{event.preventDefault();load($('directoryPath').value.trim(),1);};
   $('rootFolder').onclick=()=>load('.',1);
@@ -59,5 +65,13 @@
   let searchTimer;
   $('fileSearch').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>load(state.directory,1),200);};
   new ResizeObserver(resize).observe($('workspaceTable'));
-  load();
+  window.simulatorPreferences.ready.then(async saved=>{
+    const params=new URLSearchParams(location.search);
+    if(!params.has('directory') && typeof saved.directory==='string')state.directory=saved.directory;
+    if(!params.has('kind') && kinds[saved.kind])$('inputKind').value=saved.kind;
+    state.ready=true;
+    if(!await load() && !params.has('directory') && state.directory!=='.' && [400,404].includes(state.loadError)) {
+      await load('.',1);message('上次目录已失效，已返回根目录。',true);
+    }
+  });
 })();

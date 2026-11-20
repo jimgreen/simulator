@@ -17,6 +17,7 @@
     ['/topology.html', '拓扑编辑'],
     ['/flow.html', '潮流状态'],
     ['/scada.html', 'IEC 104 服务'],
+    ['/publication.html', '实时写库'],
     ['/points.html', '四遥点表'],
   ];
   const current = location.pathname === '/index.html' ? '/' : location.pathname || '/';
@@ -38,7 +39,7 @@
   // Persist view preferences in SQLite; device/curve edits use their explicit save APIs.
   const page = document.body.dataset.page || 'dashboard';
   const fields = new Set(['deviceSearch','deviceTypeFilter','deviceRunFilter','devicePageSize','showValues']);
-  let values = {}, pending = {}, timer, saving = false, restoring = false;
+  let values = {}, pending = {}, timer, saving = null, restoring = false;
   const restoreQueue = new Map();
   const setNotice = error => {
     for (const link of document.querySelectorAll('.nav a[href="/storage.html"]')) {
@@ -46,17 +47,21 @@
       link.style.color = error ? 'var(--red)' : '';
     }
   };
-  async function flush() {
-    if (saving || !Object.keys(pending).length) return;
-    saving = true;
-    const outgoing = pending; pending = {};
-    try {
-      const response = await fetch('/api/preferences', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({page,values:outgoing}), keepalive:true});
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || '页面设置保存失败');
-      setNotice('');
-    } catch(error) { pending = {...outgoing,...pending}; setNotice(error.message); }
-    finally { saving = false; }
+  function flush() {
+    clearTimeout(timer);
+    if (saving) return saving;
+    saving = (async()=>{
+      while (Object.keys(pending).length) {
+        const outgoing = pending; pending = {};
+        try {
+          const response = await fetch('/api/preferences', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({page,values:outgoing}), keepalive:true});
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || '页面设置保存失败');
+          setNotice('');
+        } catch(error) { pending = {...outgoing,...pending}; setNotice(error.message); break; }
+      }
+    })().finally(()=>{saving=null;});
+    return saving;
   }
   function update(changes) { Object.assign(values,changes); Object.assign(pending,changes);clearTimeout(timer);timer=setTimeout(flush,300); }
   function restoreFields() {
@@ -78,7 +83,7 @@
     restoreFields();if(restoreQueue.size)observer.observe(document.body,{childList:true,subtree:true});
     return values;
   }).catch(error=>{setNotice(error.message);return values;});
-  window.simulatorPreferences={ready,update,get:()=>values};
+  window.simulatorPreferences={ready,update,flush,get:()=>values};
   for(const type of ['input','change']) document.addEventListener(type,event=>{
     if(!restoring && fields.has(event.target.id)) {restoreQueue.delete(event.target.id);update({[event.target.id]:event.target.type==='checkbox'?event.target.checked:event.target.value});}
   });

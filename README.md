@@ -48,7 +48,19 @@ scdfe_s 点表数据库也限制在该根目录内。默认优先使用
 `simulation/scdfe_s.sqlite3`；可通过 `--scada-db` 指定其他根目录内的相对路径。
 服务不会自动启动第二套 SCADA 通信进程；共用 2404 端口时使用 `--no-iec104`。
 
-默认 IEC 104 公共地址为 1、RTU 标识为 104。模型导入或点表生成后会动态重建 IEC 104 运行点表。
+实时结果自动写入上述 **scdfe_s 点数据库**，与 `--no-iec104` 开关无关。优先读取同目录 `scdfe_d.sqlite3`（兼容 `devices.sqlite3`）中的 `device → device_measurement → scada_point_mapping`，也可用 `--mapping-db` 指定根目录内的映射库。按设备表名/模型索引/设备名匹配，使用映射中的真实 RTU/点号；秦岭现有映射为 RTU 1、YC 1366 点、YX 473 点。映射模式的“一键生成”只核对已有点表，不重编点号；独立 scdfe_s 服务从点库发布。没有映射库的独立测试模型才使用自动生成的 RTU 104 点表。
+
+每次计算、暂停时设备操作或单步计算后，后台线程通过现成的 `SimulatorStore.update_rows` 在同一事务内更新 YC/YX 的值、质量、毫秒刷新时间及原始量字段，不覆盖 YK/YT 命令。发布值按 `(计算量换算到量测单位 - offset) / scale` 反算，和 scdfe_d 的 `采集值 * scale + offset` 对应；禁用、设备不匹配、未计算及非法换算的量测保留最后值并标记 IV。映射修改自动重载，重复目标点拒绝写入，失败重试最新帧。
+
+`python create_measurement_mapping.py` 使用 SCADA 现有重建接口，以 `realtime/qinling/sqldb/scada/scdfe_d.sqlite3` 的同一只读快照，生成 `simulation/qinling/sqldb/simulator/scdfe_s.sqlite3` 和 `simulation/qinling/sqldb/scada/scdfe_d.sqlite3` 两份**设备量测映射库**。两份均绑定 simulation 模型及采集库，保留比例、偏移、启用和量测配置，清空参考库的历史量测，内置结构可由 RTDB 读取。目标已存在时拒绝覆盖；simulator 默认使用 scada 目录下的映射库。注意 simulator 目录下这份 `scdfe_s.sqlite3` 是映射副本，实际 IEC104 点值仍写入 scada 目录下的 `scdfe_s.sqlite3`。
+
+独立页面 `/publication.html` 和 `GET /api/scdfe/realtime` 显示目标相对路径、RTU、批次、写入耗时及错误。暂停期间保留最后一帧的时间。scdfe_s 发布端必须选择**同一数据库和 RTU**并加载点表，其现有数据库监视线程负责发布变化；写库成功不等同于客户端已收到。`realtime/...` 与 `simulation/...` 的数据库相互独立。
+
+每次计算后的设备结果同时写入 `simulation/qinling/sqldb/simulator/devices.sqlite3`（与配置库 `simulator.sqlite3` 同目录）。按模型设备块分表，例如 `ACGenerator`、`DCGenerator`、`ACLoad`、`ACBreak`，逐设备保存有功结果、质量码、实际投运/开关状态、SOC、可用功率、请求功率、限幅原因、计算帧号和仿真时刻；`SimulationFrame` 保存当前帧的计算方法、收敛、残差与发布 RTU。每库整帧事务更新，模型切换后清除过期设备行；结构变化同步更新内置 RTDB 定义，RTDB 无需外置表定义即可打开。
+
+设备表和 scdfe_s 点表来自同一锁定快照，使用相同采样时间。两库是独立 SQLite 事务，短暂写入期间可能看到前后两帧；状态接口分别报告两路成功帧号，失败自动重试最新帧。当前内核计算方法为 `embedded-balance-power-flow`，仅保存实际已算出的量；未计算的设备功率为 NULL、质量码 IV=128，不以零冒充节点/支路潮流，也不生成未求解的无功和电压结果。
+
+无映射库时，内置 IEC 104 公共地址默认 1、RTU 默认 104；映射模式以库内定义为准，由 scdfe_s 发布服务加载。
 
 Web 界面按功能拆分为多个独立 HTML 页面：`/` 总览、`/trend.html` 趋势、`/diagnostics.html` 诊断、`/events.html` 事件、`/model.html` 电网数据库、`/model-summary.html` 模型摘要、`/curves.html` 曲线编辑、`/boundary.html` 边界导入、`/realtime.html` 实时曲线、`/diagram.html` 电网图形、`/devices.html` 设备操作、`/topology.html` 拓扑编辑、`/flow.html` 潮流状态、`/scada.html` IEC 104 服务和 `/points.html` 四遥点表。每页保留仿真时钟和统一导航，页面之间不再把不同功能挤在同一个 HTML 中；页面固定在浏览器视口内，不显示整体横向或纵向滚动条。
 
@@ -114,11 +126,14 @@ Web 提交的修改持久保存，服务重启后恢复同一电网模型的曲�
 `devices.sqlite3` 继续作为只读业务模型源；Web 修改独立保存至 simulator 库。
 
 - 每次 Web 提交在 SQLite 事务中保存成功后才返回成功并发布实时数据；数据库写入失败会回滚内存修改。
+- 环境风速/辐照/温度、总负荷与分设备负荷、柴发/储能/源出力曲线均保存于 `simulator_state` 的 `model.curves`；仿真倍速、步长、时刻、SOC 和运行状态保存于 `runtime`。所有保存/导入/应用按钮直接提交数据库，曲线编辑框中的未提交草稿需点击“保存曲线”。
+- 切换电网数据库后再切回，或重新加载同一电网时，恢复该模型已保存的曲线、参数和运行状态。业务模型内容变化时使用新的配置分区，避免旧设备状态套用到新模型。
 - `simulator_state` 按模型内容摘要和配置分区保存模型覆盖、边界曲线、SVG、设备/拓扑、时钟/SOC、四遥生成定义与结果、IEC104 启停意图及页面偏好。
 - `simulator_operations` 保留成功提交的操作日志；独立 `/storage.html` 页面查看路径、最近保存时间、恢复情况与分页日志。
 - 连续运行的时钟、SOC、近期历史和事件每 5 秒保存一次，正常退出再保存；异常中断最多丢失约 5 秒自动演进，已提交 Web 修改立即持久化。
 - 恢复使用检查点，不重放单步或控制指令，也不把停机时间计入仿真。业务模型内容改变时不套用旧状态，旧模型状态保留在库中。
 - 设备筛选、每页数量、SVG 测量显示及缩放平移在 SQLite 中记忆。编辑器未点击保存的草稿仍不作为生效配置。
+- 工作目录浏览页记录最后成功打开的相对目录和文件类型，重新进入或重启后自动恢复；带目录/类型参数的链接优先。历史目录失效时返回根目录，网络暂时失败不会覆盖历史选择。电网模型库切换成功后沿用已保存的数据库目录。
 - 首次启动可读取原 `runtime/model_source.json` 迁移目录选择；迁移后不再写该文件。显式 `--no-iec104` 优先于已保存的启动意图。
 - 四遥定义先存入 simulator 库，再同步现有 scdfe_s 数据库；外部同步失败单独报告，已保存定义仍保留以供再次同步。
 

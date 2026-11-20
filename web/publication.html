@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>数字孪生 · 实时写库</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/publication.css"></head>
+<body data-page="publication"><main class="shell">
+<header class="topbar"><div><span class="eyebrow">SIMULATION RESULTS</span><h1>实时写库</h1><p>同一计算帧 → 设备结果表与 scdfe_s 实时点</p></div><a href="/points.html">四遥点表</a></header>
+<nav class="nav" aria-label="功能导航"></nav>
+<article class="card publication-card"><div class="card-title">发布数据源 <span id="writeStatus" class="badge">读取中</span></div>
+<div class="database-path"><span>设备结果</span><code id="deviceDatabase">--</code></div>
+<div class="database-path"><span>发布点库</span><code id="writeDatabase">--</code></div>
+<div class="publication-grid">
+<div><span>RTU / 通道</span><strong id="writeTarget">--</strong></div>
+<div><span>本批遥测 / 遥信点数</span><strong id="writePoints">--</strong></div>
+<div><span>最近数据库提交</span><strong id="writeTime">--</strong></div>
+<div><span>对应仿真时刻</span><strong id="writeSimTime">--</strong></div>
+<div><span>提交耗时</span><strong id="writeDuration">--</strong></div>
+<div><span>已写批次</span><strong id="writeBatches">--</strong></div>
+<div><span>设备 / 点库 / 提交序号</span><strong id="writeSerial">--</strong></div>
+<div><span>积压合并 / 写入失败次数</span><strong id="writeRetries">--</strong></div>
+</div>
+<p id="deviceWriteSummary" class="hint">设备结果等待写入</p>
+<p id="mappingSummary" class="hint"></p>
+<p id="writeError" class="notice" role="status"></p>
+</article>
+<article class="card publication-card"><div class="card-title">发布端连接</div><p>scdfe_s 选择上方“发布点库”与 RTU，加载点表并启动 IEC 104 服务，即可发布最新遥测、遥信。</p><p class="hint">运行时每次计算后整批写入；暂停后保留最后一帧，设备操作和单步计算仍更新。此页确认数据库提交，不代表客户端已接收。</p></article>
+</main><script src="/nav.js"></script><script src="/publication.js"></script></body></html>

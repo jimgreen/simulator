@@ -86,13 +86,72 @@ class PersistenceTests(unittest.TestCase):
                 self.request('/api/devices/state', {'device_id': 'ACGenerator:1', 'running': False})
         self.assertEqual(before, self.app.twin.export_persistent_state())
 
+    def test_all_input_categories_are_committed_before_response(self):
+        self.request('/api/clock', {'action': 'pause'})
+        curves = {
+            'weather': [{'minute': 0, 'wind_speed_mps': 8.5, 'solar_irradiance_w_m2': 650,
+                         'air_temp_c': -16, 'load_kw': 120}],
+            'load': [{'minute': 0, 'load_kw': 150}, {'minute': 720, 'load_kw': 230}],
+            'diesel': [{'minute': 0, 'diesel_kw': 70}],
+            'battery': [{'minute': 0, 'battery_kw': -25}],
+            'source@ACGenerator@source': [{'minute': 0, 'value': 17}],
+        }
+
+        def disk_sections():
+            # Separate read-only connection proves durability, not an in-memory cache.
+            path = self.root / 'simulation/qinling/sqldb/simulator/simulator.sqlite3'
+            with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as connection:
+                return {row[0]: json.loads(row[1]) for row in connection.execute(
+                    'SELECT c1,c2 FROM rtdb_data_simulator_state WHERE c0=?', (self.app._scope,))}
+
+        result = self.request('/api/curves', {'curves': curves})
+        self.assertEqual(result['persistence'], {'saved': True, 'database': 'simulation/qinling/sqldb/simulator/simulator.sqlite3'})
+        self.assertEqual(disk_sections()['model']['curves'], result['curves'])
+        for key in curves:
+            self.assertTrue(disk_sections()['model']['curves'][key], key)
+        csv = b'time,wind_speed_mps,solar_irradiance_w_m2,air_temp_c,load_kw\n00:00,11,500,-8,210\n12:00,14,750,-2,260\n'
+        imported = self.request('/api/boundary/import', {'filename': 'boundary.csv', 'data_base64': base64.b64encode(csv).decode()})
+        self.assertEqual(disk_sections()['model']['curves'], imported['curves'])
+        self.request('/api/clock', {'action': 'speed', 'value': 4})
+        self.request('/api/clock', {'action': 'seek', 'value': '10:15'})
+        saved = disk_sections()
+        self.assertEqual(saved['runtime']['speed'], 4)
+        self.assertEqual(saved['runtime']['sim_seconds'], 36900)
+        self.assertEqual(saved['runtime']['step_seconds'], self.app.twin.step_seconds)
+        # Suppress shutdown persistence: successful Web responses must suffice.
+        with patch.object(self.app, '_persist'):
+            self.stop()
+        self.start()
+        self.assertEqual(self.app.twin.curves, saved['model']['curves'])
+        self.assertEqual(self.app.twin.export_persistent_state()['runtime'], saved['runtime'])
+
+    def test_switching_back_restores_saved_curves_and_parameters(self):
+        self.request('/api/clock', {'action': 'pause'})
+        self.request('/api/clock', {'action': 'speed', 'value': 3})
+        first = self.request('/api/curves', {'load': [{'minute': 0, 'load_kw': 246}]})['curves']
+        self.request('/api/model/source', {'directory': 'alternate'})
+        self.request('/api/clock', {'action': 'speed', 'value': 5})
+        second = self.request('/api/curves', {'weather': [{'minute': 0, 'wind_speed_mps': 17}]})['curves']
+        revision = self.app.twin._model_revision
+        self.request('/api/model/source', {'directory': DEFAULT_MODEL_DIRECTORY})
+        self.assertEqual(self.app.twin.curves, first)
+        self.assertEqual(self.app.twin.speed, 3)
+        self.assertGreater(self.app.twin._model_revision, revision)
+        self.request('/api/model/source', {'directory': 'alternate'})
+        self.assertEqual(self.app.twin.curves, second)
+        self.assertEqual(self.app.twin.speed, 5)
+        self.request('/api/model/source', {'directory': 'alternate'})
+        self.assertEqual(self.app.twin.curves, second)
+
     def test_database_directory_and_ui_preferences_are_saved_in_sqlite(self):
         self.request('/api/model/source', {'directory': 'alternate'})
         self.request('/api/preferences', {'page': 'devices', 'values': {'devicePageSize': '24', 'deviceTypeFilter': 'battery'}})
+        self.request('/api/preferences', {'page': 'workspace', 'values': {'directory': 'alternate', 'kind': 'database'}})
         self.stop()
         self.start()
         self.assertEqual(self.app.model_source.directory, 'alternate')
         self.assertEqual(self.request('/api/preferences?page=devices')['values']['devicePageSize'], '24')
+        self.assertEqual(self.request('/api/preferences?page=workspace')['values'], {'directory': 'alternate', 'kind': 'database'})
         self.assertFalse((self.root / 'legacy.json').exists())
 
     def test_no_replay_of_single_step_or_commands_on_restart(self):

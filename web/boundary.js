@@ -39,7 +39,7 @@
       for(let i=0;i<bytes.length;i+=32768)binary+=String.fromCharCode(...bytes.subarray(i,i+32768));
       const response=await fetch('/api/boundary/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:file.name,data_base64:btoa(binary)})});
       const result=await response.json();if(!response.ok)throw new Error(result.error);
-      setCurves(result.curves);message('已加载 '+result.source+' · '+result.rows+' 条记录'+(result.warnings?.length?'；'+result.warnings.join('；'):''));
+      setCurves(result.curves);message('已写入 simulator.sqlite3：'+result.source+' · '+result.rows+' 条记录'+(result.warnings?.length?'；'+result.warnings.join('；'):''));
       message(document.getElementById('boundaryMessage').textContent+'；编辑器中点击“读取当前曲线”可载入最新数据');
       // Do not overwrite an unsaved editor buffer; explicit reload is available.
     }catch(error){message(error.message,true);}finally{button.disabled=false;}

@@ -14,10 +14,13 @@ import time
 from urllib.parse import parse_qs, urlparse
 
 from digital_twin import DigitalTwin
+from device_results import DeviceResultStore
 from iec104_bridge import ScdfeIEC104Bridge
 from model_import import load_boundary_bytes, load_model_bytes, sanitize_svg
 from model_database import ModelDatabaseSource
+from measurement_mapping import MeasurementMapping
 from scdfe_points import ScdfePointTableManager
+from scdfe_realtime import ScdfeRealtimeWriter
 from workspace import DEFAULT_WORKSPACE_ROOT, Workspace
 from state_store import DEFAULT_STATE_DIRECTORY, SimulatorStateStore, encode
 
@@ -58,9 +61,14 @@ class SimulatorApplication:
         database = self.workspace.root / args.scada_db if args.scada_db else default_db
         self.point_tables = ScdfePointTableManager(scada_root=args.scada_root, db_path=database,
                                                  workspace_root=self.workspace.root)
+        mapping_path = self.workspace.root / args.mapping_db if args.mapping_db else database.with_name('scdfe_d.sqlite3')
+        if not args.mapping_db and not mapping_path.is_file():
+            mapping_path = database.with_name('devices.sqlite3')
+        self.measurement_mapping = (MeasurementMapping(mapping_path, workspace_root=self.workspace.root)
+                                    if args.mapping_db or mapping_path.is_file() else None)
         self.bridge = None
         self._stop = threading.Event()
-        if not args.no_iec104:
+        if not args.no_iec104 and self.measurement_mapping is None:
             try:
                 self.bridge = ScdfeIEC104Bridge(
                     self.twin,
@@ -76,6 +84,12 @@ class SimulatorApplication:
                 print(f"IEC104 未启动: {exc}", flush=True)
                 self.bridge = None
         self._persist()
+        self._default_rtu = args.rtu_id
+        self._publication_definition = None
+        self.device_results = DeviceResultStore(self.state_store.path.with_name('devices.sqlite3'), workspace_root=self.workspace.root)
+        self.database_writer = ScdfeRealtimeWriter(self.point_tables, device_store=self.device_results,
+                                                  measurement_mapping=self.measurement_mapping)
+        self._queue_results()
         self.worker = threading.Thread(target=self._loop, name="digital-twin-loop", daemon=True)
         self.worker.start()
 
@@ -83,6 +97,8 @@ class SimulatorApplication:
         while not self._stop.is_set():
             with self._model_lock:
                 changed = self.twin.run_cycle()
+                if changed or self.twin._revision != self._last_queued_revision:
+                    self._queue_results()
                 if changed and self.bridge is not None:
                     try:
                         self.bridge.publish(self.twin.snapshot(history_limit=1))
@@ -97,6 +113,20 @@ class SimulatorApplication:
                     self._checkpoint_at = time.monotonic()
             self._stop.wait(0.05)
 
+    def _queue_results(self):
+        with self.twin._lock:
+            self._last_queued_revision = self.twin._revision
+            key = (self._scope, self.twin._model_revision)
+            if self._publication_definition is None or self._publication_definition[0] != key:
+                self._publication_definition = (key, self.twin.points())
+            options = (self.point_generation or {}).get('options', {})
+            rtu_id = options.get('rtu_id', self._default_rtu)
+            return self.database_writer.submit(
+                points=self._publication_definition[1], model_name=self.twin.model['name'],
+                rtu_id=rtu_id, channel_id=options.get('channel_id', rtu_id),
+                values=self.twin.point_values(), clock=self.twin.clock(),
+                device_results=self.twin.snapshot(profile='devices', history_limit=0))
+
     def load_database_source(self, body, *, validate_only=False):
         if set(body) - {'directory'}:
             raise ValueError('仅可修改目录，数据库文件名固定为 devices.sqlite3')
@@ -106,13 +136,25 @@ class SimulatorApplication:
         model, info = self.model_source.prepare(directory)
         DigitalTwin(seed=self._seed, step_seconds=self._step_seconds, model=model)
         with self._model_lock:
+            restored = False
             if not validate_only:
-                self.twin.load_model(model)
+                scope = self._model_scope(model)
+                saved = self.state_store.load(scope)
+                restored = 'model' in saved and 'runtime' in saved
+                revision = self.twin._model_revision
+                if restored:
+                    self.twin.restore_persistent_state(saved)
+                    # A live source switch invalidates commands from previously opened pages.
+                    self.twin._model_revision = max(revision, self.twin._model_revision) + 1
+                else:
+                    self.twin.load_model(model)
                 self.model_source.activate(info)
-                self._scope = self._model_scope(model)
-                self.point_generation = None
-            return {'source': info, 'model': self.twin.model_summary(), 'validated': True,
-                    'message': '数据库校验通过' if validate_only else '电网数据库已加载，目录配置已保存'}
+                self._scope = scope
+                self.point_generation = saved.get('point_generation') if restored else None
+            message = ('已恢复该电网保存的曲线、参数和运行状态，目录配置已保存' if restored
+                       else '电网数据库已加载，目录配置已保存')
+            return {'source': info, 'model': self.twin.model_summary(), 'validated': True, 'restored': restored,
+                    'message': '数据库校验通过' if validate_only else message}
 
     @staticmethod
     def _model_scope(model):
@@ -158,7 +200,8 @@ class SimulatorApplication:
             try:
                 if path == '/api/scdfe/points/generate':
                     job = self.point_generation
-                    result = self.point_tables.generate(job['points'], **job['options'])
+                    result = (self.database_writer.validate_mapping() if self.measurement_mapping is not None
+                              else self.point_tables.generate(job['points'], **job['options']))
                     job['result'], job['status'] = result, 'delivered'
                     self._persist()
                 if self.bridge is not None:
@@ -174,6 +217,8 @@ class SimulatorApplication:
                 result['delivery_error'] = str(exc)
                 result['iec104_error'] = str(exc)
                 result['message'] = result.get('message', '修改已保存') + '；外部服务同步失败：' + str(exc)
+            if path != '/api/preferences':
+                result['database_submission'] = self._queue_results()
             result['persistence'] = {'saved': True, 'database': self.state_store.relative_path}
             return result
 
@@ -185,8 +230,19 @@ class SimulatorApplication:
         return {'page': page, 'values': self.preferences[page]}
 
     def prepare_point_generation(self, body):
-        options = {'model_name': self.twin.model['name'], 'rtu_id': int(body.get('rtu_id', 104)),
-                   'channel_id': int(body.get('channel_id', body.get('rtu_id', 104))), 'replace': bool(body.get('replace', True))}
+        if self.measurement_mapping is not None:
+            if set(body) - {'replace'}:
+                raise ValueError('映射模式的 RTU 和点号由设备量测库定义，不能在此重编')
+            self.point_generation = {'mode': 'device_measurement', 'mapping_database': self.measurement_mapping.relative_path,
+                                     'status': 'pending'}
+            return {'message': '映射配置已保存，等待核对 scdfe_s 点表'}
+        previous = (self.point_generation or {}).get('options', {})
+        rtu_id = int(body.get('rtu_id', previous.get('rtu_id', self._default_rtu)))
+        channel_id = int(body.get('channel_id', rtu_id if 'rtu_id' in body else previous.get('channel_id', rtu_id)))
+        if rtu_id < 1 or channel_id < 1:
+            raise ValueError('RTU 和通道编号必须为正整数')
+        options = {'model_name': self.twin.model['name'], 'rtu_id': rtu_id,
+                   'channel_id': channel_id, 'replace': bool(body.get('replace', True))}
         self.point_generation = {'options': options, 'points': self.twin.points(), 'status': 'pending'}
         return {'message': '四遥点表已保存，等待同步 scdfe_s'}
 
@@ -195,6 +251,8 @@ class SimulatorApplication:
         self.worker.join(timeout=2)
         if self.bridge is not None:
             self.bridge.stop()
+        self.database_writer.close()
+        self.point_tables.close()
         try:
             with self._model_lock:
                 self._persist()
@@ -251,6 +309,8 @@ class Handler(BaseHTTPRequestHandler):
                 page = parse_qs(parsed.query).get('page', [''])[0]
                 with self.app._model_lock:
                     return self._send(200, {'page': page, 'values': deepcopy(self.app.preferences.get(page, {}))})
+            if path == '/api/scdfe/realtime':
+                return self._send(200, self.app.database_writer.status())
             if path == "/api/model/source":
                 with self.app._model_lock:
                     return self._send(200, {"source": self.app.model_source.status(), "model": self.app.twin.model_summary()})
@@ -261,7 +321,7 @@ class Handler(BaseHTTPRequestHandler):
                     page=query.get('page', [1])[0], page_size=query.get('page_size', [8])[0],
                     query=query.get('q', [''])[0]))
             if path == "/api/health":
-                return self._send(200, {"status": "ok", "service": "environment-aware-digital-twin", "model": self.app.twin.model_summary(), "iec104": self.app.bridge.status() if self.app.bridge else {"available": False}})
+                return self._send(200, {"status": "ok", "service": "environment-aware-digital-twin", "model": self.app.twin.model_summary(), "scdfe_database": self.app.database_writer.status(), "iec104": self.app.bridge.status() if self.app.bridge else {"available": False}})
             if path == "/api/overview":
                 profile = parse_qs(parsed.query).get("profile", ["full"])[0]
                 snapshot = self.app.twin.snapshot(history_limit=120, profile=profile)
@@ -292,6 +352,8 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int(parse_qs(parsed.query).get("limit", [50])[0])
                 return self._send(200, {"items": self.app.twin.events(limit)})
             if path == "/api/points":
+                if getattr(self.app, 'measurement_mapping', None) is not None:
+                    return self._send(200, {"items": self.app.database_writer.point_preview()})
                 return self._send(200, {"items": self.app.twin.points()})
             if path == "/api/model":
                 return self._send(200, self.app.twin.model_summary())
@@ -309,14 +371,18 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/power-flow":
                 return self._send(200, self.app.twin.snapshot(history_limit=1)["power_flow"])
             if path == "/api/scdfe/points":
-                return self._send(200, self.app.point_tables.summary())
+                status = self.app.database_writer.status()
+                rtus = status.get('rtu_ids') or [status['rtu_id'] or self.app._default_rtu]
+                summaries = [self.app.point_tables.summary(rtu_id=rtu) for rtu in rtus]
+                counts = {kind: sum(s[kind] for s in summaries) for kind in ('yc', 'yx', 'yk', 'yt', 'total')}
+                return self._send(200, {**summaries[0], **counts, 'publication': status})
             if path == "/api/iec104/status":
                 return self._send(200, self.app.bridge.status() if self.app.bridge else {"available": False, "running": False, "last_error": "桥接未启用"})
             if path == "/" or path == "/index.html":
                 return self._static("index.html", "text/html; charset=utf-8")
             if path.endswith(".html") and path.count("/") == 1:
                 return self._static(path[1:], "text/html; charset=utf-8")
-            if path in {"/app.js", "/nav.js", "/styles.css", "/diagram.js", "/diagram.css", "/boundary.js", "/workspace.js", "/workspace.css", "/model-source.js", "/model-source.css", "/storage.js", "/storage.css"}:
+            if path in {"/app.js", "/nav.js", "/styles.css", "/diagram.js", "/diagram.css", "/boundary.js", "/workspace.js", "/workspace.css", "/model-source.js", "/model-source.css", "/storage.js", "/storage.css", "/publication.js", "/publication.css"}:
                 return self._static(path[1:], "application/javascript; charset=utf-8" if path.endswith(".js") else "text/css; charset=utf-8")
             return self._send(404, {"error": "not_found"})
         except Exception as exc:
@@ -468,6 +534,7 @@ def parse_args(argv=None):
     parser.add_argument("--state-directory", default=DEFAULT_STATE_DIRECTORY, help="根目录内的仿真配置与状态库目录，固定文件 simulator.sqlite3")
     parser.add_argument("--scada-root", default=r"D:\codex\scada")
     parser.add_argument("--scada-db", default=None, help="工作区根目录内的 scdfe_s 数据库；默认使用 simulation 下的数据库")
+    parser.add_argument("--mapping-db", default=None, help="设备量测映射库的根目录相对路径；默认读取发布点库同目录的 scdfe_d.sqlite3，兼容 devices.sqlite3")
     parser.add_argument("--iec104-bind", default="127.0.0.1")
     parser.add_argument("--iec104-port", type=int, default=2404)
     parser.add_argument("--common-address", type=int, default=1)

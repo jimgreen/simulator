@@ -79,7 +79,7 @@ def _finish_table(con, definition, database_name, label):
     api.write_embedded_definition(con, definition, database_name, label)
 
 
-def apply_schema(con, path, mappings, *, allow_drop_columns=False):
+def apply_schema(con, path, mappings, *, allow_drop_columns=False, database_label=None):
     """Create/migrate data, keys, counts and embedded definitions in one transaction.
 
     Columns are mapped by logical name, so reordering is lossless. Existing
@@ -100,7 +100,7 @@ def apply_schema(con, path, mappings, *, allow_drop_columns=False):
         existing = read_definitions(con, path)
         database_row = (con.execute('SELECT chn_name FROM rtdb_schema_database WHERE version=1').fetchone()
                         if existing else None)
-        label = database_row[0] if database_row else '仿真配置与运行状态'
+        label = database_row[0] if database_row else (database_label or '仿真配置与运行状态')
         api.ensure_embedded_schema(con, path.stem, label)
         for definition in definitions:
             name = definition.eng_name
