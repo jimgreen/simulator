@@ -1,0 +1,11 @@
+/data/runtime/
+/log/
+/.venv/
+/real.e
+/scada.e
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.simu_loop_work/
+*.log

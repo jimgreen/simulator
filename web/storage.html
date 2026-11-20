@@ -1,9 +1,0 @@
-<!doctype html>
-<html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>数字孪生 · 数据保存</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/storage.css"></head>
-<body data-page="storage"><main class="shell">
-<header class="topbar"><div><span class="eyebrow">SQLITE PERSISTENCE</span><h1>数据保存</h1><p>配置与运行状态持久保存，重启自动恢复</p></div><button id="refreshStorage">刷新</button></header>
-<nav class="nav" aria-label="功能导航"></nav>
-<article class="card storage-summary"><div class="card-title">仿真状态数据库 <span id="storageStatus" class="badge">读取中</span></div><code id="storageDatabase">--</code><div class="storage-metrics"><div><span>最近保存</span><strong id="storageSavedAt">--</strong></div><div><span>已保存操作</span><strong id="storageCount">--</strong></div><div><span>启动恢复</span><strong id="storageRestored">--</strong></div></div><p class="hint">Web 提交立即保存；运行时钟和 SOC 每 5 秒保存。曲线、SVG、拓扑、设备指令、场景、页面设置均保存在本库。</p><p id="storageError" class="notice" role="status"></p></article>
-<article class="card storage-journal"><div class="card-title">持久操作日志 <small>最近 200 条 · 分页显示</small></div><div id="storageTableSpace"><table><thead><tr><th>时间</th><th>操作</th><th>内容</th></tr></thead><tbody id="storageRows"></tbody></table></div><div class="storage-pager"><button id="storagePrevious">上一页</button><span id="storagePage">1 / 1</span><button id="storageNext">下一页</button></div></article>
-</main><script src="/nav.js"></script><script src="/storage.js"></script></body></html>
