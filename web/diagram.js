@@ -38,11 +38,12 @@
     $('deviceSearch').value = device?.name || '';
     paint();
   }
-  function setBox() {
+  function setBox(persist=true) {
     if (svg) svg.setAttribute('viewBox', box.join(' '));
     $('zoomLabel').textContent = Math.round(originalBox[2] / box[2] * 100) + '%';
+    if (persist && drawingKey) window.simulatorPreferences?.update({diagramView:{revision:snapshot.diagram.revision,box:[...box]}});
   }
-  function fit() { box = [...originalBox]; setBox(); }
+  function fit(persist=true) { box = [...originalBox]; setBox(persist); }
   function zoom(factor, clientX, clientY) {
     if (!svg) return;
     const scale = originalBox[2] / (box[2] * factor);
@@ -131,7 +132,7 @@
       tip.style.top = Math.max(4,Math.min(event.clientY-rect.top+12, rect.height-tip.offsetHeight-8))+'px';
     });
     svg.addEventListener('pointerleave', () => { $('diagramTooltip').hidden = true; });
-    fit(); paint();
+    fit(false); paint();
   }
   function closeMenu() { menu.hidden = true; }
   function openMenu(device, x, y) {
@@ -159,7 +160,7 @@
       }
     } else {
       add('适应窗口', fit); add('放大', () => zoom(.8)); add('缩小', () => zoom(1.25));
-      add($('showValues').checked ? '隐藏测量数值' : '显示测量数值', () => { $('showValues').checked = !$('showValues').checked; paint(); });
+      add($('showValues').checked ? '隐藏测量数值' : '显示测量数值', () => { $('showValues').checked = !$('showValues').checked; window.simulatorPreferences?.update({showValues:$('showValues').checked}); paint(); });
       add('刷新实时数据', () => refresh());
     }
     menu.hidden = false;
@@ -198,6 +199,8 @@
         if (diagram.available) compile(diagram.svg);
         else { shadow.replaceChildren(); svg=null; bindings=[]; graphics=[]; $('diagramEmpty').hidden=false; $('bindingStats').textContent='未加载'; }
         drawingKey=key; selectDevice(null);
+        const saved=(await window.simulatorPreferences?.ready)?.diagramView;
+        if(saved?.revision===snapshot.diagram.revision && Array.isArray(saved.box) && saved.box.length===4 && saved.box.every(Number.isFinite) && saved.box[2]>0 && saved.box[3]>0){box=[...saved.box];setBox(false);}
         $('deviceOptions').replaceChildren(...snapshot.devices.map(d => { const option=document.createElement('option');option.value=d.id;option.label=d.name;return option; }));
         $('diagramSource').textContent = snapshot.model.name + ' · ' + (diagram.source || '无图形');
       }

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>数字孪生 · 工作目录</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/workspace.css"></head>
+<body data-page="workspace"><main class="shell">
+  <header class="topbar"><div><span class="eyebrow">WORKSPACE</span><h1>工作目录</h1><p>从运行态目录加载模型、边界数据和电网图形</p></div></header>
+  <nav class="nav" aria-label="功能导航"></nav>
+  <article class="card workspace-card">
+    <div class="workspace-toolbar"><button id="rootFolder">根目录</button><button id="parentFolder">上一级</button><button data-folder="realtime">realtime</button><button data-folder="simulation">simulation</button><label>文件用途 <select id="inputKind"><option value="database">电网数据库</option><option value="boundary">风光荷温边界</option><option value="diagram">SVG 电网图形</option></select></label></div>
+    <form id="directoryForm" class="workspace-path"><label for="directoryPath">相对目录</label><input id="directoryPath" value="." spellcheck="false" autocomplete="off" placeholder="simulation/qinling/model"><button type="submit">打开</button></form>
+    <div class="workspace-filter"><label for="fileSearch">文件筛选</label><input id="fileSearch" type="search" placeholder="按名称筛选当前目录" autocomplete="off"><span id="entryCount"></span></div>
+    <div id="workspaceTable" class="workspace-table"><table><thead><tr><th>名称</th><th>大小</th><th>操作</th></tr></thead><tbody id="fileRows"></tbody></table><p id="emptyFolder" hidden>此目录没有匹配的文件或子目录</p></div>
+    <div class="workspace-footer"><button id="previousPage">上一页</button><span id="pageIndicator">1 / 1</span><button id="nextPage">下一页</button><a id="viewResult" class="button-link" href="/model.html" hidden>查看加载结果</a></div>
+    <p id="workspaceMessage" class="notice" role="status">路径均相对于配置的工作区根目录。</p>
+  </article>
+</main><script src="/nav.js"></script><script src="/workspace.js"></script></body>
+</html>

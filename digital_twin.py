@@ -641,6 +641,42 @@ class DigitalTwin:
     def run_cycle(self) -> bool:
         return self.tick()
 
+    def export_persistent_state(self, *, runtime_only=False):
+        """Store editable inputs and exact runtime state, never replay commands."""
+        with self._lock:
+            runtime = {key: getattr(self, key) for key in (
+                'sim_seconds', 'running', 'speed', 'step_seconds', 'soc', 'tie_breaker_closed',
+                'diesel_running', 'battery_enabled', 'grid_available', 'boundary_source')}
+            runtime.update(storage_soc={key: value['soc'] for key, value in self._storage_states.items()},
+                           seq=self._seq, model_revision=self._model_revision,
+                           events=list(self._events), history=list(self._history), alarms=list(self._alarms))
+            sections = {'runtime': deepcopy(runtime)}
+            if not runtime_only:
+                sections['model'] = deepcopy(self.model)
+            return sections
+
+    def restore_persistent_state(self, sections):
+        """Restore after validating the model; downtime never advances the clock."""
+        with self._lock:
+            if 'model' in sections:
+                self.load_model(sections['model'])
+            runtime = sections['runtime']
+            for key in ('sim_seconds', 'running', 'speed', 'step_seconds', 'soc', 'tie_breaker_closed',
+                        'diesel_running', 'battery_enabled', 'grid_available', 'boundary_source'):
+                setattr(self, key, runtime[key])
+            for key, value in runtime['storage_soc'].items():
+                if key in self._storage_states:
+                    storage = self._storage_states[key]
+                    storage['soc'] = clamp(value, storage['lower'], storage['upper'])
+            self._seq = runtime['seq']
+            self._model_revision = runtime['model_revision']
+            self._events = deque(deepcopy(runtime['events']), maxlen=200)
+            self._history = deque(deepcopy(runtime['history']), maxlen=600)
+            self._alarms = deque(deepcopy(runtime['alarms']), maxlen=100)
+            self._step_requested = False
+            self._last_wall = self._last_step_wall = time.monotonic()
+            self._state = self._calculate_state()
+
     def command_clock(self, action: str, value: Any = None) -> dict[str, Any]:
         with self._lock:
             action = str(action or "").lower()

@@ -142,7 +142,7 @@
         <div class="lead"><div><h2>系统定位与功能边界</h2><p>将教员台中与新能源、储能、设备状态和 SCADA 发布相关的数据流提炼为可独立运行的仿真服务。</p></div><span class="tag">独立可运行</span></div>
         <div class="grid grid-4">
           <article class="card metric"><span class="label">实时仿真</span><strong>1 s</strong><small>默认步长，可用 0.1～20 倍速控制</small></article>
-          <article class="card metric"><span class="label">模型输入</span><strong>3 类</strong><small>JSON、定义 ZIP、E-file</small></article>
+          <article class="card metric"><span class="label">模型输入</span><strong>SQLite</strong><small>固定文件 devices.sqlite3</small></article>
           <article class="card metric"><span class="label">基础点表</span><strong>YC / YX / YK</strong><small>默认 11 / 4 / 3，导入设备后扩展</small></article>
           <article class="card metric"><span class="label">协议出口</span><strong>IEC 104</strong><small>复用 D:\codex\scada 的 scdfe_s 接口</small></article>
         </div>
@@ -155,7 +155,7 @@
         </div>
         <div class="section-title"><h3>功能清单</h3><span>与当前代码实现一致</span></div>
         <div class="grid grid-3">
-          <article class="card"><h3>模型与点表</h3><ul class="list"><li>导入 JSON、power_simu_web 定义 ZIP 或 E-file。</li><li>读取风机、光伏、柴油机、储能等设备容量。</li><li>一键生成 scdfe_s 的 YC、YX、YK 定义和 IEC 104 地址映射。</li></ul></article>
+          <article class="card"><h3>模型与点表</h3><ul class="list"><li>从可配置目录读取 devices.sqlite3 业务模型库。</li><li>读取风机、光伏、柴油机、储能等设备容量。</li><li>一键生成 scdfe_s 的 YC、YX、YK 定义和 IEC 104 地址映射。</li></ul></article>
           <article class="card"><h3>实时仿真</h3><ul class="list"><li>按分钟曲线插值环境、负荷、柴发和储能功率。</li><li>风速和辐照驱动风光出力上限；储能功率更新 SOC。</li><li>设备投退、拓扑联锁后重新计算功率平衡。</li></ul></article>
           <article class="card boundary"><h3><strong>当前边界</strong></h3><p>数字孪生范围已聚焦 SCADA、IEC 104 和基础功率平衡。当前不包含 AGC、PAS、ACE、备用容量和负荷切除等控制内容，也不提供 <code>/api/agc</code>、<code>/api/pas</code> 接口。</p></article>
         </div>
@@ -165,9 +165,9 @@
       <section class="panel" data-panel="external">
         <div class="lead"><div><h2>外部模型与边界</h2><p>参考 power_simu_web 定义包，按设备身份绑定模型、曲线和图形。</p></div></div>
         <div class="grid grid-2">
-          <article class="card"><h3>模型定义 ZIP</h3><p>model.e 优先；支持 meas.e、control.e、curves.e / curves.json、diagram.svg。单个 E 文件与 simulator JSON 也可导入。AC/DC 节点编号隔离，保留设备 block、idx、名称和参数。新模型没有 SVG 时清空旧图形。</p></article>
+          <article class="card"><h3>电网数据库</h3><p>默认读取 simulation/qinling/sqldb/model/devices.sqlite3，目录可修改，文件名固定。只读加载 RTDB 内嵌字段定义或普通命名字段表；AC/DC 节点编号隔离，保留设备身份和参数。库缺失或无效时报错。</p></article>
           <article class="card"><h3>风光荷温边界</h3><p>CSV、TSV、JSON、weather.e、curves.e 和 ZIP；支持 UTF-8 / GB18030。时间为日内分钟或 HH:MM[:SS]。支持按名称匹配负荷、按设备类型与名称匹配源功率，部分通道导入保留其他通道。</p></article>
-          <article class="card"><h3>操作路径</h3><p>模型管理 → 导入定义包 → 曲线设置 / 外部边界导入 → 预览分页 → 实时效果。编辑器按曲线与记录分页，保存后立即重算；错误时间、重复时刻和无效数值会拒绝应用。</p></article>
+          <article class="card"><h3>操作路径</h3><p>电网数据库 → 校验 → 保存并加载 → 外部边界 / SVG → 实时效果。编辑器按曲线与记录分页，保存后立即重算；错误时间、重复时刻和无效数值会拒绝应用。</p></article>
           <article class="card"><h3>计算范围</h3><p>功率按设备边界、风光能力和投运状态计算，当前仍为简化功率平衡。节点电压、无功、支路潮流等未计算量显示 --。储能按设备独立积分 SOC，再按能量加权汇总；氢热源曲线保留并提示，暂不参与计算。</p></article>
         </div>
       </section>
@@ -177,7 +177,7 @@
           <article class="card"><h3>设备右键</h3><p>查看实时状态、投入与退出。开关增加合闸与分闸，电源设备可设定功率或恢复跟随曲线，显示 closed_status 实际合位。操作后同步拓扑、重算并调用 scdfe_s 桥接发布遥测遥信；暂停状态下也可操作。</p></article>
           <article class="card"><h3>空白右键</h3><p>适应窗口、放大、缩小、显示 / 隐藏测量数值、刷新。Esc 关闭菜单，菜单自动限制在可视窗口内。工具栏提供同样的常用入口。</p></article>
           <article class="card"><h3>SVG 实时驱动</h3><p>dev-id、use[id][name] 匹配设备；dev 下的 mti 优先于 mt，支持命名测量。实时更新功率、SOC、状态；退出灰显，开关切换 _state_0 / _state_1 图符。图形版本变化时才重编译绑定。</p></article>
-          <article class="card"><h3>使用边界</h3><p>上传 SVG 的脚本、事件与外部活动资源会清除，实时更新由网页脚本提供。图形可随 ZIP 一并导入，也可单独加载。导入内容与近期操作记录驻留内存，重启后需重新导入。</p></article>
+          <article class="card"><h3>使用边界</h3><p>上传 SVG 的脚本、事件与外部活动资源会清除，实时更新由网页脚本提供。Web 修改写入 simulator.sqlite3，重启自动恢复；时钟与 SOC 每 5 秒保存。建表、改字段同步事务更新 RTDB 内置结构，旧状态库自动迁移并保留数据。</p></article>
         </div>
       </section>
       <section class="panel" data-panel="engine">
@@ -203,7 +203,7 @@
         <div class="lead"><div><h2>Web 页面</h2><p>页面按功能拆分，每页保留统一导航和仿真时钟；标签用于在一个功能域内切换展示。</p></div><span class="tag">5 个功能页面</span></div>
         <div class="grid grid-3">
           <article class="card page-card"><span class="route">/</span><h3>运行总览</h3><p class="purpose">显示系统频率、联络线潮流、SOC、环境输入、IEC 104 状态和当前模型摘要。</p><ul class="list"><li>运行状态：实时指标和告警。</li><li>功率趋势：最近 10 分钟曲线。</li><li>计算与告警：潮流收敛和报警列表。</li></ul></article>
-          <article class="card page-card"><span class="route">/model.html</span><h3>模型管理</h3><p class="purpose">导入模型并根据最新模型刷新运行点；一键写入 scdfe_s 四遥定义。</p><ul class="list"><li>支持 JSON、ZIP、E-file。</li><li>查看模型摘要和导入设备。</li><li>查看 YC/YX/YK/YT 数量。</li></ul></article>
+          <article class="card page-card"><span class="route">/model.html</span><h3>电网数据库</h3><p class="purpose">修改内核读取目录，固定使用 devices.sqlite3；配置保存后重启生效。</p><ul class="list"><li>校验、保存加载、重载当前库。</li><li>分页查看表和记录数量。</li><li>模型摘要和四遥点表使用独立页面。</li></ul></article>
           <article class="card page-card"><span class="route">/curves.html</span><h3>曲线设置</h3><p class="purpose">编辑 weather、load、diesel、battery 四类曲线 JSON，保存后立即作用于下一次仿真计算。</p><ul class="list"><li>按 minute 排序。</li><li>支持读取、编辑、保存。</li></ul></article>
           <article class="card page-card"><span class="route">/devices.html</span><h3>设备与拓扑</h3><p class="purpose">用搜索、类型/状态筛选和分页快速定位设备，查看实时出力与逐储能 SOC，并触发联锁和功率计算。</p><ul class="list"><li>跨页勾选后批量投退或开关分合闸。</li><li>单设备功率设定、跟随曲线。</li><li>保存 topology JSON，查看潮流状态。</li></ul></article>
           <article class="card page-card"><span class="route">/scada.html</span><h3>SCADA / IEC 104</h3><p class="purpose">查看 IEC 104 服务、YC/YX/YK 点定义和实时值，控制服务启动与停止。</p><ul class="list"><li>按点类筛选。</li><li>查看监听地址、RTU、客户端和最新上送序号。</li></ul></article>
@@ -214,7 +214,7 @@
       <section class="panel" data-panel="model">
         <div class="lead"><div><h2>模型与曲线</h2><p>模型导入后统一归一化为运行模型；设备点会自动扩展到实时点表。</p></div><span class="tag">模型驱动</span></div>
         <div class="grid grid-2">
-          <article class="card"><h3>模型 JSON 示例</h3><pre class="code">{
+          <article class="card"><h3>内部归一化结构（非上传格式）</h3><pre class="code">{
   <span class="key">"name"</span>: <span class="string">"风储微网"</span>,
   <span class="key">"devices"</span>: [
     {<span class="key">"id"</span>: <span class="string">"wind-1"</span>, <span class="key">"type"</span>: <span class="string">"wind"</span>, <span class="key">"rated_kw"</span>: <span class="number">80</span>, <span class="key">"run"</span>: <span class="number">true</span>},
@@ -225,7 +225,7 @@
   <span class="key">"topology"</span>: {<span class="key">"nodes"</span>: [], <span class="key">"edges"</span>: []},
   <span class="key">"curves"</span>: {<span class="key">"weather"</span>: [], <span class="key">"load"</span>: [], <span class="key">"diesel"</span>: [], <span class="key">"battery"</span>: []}
 }</pre></article>
-          <article class="card"><h3>导入处理</h3><ul class="list"><li>JSON：读取 devices、topology、curves、points、metadata。</li><li>ZIP：优先识别 model.json / manifest.json；否则从 model.e、curves.json 等文件恢复设备和拓扑。</li><li>E-file：解析模型块，识别节点、支路、开关、风机、光伏、柴发、储能和负荷。</li><li>设备类型别名会统一到 wind、pv、diesel、battery 等运行族。</li><li>导入完成后清空历史和告警，重建运行点；IEC 104 桥接同步重建。</li></ul><div class="callout" style="margin-top:13px">容量优先使用设备 rated_kw / rated_capacity / p_max；没有对应设备时使用内置演示容量。</div></article>
+          <article class="card"><h3>数据库加载</h3><ul class="list"><li>目录相对于工作区根目录，不能越界；文件名固定为 devices.sqlite3。</li><li>只读事务按一致快照读取表；不修改业务模型。</li><li>校验不切换内核；失败时保留当前模型和配置。</li><li>按参数表引用识别 wind、pv、diesel、battery 等运行族。</li><li>加载后重置设备状态、曲线、图形和历史，重建运行点及 IEC 104 桥接。</li></ul><div class="callout" style="margin-top:13px">目录、曲线、SVG、拓扑、设备指令和时钟保存至 simulator.sqlite3；显式启动参数优先于保存值。数据保存页面提供状态与持久日志。</div></article>
         </div>
         <div class="section-title"><h3>曲线字段</h3><span>每行至少包含 minute 或 time</span></div>
         <div class="grid grid-2">
@@ -240,7 +240,7 @@
           <article class="card"><h3>点类与用途</h3><div class="point-map"><div class="point-row"><b class="badge yc">YC</b><b>11+</b><span>频率、电压、负荷、风光柴发、储能、联络线、SOC、相角；导入设备后增加设备出力点。</span></div><div class="point-row"><b class="badge yx">YX</b><b>4+</b><span>并网断路器、柴油机、储能、电网可用；导入设备后增加设备运行状态点。</span></div><div class="point-row"><b class="badge yk">YK</b><b>3</b><span>并网断路器、柴油机、储能遥控。Web 和 IEC 104 都可触发。</span></div><div class="point-row"><b class="badge yt">YT</b><b>0</b><span>当前基础模型不生成遥调点；系统范围不包含 AGC/PAS 调节功能。</span></div></div><div class="callout" style="margin-top:13px">点表生成会写入 scdfe_s 的 fes_yc_define、fes_yx_define、fes_yk_define、fes_yt_define 以及 fes_channel_iec104_point_define。</div></article>
           <article class="card"><h3>实时发布链路</h3><ol class="step-list"><li>服务启动时由 ScdfeIEC104Bridge 加载 IEC104Server，并按当前运行点注册监视点。</li><li>数字孪生每次状态变化后调用 publish，主动上送 YC/YX，传送原因为 SPONTANEOUS。</li><li>IEC 104 YK 回调进入 DigitalTwin.apply_command，改变并网、柴发或储能状态。</li><li>模型导入或点表生成后停止旧桥接、重建点、按原运行状态重新启动。</li><li>Web 可查询监听地址、连接数、最新上送序号和最后错误。</li></ol></article>
         </div>
-        <div class="section-title"><h3>scdfe_s 一键生成</h3><span>模型管理 → 一键生成实时点表</span></div>
+        <div class="section-title"><h3>scdfe_s 一键生成</h3><span>四遥点表 → 一键生成实时点表</span></div>
         <div class="grid grid-3"><article class="card"><h3>RTU</h3><p>默认 RTU ID 为 104，名称为“模型名 数字孪生”，通道类型为 iec104。</p></article><article class="card"><h3>地址</h3><p>YC 从 0x4001、YX 从 1、YK 从 0x6001、YT 从 0x6201 开始顺序映射。</p></article><article class="card"><h3>上送</h3><p>YC/YX 默认 1000 ms 上送周期；YK 采用 DIRECT 命令模式。</p></article></div>
       </section>
 
@@ -256,7 +256,8 @@
           <tr><td>GET</td><td><code>/api/power-flow</code></td><td>读取最近一次嵌入式功率平衡。</td><td><small>converged、iterations、mismatch_kw、calculation</small></td></tr>
           <tr><td>GET</td><td><code>/api/points</code></td><td>当前运行点定义。</td><td><small>items：YC/YX/YK/YT，含设备扩展点</small></td></tr>
           <tr><td>GET</td><td><code>/api/model</code> / <code>/api/model/detail</code></td><td>模型摘要 / 完整模型详情。</td><td><small>设备、拓扑、曲线和元数据</small></td></tr>
-          <tr><td>POST</td><td><code>/api/model/import</code></td><td>导入模型并刷新点表。</td><td><small><code>{filename, data_base64}</code> 或 <code>{model}</code></small></td></tr>
+          <tr><td>GET / POST</td><td><code>/api/model/source</code></td><td>查询数据源 / 保存目录并加载数据库。</td><td><small><code>{directory: "simulation/qinling/sqldb/model"}</code></small></td></tr>
+          <tr><td>POST</td><td><code>/api/model/source/validate</code></td><td>只校验数据库，不切换仿真模型。</td><td><small><code>{directory}</code></small></td></tr>
           <tr><td>GET / POST</td><td><code>/api/curves</code></td><td>读取或保存四类曲线。</td><td><small>POST：<code>{curves: {weather, load, diesel, battery}}</code></small></td></tr>
           <tr><td>GET / POST</td><td><code>/api/devices</code> / <code>/api/devices/state</code></td><td>查看设备或切换投运状态。</td><td><small>POST：<code>{device_id, running}</code></small></td></tr>
           <tr><td>POST</td><td><code>/api/devices/states</code></td><td>批量切换设备投运状态。</td><td><small><code>{states:[{device_id,running}]}</code>；只执行一次联锁和功率计算</small></td></tr>
@@ -281,7 +282,7 @@
 python .\\server.py --host 0.0.0.0 --port 8780 `
   --scada-root D:\\codex\\scada `
   --iec104-bind 0.0.0.0 --iec104-port 2404</pre><p style="margin-top:11px">浏览器访问 <code>http://127.0.0.1:8780/</code>。仅运行 Web 仿真时增加 <code>--no-iec104</code>。</p></article>
-          <article class="card"><h3>操作顺序</h3><ol class="step-list"><li>打开“模型管理”，导入 JSON、ZIP 或 E-file。</li><li>点击“一键生成实时点表”，确认 YC/YX/YK 统计。</li><li>在“曲线设置”修改环境或设备曲线并保存。</li><li>在“设备与拓扑”投退设备或更新拓扑。</li><li>在“SCADA / IEC 104”检查点值和服务连接。</li><li>在总览页用仿真时钟启动、暂停、单步或调整速度。</li></ol></article>
+          <article class="card"><h3>操作顺序</h3><ol class="step-list"><li>打开“电网数据库”，校验目录并保存加载 devices.sqlite3。</li><li>点击“一键生成实时点表”，确认 YC/YX/YK 统计。</li><li>在“曲线设置”修改环境或设备曲线并保存。</li><li>在“设备与拓扑”投退设备或更新拓扑。</li><li>在“SCADA / IEC 104”检查点值和服务连接。</li><li>在总览页用仿真时钟启动、暂停、单步或调整速度。</li></ol></article>
         </div>
         <div class="section-title"><h3>依赖与限制</h3><span>部署前应确认</span></div>
         <div class="grid grid-3"><article class="card"><h3>外部依赖</h3><p>IEC 104 桥接依赖 <code>D:\codex\scada\server\iec104_server.py</code> 及 scdfe_s 数据库 schema。依赖不可用时 Web 仿真仍可运行，但 IEC 104 显示不可用。</p></article><article class="card"><h3>计算内核</h3><p>潮流部分为内置嵌入式功率平衡模型，提供工程演示所需的频率、电压、相角和收敛状态；它不是完整的 AC/DC 网络求解器。</p></article><article class="card"><h3>数据语义</h3><p>储能功率正值表示放电；联络线潮流正值表示从外部电网购电。曲线时间单位为分钟，仿真时间按 24 小时循环。</p></article></div>
@@ -293,6 +294,7 @@ Invoke-WebRequest http://127.0.0.1:8780/simulator_functionality.html</pre>
       </section>
     </main>
   </div>
+  <aside style="position:fixed;bottom:8px;right:12px;font-size:12px"><a href="/workspace.html">工作目录：根目录内相对路径 · realtime / simulation</a></aside>
   <script>
     const buttons = [...document.querySelectorAll('[data-tab]')];
     const panels = [...document.querySelectorAll('[data-panel]')];

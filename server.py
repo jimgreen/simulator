@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import argparse
 import base64
+from copy import deepcopy
+import hashlib
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import threading
+import time
 from urllib.parse import parse_qs, urlparse
 
 from digital_twin import DigitalTwin
 from iec104_bridge import ScdfeIEC104Bridge
 from model_import import load_boundary_bytes, load_model_bytes, sanitize_svg
+from model_database import ModelDatabaseSource
 from scdfe_points import ScdfePointTableManager
+from workspace import DEFAULT_WORKSPACE_ROOT, Workspace
+from state_store import DEFAULT_STATE_DIRECTORY, SimulatorStateStore, encode
 
 
 ROOT = Path(__file__).resolve().parent
@@ -21,9 +27,37 @@ WEB = ROOT / "web"
 
 
 class SimulatorApplication:
-    def __init__(self, args: argparse.Namespace) -> None:
-        self.twin = DigitalTwin(seed=args.seed, step_seconds=args.step_seconds)
-        self.point_tables = ScdfePointTableManager(scada_root=args.scada_root, db_path=args.scada_db)
+    def __init__(self, args: argparse.Namespace, *, model_config=None) -> None:
+        self.workspace = Workspace(args.workspace_root)
+        self._model_lock = threading.RLock()
+        self.state_store = SimulatorStateStore(self.workspace, args.state_directory)
+        saved_settings = self.state_store.load('global')
+        self.preferences = saved_settings.get('preferences', {})
+        self.iec104_requested = saved_settings.get('iec104_running', True)
+        self.storage_error = ''
+        self._checkpoint_at = time.monotonic()
+        self.model_source = ModelDatabaseSource(self.workspace, directory=args.model_directory or saved_settings.get('model_directory'),
+                                               config_file=model_config or ROOT / 'runtime/model_source.json')
+        try:
+            model, source_info = self.model_source.prepare()
+        except Exception:
+            self.state_store.close()
+            raise
+        self.twin = DigitalTwin(seed=args.seed, step_seconds=args.step_seconds, model=model)
+        self.model_source.activate(source_info)
+        self._scope = self._model_scope(model)
+        saved = self.state_store.load(self._scope)
+        self.restored = 'model' in saved and 'runtime' in saved
+        if self.restored:
+            self.twin.restore_persistent_state(saved)
+        self.point_generation = saved.get('point_generation')
+        self._seed, self._step_seconds = args.seed, args.step_seconds
+        default_db = self.workspace.root / 'simulation/qinling/sqldb/scada/scdfe_s.sqlite3'
+        if not default_db.is_file():
+            default_db = self.workspace.root / 'simulation/scdfe_s.sqlite3'
+        database = self.workspace.root / args.scada_db if args.scada_db else default_db
+        self.point_tables = ScdfePointTableManager(scada_root=args.scada_root, db_path=database,
+                                                 workspace_root=self.workspace.root)
         self.bridge = None
         self._stop = threading.Event()
         if not args.no_iec104:
@@ -36,28 +70,136 @@ class SimulatorApplication:
                     common_address=args.common_address,
                     rtu_id=args.rtu_id,
                 )
-                self.bridge.start()
+                if self.iec104_requested:
+                    self.bridge.start()
             except Exception as exc:
                 print(f"IEC104 未启动: {exc}", flush=True)
                 self.bridge = None
+        self._persist()
         self.worker = threading.Thread(target=self._loop, name="digital-twin-loop", daemon=True)
         self.worker.start()
 
     def _loop(self) -> None:
         while not self._stop.is_set():
-            changed = self.twin.run_cycle()
-            if changed and self.bridge is not None:
-                try:
-                    self.bridge.publish(self.twin.snapshot(history_limit=1))
-                except Exception as exc:
-                    print(f"IEC104 发布失败: {exc}", flush=True)
+            with self._model_lock:
+                changed = self.twin.run_cycle()
+                if changed and self.bridge is not None:
+                    try:
+                        self.bridge.publish(self.twin.snapshot(history_limit=1))
+                    except Exception as exc:
+                        print(f"IEC104 发布失败: {exc}", flush=True)
+                if time.monotonic() - self._checkpoint_at >= 5:
+                    try:
+                        self._persist(runtime_only=True)
+                    except Exception as exc:
+                        self.storage_error = str(exc)
+                        print(f"仿真状态保存失败: {exc}", flush=True)
+                    self._checkpoint_at = time.monotonic()
             self._stop.wait(0.05)
+
+    def load_database_source(self, body, *, validate_only=False):
+        if set(body) - {'directory'}:
+            raise ValueError('仅可修改目录，数据库文件名固定为 devices.sqlite3')
+        with self._model_lock:
+            directory = body.get('directory', self.model_source.directory)
+        # Disk I/O and candidate validation must not stall the running simulation.
+        model, info = self.model_source.prepare(directory)
+        DigitalTwin(seed=self._seed, step_seconds=self._step_seconds, model=model)
+        with self._model_lock:
+            if not validate_only:
+                self.twin.load_model(model)
+                self.model_source.activate(info)
+                self._scope = self._model_scope(model)
+                self.point_generation = None
+            return {'source': info, 'model': self.twin.model_summary(), 'validated': True,
+                    'message': '数据库校验通过' if validate_only else '电网数据库已加载，目录配置已保存'}
+
+    @staticmethod
+    def _model_scope(model):
+        return 'model:' + hashlib.sha256(encode(model).encode('utf-8')).hexdigest()
+
+    def _persist(self, *, action=None, detail=None, runtime_only=False):
+        sections = self.twin.export_persistent_state(runtime_only=runtime_only)
+        settings = None
+        if not runtime_only:
+            sections['point_generation'] = self.point_generation
+            settings = {'model_directory': self.model_source.directory, 'preferences': self.preferences,
+                        'iec104_running': self.iec104_requested}
+        self.state_store.save(self._scope, sections, settings=settings, action=action, detail=detail)
+        self.storage_error = ''
+        self._checkpoint_at = time.monotonic()
+
+    def storage_status(self):
+        return {**self.state_store.status(), 'restored': self.restored, 'last_error': self.storage_error}
+
+    def mutate(self, path, body, operation):
+        """Commit a Web edit before acknowledging it or publishing new values."""
+        with self._model_lock:
+            with self.twin._lock:
+                previous = self.twin.export_persistent_state()
+                source = deepcopy(self.model_source.status())
+                previous_scope = self._scope
+                previous_settings = deepcopy((self.preferences, self.iec104_requested, self.point_generation))
+                try:
+                    result = operation()
+                    # Imported data live in state sections; the journal keeps compact provenance.
+                    detail = {key: value for key, value in body.items() if key not in {'data_base64', 'model', 'values', 'curves'}}
+                    if 'data_base64' in body:
+                        detail['uploaded_base64_bytes'] = len(body['data_base64'])
+                    self._persist(action=path, detail=detail)
+                except Exception as exc:
+                    self.twin.restore_persistent_state(previous)
+                    self.model_source.activate(source)
+                    self._scope = previous_scope
+                    self.preferences, self.iec104_requested, self.point_generation = previous_settings
+                    self.storage_error = str(exc) if not isinstance(exc, ValueError) else self.storage_error
+                    raise
+            # External publication follows durable local commit and is reported separately.
+            try:
+                if path == '/api/scdfe/points/generate':
+                    job = self.point_generation
+                    result = self.point_tables.generate(job['points'], **job['options'])
+                    job['result'], job['status'] = result, 'delivered'
+                    self._persist()
+                if self.bridge is not None:
+                    if path in {'/api/model/source', '/api/scdfe/points/generate'}:
+                        self.bridge.rebuild()
+                    elif path == '/api/iec104/start':
+                        result = self.bridge.start()
+                    elif path == '/api/iec104/stop':
+                        result = self.bridge.stop()
+                    elif path != '/api/preferences':
+                        self.bridge.publish(self.twin.snapshot(history_limit=1))
+            except Exception as exc:
+                result['delivery_error'] = str(exc)
+                result['iec104_error'] = str(exc)
+                result['message'] = result.get('message', '修改已保存') + '；外部服务同步失败：' + str(exc)
+            result['persistence'] = {'saved': True, 'database': self.state_store.relative_path}
+            return result
+
+    def set_preferences(self, body):
+        page, values = body.get('page'), body.get('values')
+        if not isinstance(page, str) or not page or len(page) > 64 or not isinstance(values, dict) or len(encode(values)) > 64000:
+            raise ValueError('页面设置格式无效或超过 64 KB')
+        self.preferences.setdefault(page, {}).update(deepcopy(values))
+        return {'page': page, 'values': self.preferences[page]}
+
+    def prepare_point_generation(self, body):
+        options = {'model_name': self.twin.model['name'], 'rtu_id': int(body.get('rtu_id', 104)),
+                   'channel_id': int(body.get('channel_id', body.get('rtu_id', 104))), 'replace': bool(body.get('replace', True))}
+        self.point_generation = {'options': options, 'points': self.twin.points(), 'status': 'pending'}
+        return {'message': '四遥点表已保存，等待同步 scdfe_s'}
 
     def close(self) -> None:
         self._stop.set()
         self.worker.join(timeout=2)
         if self.bridge is not None:
             self.bridge.stop()
+        try:
+            with self._model_lock:
+                self._persist()
+        finally:
+            self.state_store.close()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -101,6 +243,23 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         try:
+            if path == '/api/storage':
+                return self._send(200, self.app.storage_status())
+            if path == '/api/storage/operations':
+                return self._send(200, {'items': self.app.state_store.operations(parse_qs(parsed.query).get('limit', [50])[0])})
+            if path == '/api/preferences':
+                page = parse_qs(parsed.query).get('page', [''])[0]
+                with self.app._model_lock:
+                    return self._send(200, {'page': page, 'values': deepcopy(self.app.preferences.get(page, {}))})
+            if path == "/api/model/source":
+                with self.app._model_lock:
+                    return self._send(200, {"source": self.app.model_source.status(), "model": self.app.twin.model_summary()})
+            if path == "/api/workspace":
+                query = parse_qs(parsed.query)
+                return self._send(200, self.app.workspace.listing(
+                    directory=query.get('directory', ['.'])[0], kind=query.get('kind', ['model'])[0],
+                    page=query.get('page', [1])[0], page_size=query.get('page_size', [8])[0],
+                    query=query.get('q', [''])[0]))
             if path == "/api/health":
                 return self._send(200, {"status": "ok", "service": "environment-aware-digital-twin", "model": self.app.twin.model_summary(), "iec104": self.app.bridge.status() if self.app.bridge else {"available": False}})
             if path == "/api/overview":
@@ -157,7 +316,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static("index.html", "text/html; charset=utf-8")
             if path.endswith(".html") and path.count("/") == 1:
                 return self._static(path[1:], "text/html; charset=utf-8")
-            if path in {"/app.js", "/nav.js", "/styles.css", "/diagram.js", "/diagram.css", "/boundary.js"}:
+            if path in {"/app.js", "/nav.js", "/styles.css", "/diagram.js", "/diagram.css", "/boundary.js", "/workspace.js", "/workspace.css", "/model-source.js", "/model-source.css", "/storage.js", "/storage.css"}:
                 return self._static(path[1:], "application/javascript; charset=utf-8" if path.endswith(".js") else "text/css; charset=utf-8")
             return self._send(404, {"error": "not_found"})
         except Exception as exc:
@@ -172,99 +331,124 @@ class Handler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             return self._send(404, {"error": "not_found"})
 
+    def _import_input(self, body, kind):
+        if 'path' in body:
+            if 'data_base64' in body or 'model' in body:
+                raise ValueError('请选择工作目录路径或上传内容，不可同时提供')
+            return self.app.workspace.read(body['path'], kind)
+        default = {'model': 'model.json', 'boundary': 'boundary.csv', 'diagram': 'diagram.svg'}[kind]
+        source = Path(PureWindowsPath(str(body.get('filename') or default)).name).name
+        if body.get('data_base64'):
+            return base64.b64decode(str(body['data_base64']), validate=True), source
+        if kind == 'model' and isinstance(body.get('model'), dict):
+            return json.dumps(body['model'], ensure_ascii=False).encode('utf-8'), source
+        raise ValueError('请选择工作目录文件或上传输入文件')
+
     def do_POST(self):
-        parsed = urlparse(self.path)
+        path = urlparse(self.path).path
         try:
             body = self._json_body()
-            if parsed.path == "/api/clock":
-                return self._send(200, {"clock": self.app.twin.command_clock(body.get("action"), body.get("value"))})
-            if parsed.path == "/api/model/import":
-                source_name = str(body.get("filename") or "model.json")
-                encoded = body.get("data_base64")
-                if encoded:
-                    data = base64.b64decode(str(encoded), validate=True)
-                elif isinstance(body.get("model"), dict):
-                    data = json.dumps(body["model"], ensure_ascii=False).encode("utf-8")
-                else:
-                    raise ValueError("需要 data_base64 或 model 对象")
-                model = load_model_bytes(data, source_name=source_name)
-                summary = self.app.twin.load_model(model)
-                if self.app.bridge is not None:
-                    self.app.bridge.rebuild()
-                return self._send(200, {"model": summary, "points": len(self.app.twin.points()), "message": "模型已导入并已刷新运行点表"})
-            if parsed.path == "/api/scdfe/points/generate":
-                result = self.app.point_tables.generate(self.app.twin.points(), model_name=self.app.twin.model.get("name", "digital-twin"), rtu_id=int(body.get("rtu_id", 104)), channel_id=int(body.get("channel_id", body.get("rtu_id", 104))), replace=bool(body.get("replace", True)))
-                if self.app.bridge is not None:
-                    self.app.bridge.rebuild()
-                return self._send(200, result)
-            if parsed.path == "/api/curves":
-                curves = self.app.twin.set_curves(body)
-                if self.app.bridge is not None:
-                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
-                return self._send(200, {"curves": curves})
-            if parsed.path == "/api/boundary/import":
-                source_name = str(body.get("filename") or "boundary.csv")
-                encoded = body.get("data_base64")
-                if not encoded:
-                    raise ValueError("需要 data_base64")
-                boundary = load_boundary_bytes(base64.b64decode(str(encoded), validate=True), source_name=source_name)
-                curves = self.app.twin.merge_curves(boundary["curves"], source=boundary["source"])
-                if self.app.bridge is not None:
-                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
-                return self._send(200, {**boundary, "curves": curves, "message": "外部边界数据已加载"})
-            if parsed.path == "/api/diagram/import":
-                source_name = str(body.get("filename") or "diagram.svg")
-                encoded = body.get("data_base64")
-                if not encoded:
-                    raise ValueError("需要 data_base64")
-                diagram = sanitize_svg(base64.b64decode(str(encoded), validate=True), source_name=source_name)
-                return self._send(200, {"diagram": self.app.twin.set_diagram(diagram, source="web"), "message": "SVG 电网图形已加载"})
-            if parsed.path == "/api/devices/state":
-                result = self.app.twin.set_device_state(str(body.get("device_id")), body.get("running"), source="web")
-                if self.app.bridge is not None:
-                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
-                return self._send(200, result)
-            if parsed.path == "/api/devices/operate":
-                result = self.app.twin.operate_device(body.get("device_id"), body.get("action"), value=body.get("value"), model_revision=body.get("model_revision"))
-                if self.app.bridge is not None:
-                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
-                return self._send(200, result)
-            if parsed.path == "/api/devices/actions":
-                result = self.app.twin.apply_device_actions(body.get("actions"), model_revision=body.get("model_revision"), source="web")
-                if self.app.bridge is not None:
-                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
-                return self._send(200, result)
-            if parsed.path == "/api/devices/states":
-                result = self.app.twin.set_devices_state(body.get("states"), source="web")
-                if self.app.bridge is not None:
-                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
-                return self._send(200, result)
-            if parsed.path == "/api/scenario":
-                result = self.app.twin.apply_scenario(body.get("name"), source=str(body.get("source", "web")))
-                if self.app.bridge is not None:
-                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
-                return self._send(200, result)
-            if parsed.path == "/api/topology":
-                result = self.app.twin.set_topology(body)
-                if self.app.bridge is not None:
-                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
-                return self._send(200, result)
-            if parsed.path == "/api/commands":
-                result = self.app.twin.apply_command(body.get("kind"), int(body.get("point_no")), body.get("value"), selected=bool(body.get("selected")))
-                if self.app.bridge is not None:
-                    self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
-                return self._send(200, result)
-            if parsed.path == "/api/iec104/start":
-                if self.app.bridge is None:
-                    raise RuntimeError("IEC104 桥接未加载，请检查 scada_root")
-                return self._send(200, self.app.bridge.start())
-            if parsed.path == "/api/iec104/stop":
-                if self.app.bridge is None:
-                    raise RuntimeError("IEC104 桥接未加载")
-                return self._send(200, self.app.bridge.stop())
+            def operation():
+                return self._dispatch_post(path, body)
+            if hasattr(self.app, 'state_store') and path != '/api/model/source/validate':
+                result = self.app.mutate(path, body, operation)
+            else:
+                result = operation()
+            return self._send(200, result)
+        except NotImplementedError:
             return self._send(404, {"error": "not_found"})
         except Exception as exc:
             return self._send(400, {"error": str(exc)})
+
+    def _dispatch_post(self, path, body):
+        if path == '/api/preferences':
+            return self.app.set_preferences(body)
+        if path in {"/api/model/source", "/api/model/source/validate"}:
+            return self.app.load_database_source(body, validate_only=path.endswith('/validate'))
+        if path == "/api/clock":
+            return {"clock": self.app.twin.command_clock(body.get("action"), body.get("value"))}
+        if path == "/api/model/import":
+            if hasattr(self.app, 'model_source'):
+                raise ValueError('仿真内核电网模型必须来自 devices.sqlite3，请在模型管理中配置数据库目录')
+            data, source_name = self._import_input(body, 'model')
+            model = load_model_bytes(data, source_name=source_name)
+            summary = self.app.twin.load_model(model)
+            if self.app.bridge is not None and not hasattr(self.app, 'state_store'):
+                self.app.bridge.rebuild()
+            return {"model": summary, "points": len(self.app.twin.points()), "message": "模型已导入并已刷新运行点表"}
+        if path == "/api/scdfe/points/generate":
+            if hasattr(self.app, "state_store"):
+                return self.app.prepare_point_generation(body)
+            result = self.app.point_tables.generate(self.app.twin.points(), model_name=self.app.twin.model.get("name", "digital-twin"), rtu_id=int(body.get("rtu_id", 104)), channel_id=int(body.get("channel_id", body.get("rtu_id", 104))), replace=bool(body.get("replace", True)))
+            if self.app.bridge is not None and not hasattr(self.app, 'state_store'):
+                self.app.bridge.rebuild()
+            return result
+        if path == "/api/curves":
+            curves = self.app.twin.set_curves(body)
+            if self.app.bridge is not None and not hasattr(self.app, 'state_store'):
+                self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+            return {"curves": curves}
+        if path == "/api/boundary/import":
+            data, source_name = self._import_input(body, 'boundary')
+            boundary = load_boundary_bytes(data, source_name=source_name)
+            curves = self.app.twin.merge_curves(boundary["curves"], source=boundary["source"])
+            if self.app.bridge is not None and not hasattr(self.app, 'state_store'):
+                self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+            return {**boundary, "curves": curves, "message": "外部边界数据已加载"}
+        if path == "/api/diagram/import":
+            data, source_name = self._import_input(body, 'diagram')
+            diagram = sanitize_svg(data, source_name=source_name)
+            return {"diagram": self.app.twin.set_diagram(diagram, source="web"), "message": "SVG 电网图形已加载"}
+        if path == "/api/devices/state":
+            result = self.app.twin.set_device_state(str(body.get("device_id")), body.get("running"), source="web")
+            if self.app.bridge is not None and not hasattr(self.app, 'state_store'):
+                self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+            return result
+        if path == "/api/devices/operate":
+            result = self.app.twin.operate_device(body.get("device_id"), body.get("action"), value=body.get("value"), model_revision=body.get("model_revision"))
+            if self.app.bridge is not None and not hasattr(self.app, 'state_store'):
+                self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+            return result
+        if path == "/api/devices/actions":
+            result = self.app.twin.apply_device_actions(body.get("actions"), model_revision=body.get("model_revision"), source="web")
+            if self.app.bridge is not None and not hasattr(self.app, 'state_store'):
+                self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+            return result
+        if path == "/api/devices/states":
+            result = self.app.twin.set_devices_state(body.get("states"), source="web")
+            if self.app.bridge is not None and not hasattr(self.app, 'state_store'):
+                self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+            return result
+        if path == "/api/scenario":
+            result = self.app.twin.apply_scenario(body.get("name"), source=str(body.get("source", "web")))
+            if self.app.bridge is not None and not hasattr(self.app, 'state_store'):
+                self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+            return result
+        if path == "/api/topology":
+            result = self.app.twin.set_topology(body)
+            if self.app.bridge is not None and not hasattr(self.app, 'state_store'):
+                self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+            return result
+        if path == "/api/commands":
+            result = self.app.twin.apply_command(body.get("kind"), int(body.get("point_no")), body.get("value"), selected=bool(body.get("selected")))
+            if self.app.bridge is not None and not hasattr(self.app, 'state_store'):
+                self.app.bridge.publish(self.app.twin.snapshot(history_limit=1))
+            return result
+        if path == "/api/iec104/start":
+            if self.app.bridge is None:
+                raise RuntimeError("IEC104 桥接未加载，请检查 scada_root")
+            if hasattr(self.app, "state_store"):
+                self.app.iec104_requested = True
+                return {"requested": True}
+            return self.app.bridge.start()
+        if path == "/api/iec104/stop":
+            if self.app.bridge is None:
+                raise RuntimeError("IEC104 桥接未加载")
+            if hasattr(self.app, "state_store"):
+                self.app.iec104_requested = False
+                return {"requested": False}
+            return self.app.bridge.stop()
+        raise NotImplementedError(path)
 
     def log_message(self, format, *args):
         return
@@ -279,8 +463,11 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Environment-aware power-system digital twin")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8780, help="Web API port")
+    parser.add_argument("--workspace-root", type=Path, default=DEFAULT_WORKSPACE_ROOT, help="Web 文件访问根目录；模型、边界、SVG 使用根目录内的相对路径")
+    parser.add_argument("--model-directory", default=None, help="电网数据库目录；默认 simulation/qinling/sqldb/model，固定读取 devices.sqlite3")
+    parser.add_argument("--state-directory", default=DEFAULT_STATE_DIRECTORY, help="根目录内的仿真配置与状态库目录，固定文件 simulator.sqlite3")
     parser.add_argument("--scada-root", default=r"D:\codex\scada")
-    parser.add_argument("--scada-db", default=None, help="scdfe_s SQLite path; defaults to D:/codex/scada/db/scdfe_s.sqlite3")
+    parser.add_argument("--scada-db", default=None, help="工作区根目录内的 scdfe_s 数据库；默认使用 simulation 下的数据库")
     parser.add_argument("--iec104-bind", default="127.0.0.1")
     parser.add_argument("--iec104-port", type=int, default=2404)
     parser.add_argument("--common-address", type=int, default=1)

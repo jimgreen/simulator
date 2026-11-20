@@ -327,8 +327,14 @@ def sanitize_svg(data, *, source_name="diagram.svg"):
 
 def _from_ebook(files, source_name):
     blocks = _ebook_blocks(_decode(files["model.e"]))
+    return model_from_tables(blocks, source_name=source_name, files=files)
+
+
+def model_from_tables(blocks, *, source_name, files=None, source_format="power_simu_web-e-file"):
+    """Use the same device/topology semantics for SQL rows and imported E tables."""
+    files = files or {}
     info = (blocks.get("Model") or [{}])[0]
-    factor = {"kw": 1, "mw": 1000, "w": .001}.get(info.get("p_unit", "kW").lower())
+    factor = {"kw": 1, "mw": 1000, "w": .001}.get(str(info.get("p_unit") or "kW").lower())
     if factor is None:
         raise ValueError("E 模型 p_unit 应为 kW、MW 或 W")
     devices, nodes, edges = [], [], []
@@ -340,7 +346,7 @@ def _from_ebook(files, source_name):
             family = _device_family(block, row)
             prefix = "AC" if block.startswith("AC") else "DC" if block.startswith("DC") else re.sub(r"(Node|Source|Load|Storage)$", "", block)
             node = row.get("node", row.get("i_node", ""))
-            node_id = f"{prefix}Node:{node}" if node else ""
+            node_id = f"{prefix}Node:{node}" if node not in (None, "") else ""
             device_id = f"{block}:{idx}"
             device = {
                 "id": device_id, "idx": idx, "name": row.get("name", device_id),
@@ -378,6 +384,7 @@ def _from_ebook(files, source_name):
         "DCDieselGen": ("DCGenerator", "idx_dcgenerator", "diesel"),
     }
     mapped_families = {}
+    import_warnings = []
     for block, (source_block, reference_field, family) in technology_blocks.items():
         for row in blocks.get(block, []):
             reference = str(row.get(reference_field, "")).strip()
@@ -392,6 +399,18 @@ def _from_ebook(files, source_name):
             device["type"] = family
             parameters = dict(device.get("parameters") or {})
             parameters.update(row)
+            if family == 'battery':
+                converted = []
+                for field in ('state_of_charge', 'soc', 'soc_lower_limit', 'soc_upper_limit', 'charge_discharge_efficiency'):
+                    try:
+                        value = float(parameters[field])
+                    except (KeyError, TypeError, ValueError):
+                        continue  # Normal validation reports malformed values below.
+                    if 1 < value <= 100:
+                        parameters[field] = value / 100
+                        converted.append(field)
+                if converted:
+                    import_warnings.append(f"{identity} 百分数已转为 0–1 比例：{', '.join(converted)}")
             # The reference implementation accepts both spellings found in
             # historical E-file exports and exposes one canonical field.
             if "state_of_charge" in parameters and "soc" not in parameters:
@@ -415,9 +434,9 @@ def _from_ebook(files, source_name):
         "name": info.get("name") or Path(source_name).stem,
         "devices": devices, "topology": {"nodes": nodes, "edges": edges},
         "curves": curves,
-        "measurements": _ebook_blocks(_decode(files["meas.e"])).get("Measurement", []) if "meas.e" in files else [],
+        "measurements": _ebook_blocks(_decode(files["meas.e"])).get("Measurement", []) if "meas.e" in files else blocks.get("Measurement", []),
         "controls": _ebook_blocks(_decode(files["control.e"])) if "control.e" in files else {},
-        "metadata": {"format": "power_simu_web-e-file", "blocks": list(blocks), "units": info},
+        "metadata": {"format": source_format, "blocks": list(blocks), "units": info, "warnings": import_warnings},
     }, source_name=source_name)
 
 
@@ -506,7 +525,11 @@ def normalize_model(payload, *, source_name="model.json"):
                   curves=_normalize_curves(payload), points=deepcopy(payload.get("points", [])))
     result["metadata"] = {**payload.get("metadata", {}), "device_count": len(devices)}
     result["metadata"].setdefault("format", "simulator-json")
-    result["metadata"]["warnings"] = [f"已保留但未参与电力仿真: {key[10:]}" for key in result["curves"] if key.startswith("unapplied@")]
+    existing_warnings = result["metadata"].get("warnings", [])
+    if not isinstance(existing_warnings, list):
+        existing_warnings = []
+    curve_warnings = [f"已保留但未参与电力仿真: {key[10:]}" for key in result["curves"] if key.startswith("unapplied@")]
+    result["metadata"]["warnings"] = list(dict.fromkeys([str(item) for item in existing_warnings] + curve_warnings))
     if payload.get("diagram"):
         result["diagram"] = sanitize_svg(str(payload["diagram"]["svg"]).encode(), source_name=payload["diagram"].get("source", "diagram.svg"))
     return result

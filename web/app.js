@@ -27,7 +27,7 @@ function paginateTable(node) {
   pager.append(previous,status,next);
 }
 function notice(id, message, error) { const node = $(id); if (!node) return; node.textContent = message; node.className = 'notice' + (error ? ' error-text' : ''); }
-async function api(path, options = {}) { const response = await fetch(path, { headers: { 'Content-Type':'application/json', ...(options.headers || {}) }, ...options }); const data = await response.json(); if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status)); return data; }
+async function api(path, options = {}) { const response = await fetch(path, { headers: { 'Content-Type':'application/json', ...(options.headers || {}) }, ...options }); const data = await response.json(); if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status)); if(data.delivery_error)throw new Error(data.message); return data; }
 
 function updateClock(snapshot) {
   if (!snapshot || !snapshot.clock) return;
@@ -205,16 +205,16 @@ async function refresh() {
     const devicePages = new Set(['devices','topology','flow']);
     const modelPages = new Set(['model','model-summary']);
     const curvePages = new Set(['curves','boundary','realtime']);
-    const profile = dashboardPages.has(page) ? 'dashboard' : devicePages.has(page) || modelPages.has(page) ? 'devices' : 'full';
-    const needsPoints = page === 'model' || page === 'model-summary' || page === 'scada' || page === 'points';
+    const profile = dashboardPages.has(page) || page === 'model' ? 'dashboard' : devicePages.has(page) || modelPages.has(page) ? 'devices' : 'full';
+    const needsPoints = page === 'model-summary' || page === 'scada' || page === 'points';
     const requests = [api('/api/overview?profile=' + profile)];
-    if (needsPoints) requests.push(page === 'model' ? api('/api/scdfe/points') : api('/api/points'));
+    if (needsPoints) requests.push(api('/api/points'));
     const result = await Promise.all(requests);
     const overview = result[0], snapshot = overview.snapshot, health = overview.health;
     state.snapshot = snapshot; state.health = health; updateClock(snapshot);
     if (dashboardPages.has(page)) renderDashboard(snapshot,health);
     if (page === 'trend') drawTrend(snapshot.history || []);
-    if (modelPages.has(page)) { state.pointSummary = result[1]; renderModel(snapshot,result[1]); }
+    if (page === 'model-summary') { state.pointSummary = result[1]; renderModel(snapshot,result[1]); }
     if (curvePages.has(page)) renderCurves(snapshot);
     if (devicePages.has(page)) renderDevices(snapshot);
     if (page === 'scada' || page === 'points') { state.points = result[1].items || []; state.pointSummary = await api('/api/scdfe/points'); renderScada(snapshot,health,state.pointSummary); }

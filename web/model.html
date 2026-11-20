@@ -1,17 +1,27 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>数字孪生电力系统 · 模型管理</title><link rel="stylesheet" href="/styles.css" /></head>
-<body data-page="model">
-  <main class="shell">
-    <header class="topbar"><div><span class="eyebrow">MODEL MANAGEMENT</span><h1>模型管理</h1><p>导入运行模型并生成 scdfe_s 四遥点表</p></div><div class="clock"><strong id="simTime">00:00:00</strong><span id="runState">运行中</span><div class="clock-actions"><button data-clock="start">启动</button><button data-clock="pause">暂停</button><button data-clock="step">单步</button></div></div></header>
-    <nav class="nav"><a href="/">总览</a><a class="active" href="/model.html">模型管理</a><a href="/curves.html">曲线设置</a><a href="/diagram.html">电网图形</a><a href="/devices.html">设备与拓扑</a><a href="/scada.html">SCADA / IEC 104</a></nav>
-    <section class="page-heading"><div><span class="eyebrow">MODEL</span><h2 id="modelTitle">默认环境模型</h2><p id="modelSource">来源：--</p></div><span id="modelStatus" class="badge ok">已加载</span></section>
-    <section class="tabs" data-tabs>
-      <div class="tab-buttons" role="tablist"><button class="tab-button active" data-tab="import" role="tab">导入与实时点表</button><button class="tab-button" data-tab="summary" role="tab">模型摘要</button></div>
-      <div class="tab-panel active" data-panel="import"><section class="admin-grid"><article class="card"><div class="card-title">导入模型</div><p class="hint">支持 simulator JSON、power_simu_web 定义 ZIP 和 E-file。定义 ZIP 可同时包含 model.e、meas.e、control.e、curves.e / curves.json 和 diagram.svg。导入后刷新设备、拓扑、边界、图形与 IEC 104 运行点。</p><div class="file-row"><input id="modelFile" type="file" accept=".json,.zip,.e" /><button id="importModel" class="primary">导入模型</button></div><div class="card-actions"><a class="button-link" href="/diagram.html">查看图形与右键操作</a><a class="button-link" href="/curves.html">加载外部边界</a></div><p id="importStatus" class="notice"></p></article><article class="card"><div class="card-title">scdfe_s 实时点表</div><p class="hint">根据当前模型生成 YC、YX、YK 定义，并同步 IEC 104 地址映射。</p><div id="pointSummary" class="metric-grid compact"></div><div class="card-actions"><button id="generatePoints" class="primary">一键生成实时点表</button><a class="button-link" href="/scada.html">查看点表</a></div><p id="pointTableStatus" class="notice"></p></article></section></div>
-      <div class="tab-panel" data-panel="summary"><section class="content-grid"><article class="card"><div class="card-title">模型摘要</div><div id="modelSummary"></div></article><article class="card"><div class="card-title">导入设备</div><div id="modelDevices" class="table-wrap tall"></div></article></section></div>
-    </section>
-  </main>
-  <script src="/nav.js"></script><script src="/app.js"></script>
-</body>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>数字孪生 · 电网数据库</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/model-source.css"></head>
+<body data-page="model"><main class="shell">
+  <header class="topbar"><div><span class="eyebrow">GRID DATABASE</span><h1>电网数据库</h1><p>配置仿真内核读取的模型目录</p></div><div class="clock"><strong id="simTime">00:00:00</strong><span id="runState">--</span><div class="clock-actions"><button data-clock="start">启动</button><button data-clock="pause">暂停</button><button data-clock="step">单步</button></div></div></header>
+  <nav class="nav" aria-label="功能导航"></nav>
+  <div class="source-tabs" role="tablist" aria-label="数据库视图"><button id="sourceSettingsTab" role="tab" aria-selected="true" aria-controls="sourceSettingsPanel">目录设置</button><button id="sourceTablesTab" role="tab" aria-selected="false" aria-controls="sourceTablesPanel">模型表统计</button></div>
+  <section class="source-layout" data-source-panel="settings">
+    <article id="sourceSettingsPanel" class="card source-settings">
+      <div class="card-title">数据库目录 <span class="badge ok">SQLite · 只读</span></div>
+      <label for="modelDirectory">相对于工作区根目录</label>
+      <input id="modelDirectory" type="text" spellcheck="false" autocomplete="off" placeholder="simulation/qinling/sqldb/model">
+      <p class="hint">固定数据文件：<code>devices.sqlite3</code></p>
+      <div class="source-actions"><a id="browseDatabase" class="button-link" href="/workspace.html?kind=database">浏览目录</a><button id="defaultDirectory">默认目录</button><button id="validateDatabase">校验数据库</button><button id="applyDatabase" class="primary">保存并加载</button></div>
+      <div class="source-current"><span class="hint">内核当前数据源</span><strong id="databaseModelTitle">--</strong><code id="activeDatabase">--</code><dl><div><dt>加载时间</dt><dd id="databaseLoadedAt">--</dd></div><div><dt>读取与解析</dt><dd id="databaseLoadTime">--</dd></div></dl></div>
+      <div class="source-actions"><button id="reloadDatabase">重载当前数据库</button><a class="button-link" href="/model-summary.html">模型摘要</a><a class="button-link" href="/points.html">四遥点表</a></div>
+      <p id="databaseMessage" class="notice" role="status">目录与 Web 修改保存到 SQLite，重启自动恢复。主动切换或重载电网库会重置当前模型的曲线、SVG 和运行状态。</p>
+    </article>
+    <article id="sourceTablesPanel" class="card source-tables">
+      <div id="databaseTableTitle" class="card-title">已加载模型表</div>
+      <div id="databaseStats" class="source-stats"></div>
+      <div id="databaseTableSpace"><table><thead><tr><th>数据表</th><th>记录数</th></tr></thead><tbody id="databaseTables"></tbody></table></div>
+      <div class="source-actions source-pager"><button id="tablePrevious">上一页</button><span id="tablePage">1 / 1</span><button id="tableNext">下一页</button></div>
+    </article>
+  </section>
+</main><script src="/nav.js"></script><script src="/app.js"></script><script src="/model-source.js"></script></body>
 </html>

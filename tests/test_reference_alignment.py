@@ -25,6 +25,16 @@ E_MODEL = b'''<Model>
 
 
 class ReferenceAlignmentTest(unittest.TestCase):
+    def test_legacy_e_storage_percentages_are_normalized_with_notice(self):
+        mixed = E_MODEL.replace(b'0.8 30 40 0.5 0.1 0.9', b'80 30 40 50 0.1 90')
+        model = load_model_bytes(mixed)
+        parameters = model['devices'][0]['parameters']
+        self.assertEqual(parameters['charge_discharge_efficiency'], 0.8)
+        self.assertEqual((parameters['soc'], parameters['soc_lower_limit'], parameters['soc_upper_limit']), (0.5, 0.1, 0.9))
+        self.assertTrue(model['metadata']['warnings'])
+        with self.assertRaises(ValueError):
+            load_model_bytes(mixed.replace(b'80 30', b'101 30'))
+
     def test_technology_is_defined_by_parameter_reference_not_label(self):
         model = load_model_bytes(E_MODEL, source_name='reference.e')
         self.assertEqual([d['type'] for d in model['devices']], ['battery', 'pv'])

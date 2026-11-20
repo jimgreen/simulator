@@ -14,12 +14,23 @@ class ScdfePointTableError(RuntimeError):
 class ScdfePointTableManager:
     """Write generated definitions into the dedicated scdfe_s SQLite store."""
 
-    def __init__(self, *, scada_root: str | Path = r"D:\codex\scada", db_path: str | Path | None = None) -> None:
+    def __init__(self, *, scada_root: str | Path = r"D:\codex\scada", db_path: str | Path | None = None,
+                 workspace_root: str | Path | None = None) -> None:
         self.scada_root = Path(scada_root).resolve()
         self.db_path = Path(db_path).resolve() if db_path else self.scada_root / "db" / "scdfe_s.sqlite3"
+        self.workspace_root = Path(workspace_root).resolve() if workspace_root is not None else None
+        self._validate_path()
         self._store = None
 
+    def _validate_path(self):
+        if self.workspace_root is not None and not self.db_path.resolve().is_relative_to(self.workspace_root):
+            raise ScdfePointTableError('scdfe_s 数据库必须位于工作区根目录内')
+
+    def _display_path(self):
+        return self.db_path.relative_to(self.workspace_root).as_posix() if self.workspace_root else str(self.db_path)
+
     def _store_for(self):
+        self._validate_path()
         if self._store is not None:
             return self._store
         import sys
@@ -95,14 +106,14 @@ class ScdfePointTableManager:
                 else:
                     store.update_row("fes_channel_iec104_point_define", [channel_id, kind, int(values["pnt_no"])], {name: value for name, value in mapping.items() if name not in {"channel_id", "kind", "pnt_no"}})
                 counts[kind] += 1
-            return {"database": str(self.db_path), "rtu_id": int(rtu_id), "channel_id": int(channel_id), "model_name": model_name, "replace": bool(replace), "counts": counts, "total": sum(counts.values())}
+            return {"database": self._display_path(), "rtu_id": int(rtu_id), "channel_id": int(channel_id), "model_name": model_name, "replace": bool(replace), "counts": counts, "total": sum(counts.values())}
         except Exception as exc:
             raise ScdfePointTableError(f"生成 scdfe_s 四遥点表失败: {exc}") from exc
 
     def summary(self, *, rtu_id: int = 104) -> dict[str, Any]:
         store = self._store_for()
         with store.connection() as connection:
-            result = {"database": str(self.db_path), "rtu_id": int(rtu_id)}
+            result = {"database": self._display_path(), "rtu_id": int(rtu_id)}
             for kind, table in (("yc", "fes_yc_define"), ("yx", "fes_yx_define"), ("yk", "fes_yk_define"), ("yt", "fes_yt_define")):
                 result[kind] = int(connection.execute(f"SELECT COUNT(*) FROM {table} WHERE rtu_id=?", (int(rtu_id),)).fetchone()[0])
             result["total"] = sum(result[kind] for kind in ("yc", "yx", "yk", "yt"))
