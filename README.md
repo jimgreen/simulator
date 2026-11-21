@@ -1,6 +1,6 @@
 # 教员端与学员端
 
-根目录仅保留两个应用文件夹和仓库元数据。程序、依赖、模型、运行结果、日志及测试均由各自应用管理。
+根目录保留两个应用文件夹和仓库元数据。模型、潮流参数及运行数据由各应用的 `startup.json` 指向工作区数据目录。
 
 | 应用 | 使用说明 | 默认地址 |
 | --- | --- | --- |
@@ -12,4 +12,4 @@
 .\trainee\start.ps1
 ```
 
-首次使用时，分别按两端说明安装各自 `requirements.txt` 中的依赖。两端的 `startup.json` 控制各自监听端口、模型目录和运行目录，均可单独移动和运行。
+首次使用时，分别按两端说明安装各自 `requirements.txt` 中的依赖，并检查 `startup.json` 的 `data_dir`。当前数据根目录分别为 `D:\codex\workspace\simulation\qinling\simulator\simulator` 与 `D:\codex\workspace\simulation\qinling\simulator\trainee`。

@@ -8,9 +8,9 @@ python -X utf8 run.py
 ```
 
 Web 默认地址为 http://127.0.0.1:18720/，可在 `startup.json` 修改，也可用 `--host` 和 `--port` 覆盖。
-模型保存在 `data/models/`，运行状态保存在 `data/runtime/`，Web 和程序日志写入 `log/`。
+数据根目录由 `startup.json` 的 `data_dir` 设置。当前学员端的数据目录是 `D:\codex\workspace\simulation\qinling\simulator\trainee`，其中 `models/` 存放模型，`runtime/` 存放运行状态。Web 和程序日志写入应用目录下的 `log/`。
 
-本文件夹包含全部业务代码、潮流内核和模型，移动到其他目录后仍可独立运行。所有默认目录相对于本文件夹解析，不需要原项目或另一个控制台。
+本文件夹包含业务代码和潮流内核。移动应用时，将 `data_dir` 指向对应的数据根目录即可独立运行。
 
 `python -I run.py --check` 可检查解释器、依赖版本和实际模块路径，不启动服务。
 
@@ -28,10 +28,10 @@ Web 默认地址为 http://127.0.0.1:18720/，可在 `startup.json` 修改，也
 
 - `run.py`、`start.ps1`、`startup.json`、`requirements.txt`：本端入口、启动配置和依赖。
 - `simu/`：服务、控制逻辑与学员 Web；`simu_loop.py`、`scripts/` 和 `src/`：本地仿真与潮流内核。
-- `data/models/`：模型、曲线、SVG；`data/lf/`：潮流参数；`data/runtime/`：本端运行结果。
+- 数据根目录下的 `models/` 存放模型、曲线和 SVG，`lf/lf.para` 存放潮流参数，`runtime/` 存放本端运行结果。
 - `log/`：启动和 Web 日志；`tests/`：本端独立运行验证。
 
-`startup.json` 的相对目录基于本文件夹解析；命令行参数优先。本端运行不依赖根目录程序或教员端的 Python 文件。
+`startup.json` 中的相对路径以本应用目录为起点。可用 `--models-dir` 或 `--runtime-dir` 覆盖相应目录，潮流参数仍从 `data_dir` 下读取。
 
 ## 验证
 
@@ -39,4 +39,4 @@ Web 默认地址为 http://127.0.0.1:18720/，可在 `startup.json` 修改，也
 python -m unittest discover -s tests -p test_standalone.py -v
 ```
 
-测试将本端复制到临时目录，以隔离模式从另一工作目录启动，禁止读取原仓库和原项目，再验证模块来源和一次实际潮流计算。所有输出都写到临时副本。
+测试将应用和模型数据分别复制到临时目录，从另一工作目录以隔离模式启动，验证路径和一次实际潮流计算。运行结果写入临时数据目录。

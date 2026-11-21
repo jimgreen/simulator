@@ -36,6 +36,7 @@ from dc_lf import DCPowerFlowCalc
 from dc_model import DCPowerNetwork
 from hybrid_lf import HybridPowerFlowCalc, _read_lf_network_from_file
 from unit_system import ac_current_base_ka, dc_current_base_ka
+from paths import DATA_DIR, MEAS_DATA_DIR, MODEL_DATA_DIR
 
 
 MEAS_HEADER = ("idx", "name", "dev_type", "dev_name", "meas_type", "weight", "valid", "value")
@@ -878,11 +879,11 @@ def rewrite_measurements(meas_file: Path, snapshot: Snapshot) -> Tuple[int, int]
 
 def matching_e_file(meas_file: Path) -> Optional[Path]:
     try:
-        rel = meas_file.resolve().relative_to(ROOT_DIR / "data" / "meas")
+        rel = meas_file.resolve().relative_to(MEAS_DATA_DIR)
     except ValueError:
         rel = None
     if rel is not None:
-        candidate = ROOT_DIR / "data" / "model" / rel.with_suffix(".e")
+        candidate = MODEL_DATA_DIR / rel.with_suffix(".e")
         if candidate.exists():
             return candidate
     candidate = meas_file.with_suffix(".e")
@@ -903,7 +904,7 @@ def solver_for(meas_file: Path) -> Callable[[Path], Tuple[Snapshot, str]]:
 def iter_measurement_files(paths: Sequence[str]) -> List[Path]:
     if paths:
         return [Path(path).resolve() for path in paths]
-    return sorted((ROOT_DIR / "data").rglob("*.meas"))
+    return sorted(DATA_DIR.rglob("*.meas"))
 
 
 def main(argv: Sequence[str]) -> int:
@@ -921,8 +922,7 @@ def main(argv: Sequence[str]) -> int:
         try:
             snapshot, info = solver_for(meas_file)(e_file)
             updated, missing = rewrite_measurements(meas_file, snapshot)
-            rel = meas_file.relative_to(ROOT_DIR)
-            print(f"{rel}: updated={updated}, missing={missing}, {info}")
+            print(f"{meas_file}: updated={updated}, missing={missing}, {info}")
         except Exception as exc:  # Keep batch progress visible; fail after the loop.
             failures.append((meas_file, str(exc)))
             print(f"{meas_file}: FAILED: {exc}")

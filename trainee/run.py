@@ -18,7 +18,6 @@ def main(argv=None):
         raise SystemExit(f"This launcher runs the {ROLE} role.")
     if sys.version_info < (3, 11):
         raise SystemExit("Python 3.11 or newer is required.")
-    settings = json.loads((ROOT / "startup.json").read_text(encoding="utf-8"))
     # An absolute script path also works with python -I and from another cwd.
     sys.path.insert(0, str(ROOT))
     os.chdir(ROOT)
@@ -28,16 +27,22 @@ def main(argv=None):
         import numpy
         import scipy
         from algorithm_parameters import DEFAULT_LF_PARAMETER_FILE
+        from paths import DATA_DIR, STARTUP_SETTINGS
     except ImportError as exc:
         raise SystemExit(
             f"Missing dependency: {exc}. Install with: "
             f'"{sys.executable}" -m pip install -r "{ROOT / "requirements.txt"}"'
         ) from exc
+    settings = STARTUP_SETTINGS
+    if not DEFAULT_LF_PARAMETER_FILE.is_file():
+        raise SystemExit(f"Missing power-flow parameters: {DEFAULT_LF_PARAMETER_FILE}")
+    models_dir = (ROOT / settings["models_dir"]).resolve() if "models_dir" in settings else DATA_DIR / "models"
+    runtime_dir = (ROOT / settings["runtime_dir"]).resolve() if "runtime_dir" in settings else DATA_DIR / "runtime"
     defaults = [
         "--role", ROLE, "--sim-dir", str(ROOT),
         "--host", settings["host"], "--port", str(settings["port"]),
-        "--models-dir", str((ROOT / settings["models_dir"]).resolve()),
-        "--runtime-dir", str((ROOT / settings["runtime_dir"]).resolve()),
+        "--models-dir", str(models_dir),
+        "--runtime-dir", str(runtime_dir),
     ]
     if ROLE == "simulator":
         defaults += ["--first-service-port", str(settings["first_service_port"])]
@@ -54,6 +59,7 @@ def main(argv=None):
             "role": ROLE, "root": str(ROOT), "python": sys.executable,
             "numpy": numpy.__version__, "scipy": scipy.__version__,
             "host": effective.host, "port": effective.port,
+            "data_dir": str(DATA_DIR),
             "models_dir": effective.models_dir, "runtime_dir": effective.runtime_dir,
             "first_service_port": effective.first_service_port,
             "lf_parameters": str(DEFAULT_LF_PARAMETER_FILE),

@@ -4075,6 +4075,9 @@ def make_http_server(
             elif path == "/api/external/controls":
                 self._send_json(target.apply_external_control_values(payload))
             elif path == "/api/external/controls/execute":
+                requested_model = self._request_model_id(payload)
+                if requested_model is not None and requested_model != target.model_id:
+                    raise JsonApiError(409, "控制指令所属模型与当前服务不一致")
                 try:
                     result = target.apply_external_control_frame(payload)
                 except ValueError as exc:

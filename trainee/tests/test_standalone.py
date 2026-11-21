@@ -47,7 +47,17 @@ class StandaloneTests(unittest.TestCase):
             root = Path(directory)
             app = root / 'relocated console'
             shutil.copytree(ROOT, app, ignore=shutil.ignore_patterns(
-                '__pycache__', 'log', 'runtime', '.venv', '*.pyc', '.ruff_cache'))
+                'data', '__pycache__', 'log', 'runtime', '.venv', '*.pyc', '.ruff_cache'))
+            settings = json.loads((ROOT / 'startup.json').read_text(encoding='utf-8'))
+            source = (ROOT / settings.get('data_dir', 'data')).resolve()
+            source_models = (ROOT / settings['models_dir']).resolve() if 'models_dir' in settings else source / 'models'
+            data = root / 'external data'
+            shutil.copytree(source / 'lf', data / 'lf')
+            shutil.copytree(source_models, data / 'models')
+            settings.pop('models_dir', None)
+            settings.pop('runtime_dir', None)
+            settings['data_dir'] = '../external data'
+            (app / 'startup.json').write_text(json.dumps(settings), encoding='utf-8')
             result = subprocess.run(
                 [sys.executable, '-I', '-X', 'utf8', '-c', PROBE,
                  str(app / 'run.py'), str(ROOT.parent), mode],
@@ -55,10 +65,10 @@ class StandaloneTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             info = json.loads(result.stdout)
-            self.assertEqual(Path(info['models_dir']), app / 'data/models')
-            self.assertEqual(Path(info['runtime_dir']), app / 'data/runtime')
-            self.assertTrue(Path(info['lf_parameters']).is_file())
-            self.assertTrue(Path(info['lf_parameters']).is_relative_to(app))
+            self.assertEqual(Path(info['data_dir']), data)
+            self.assertEqual(Path(info['models_dir']), data / 'models')
+            self.assertEqual(Path(info['runtime_dir']), data / 'runtime')
+            self.assertEqual(Path(info['lf_parameters']), data / 'lf/lf.para')
             for name in ('simu_loop', 'simu.server', 'simu.service', 'ac_lf', 'dc_lf', 'hybrid_lf'):
                 self.assertTrue(Path(info['modules'][name]).is_relative_to(app), name)
             self.assertTrue(all(Path(p).is_relative_to(app) for p in info['modules'].values()))
@@ -68,7 +78,7 @@ class StandaloneTests(unittest.TestCase):
                 self.assertEqual(info['result']['missing'], 0)
                 self.assertEqual(info['summary']['valid_scada_count'], info['summary']['scada_count'])
                 for field in ('real_file', 'scada_file'):
-                    self.assertTrue(Path(info['result'][field]).is_relative_to(app))
+                    self.assertTrue(Path(info['result'][field]).is_relative_to(data / 'runtime'))
             return info
 
     def test_relocated_dependencies(self):

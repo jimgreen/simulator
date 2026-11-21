@@ -1,0 +1,62 @@
+diff --git a/scdfe_c/web/service.py b/scdfe_c/web/service.py
+index 4596182..35e014d 100644
+--- a/scdfe_c/web/service.py
++++ b/scdfe_c/web/service.py
+@@ -394,7 +394,8 @@ class ScadaStore:
+                     from core.command_trace import TABLES as COMMAND_TRACE_TABLES, ensure_schema as ensure_command_trace
+                     unexpected_tables = (actual_tables - expected_tables -
+                                          {'_scada_schema', '_scada_rtu_version'} - SOE_TABLES - MONITOR_TABLES
+-                                         - COMMAND_TRACE_TABLES - RTDB_METADATA_TABLES)
++                                         - COMMAND_TRACE_TABLES - RTDB_METADATA_TABLES
++                                         - getattr(self, "extra_metadata_tables", frozenset()))
+                     if unexpected_tables:
+                         raise RuntimeError(
+                             '数据库包含当前 schema 未定义的表；请使用当前 schema 重新初始化数据库: '
+diff --git a/scdfe_s/database.py b/scdfe_s/database.py
+index 0628905..fe5de60 100644
+--- a/scdfe_s/database.py
++++ b/scdfe_s/database.py
+@@ -7,6 +7,7 @@ DEFAULT_DB = SYSTEM_DB.with_name("scdfe_s.sqlite3")
+ 
+ 
+ class SimulatorStore(ScadaStore):
++    extra_metadata_tables = frozenset({"simulator104_models", "simulator104_points"})
+     application_id = int.from_bytes(b"SDFS", "big")
+ 
+     def __init__(self, db_path=DEFAULT_DB, schema_dir=SCHEMA_DIR, **kwargs):
+diff --git a/scdfe_s/web/server.py b/scdfe_s/web/server.py
+index b86e234..c0eea29 100644
+--- a/scdfe_s/web/server.py
++++ b/scdfe_s/web/server.py
+@@ -725,7 +725,13 @@ class ScadaHandler(RequestBodyMixin, BaseHTTPRequestHandler):
+                 raise ApiError(405, '指令下发只支持 POST')
+             if query:
+                 raise ApiError(400, '指令下发不接受查询参数')
+-            item = self.store.submit_command(self._rtu_id(parts[2]), parts[4], parts[5],
++            rtu_id = self._rtu_id(parts[2])
++            simulator_command = getattr(self.server, "simulator_command", None)
++            if simulator_command is not None:
++                result = simulator_command(rtu_id, parts[4], parts[5], self._body())
++                if result is not None:
++                    return self._json(200, {"item": result, "command_status": "applied"})
++            item = self.store.submit_command(rtu_id, parts[4], parts[5],
+                                              self._body(), self._if_match())
+             return self._json(202, {'item': item, 'command_status': 'pending'})
+         if parts in (["api", "log-files"], ["api", "log-files", "search"]):
+@@ -957,6 +963,7 @@ class ScadaHandler(RequestBodyMixin, BaseHTTPRequestHandler):
+ 
+ 
+ class ScadaHTTPServer(DatabaseSelectionMixin, ThreadingHTTPServer):
++    iec104_service_class = IEC104Service
+     daemon_threads = True
+     request_queue_size = LISTEN_BACKLOG
+     allow_reuse_address = True
+@@ -988,7 +995,7 @@ class ScadaHTTPServer(DatabaseSelectionMixin, ThreadingHTTPServer):
+         transport is never replaced by a monitor request.
+         """
+         classes = {
+-            "iec104": IEC104Service,
++            "iec104": self.iec104_service_class,
+             "modbus-tcp": ModbusTcpService,
+             "modbus-rtu": ModbusRtuService,
+             "can": CanService,

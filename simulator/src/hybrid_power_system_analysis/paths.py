@@ -1,13 +1,22 @@
 """Project path helpers for the repository data layout."""
 
+import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = PROJECT_ROOT / "data"
+STARTUP_FILE = PROJECT_ROOT / "startup.json"
+STARTUP_SETTINGS = json.loads(STARTUP_FILE.read_text(encoding="utf-8")) if STARTUP_FILE.is_file() else {}
+DATA_DIR = (PROJECT_ROOT / STARTUP_SETTINGS.get("data_dir", "data")).resolve()
 MODEL_DATA_DIR = DATA_DIR / "model"
 MEAS_DATA_DIR = DATA_DIR / "meas"
 LF_PARAMETER_DIR = DATA_DIR / "lf"
 SE_PARAMETER_DIR = DATA_DIR / "se"
+
+
+def _project_path(path: Path) -> Path:
+    if path.parts and path.parts[0] == "data":
+        return DATA_DIR.joinpath(*path.parts[1:])
+    return PROJECT_ROOT / path
 
 
 def model_file(case_type: str, name: str) -> Path:
@@ -45,7 +54,7 @@ def resolve_project_file(path: str | Path) -> Path:
             if rewritten.exists():
                 return rewritten
             if not rewritten.is_absolute():
-                absolute = PROJECT_ROOT / rewritten
+                absolute = _project_path(rewritten)
                 if absolute.exists():
                     return absolute
 
@@ -63,12 +72,12 @@ def resolve_project_file(path: str | Path) -> Path:
             if rewritten.exists():
                 return rewritten
             if not rewritten.is_absolute():
-                absolute = PROJECT_ROOT / rewritten
+                absolute = _project_path(rewritten)
                 if absolute.exists():
                     return absolute
 
     if not candidate.is_absolute():
-        absolute = PROJECT_ROOT / candidate
+        absolute = _project_path(candidate)
         if absolute.exists():
             return absolute
     return candidate

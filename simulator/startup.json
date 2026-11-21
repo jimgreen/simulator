@@ -1,7 +1,6 @@
 {
   "host": "127.0.0.1",
   "port": 18710,
-  "models_dir": "data/models",
-  "runtime_dir": "data/runtime",
+  "data_dir": "../../workspace/simulation/qinling/simulator/simulator",
   "first_service_port": 18711
 }
