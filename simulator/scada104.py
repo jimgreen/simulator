@@ -5,6 +5,7 @@ from ipaddress import ip_address
 import json
 import logging
 import math
+import os
 from pathlib import Path
 import socket
 import sys
@@ -18,6 +19,8 @@ LOG = logging.getLogger("simulator.scada104")
 KINDS = ("yc", "yx", "yk", "yt")
 APP_ROOT = Path(__file__).resolve().parent
 WORKSPACE_ROOT = (APP_ROOT / "../../workspace").resolve()
+DEFAULT_HTTP_TIMEOUT = 5.0
+DEFAULT_OFFLINE_FAILURE_THRESHOLD = 3
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -26,6 +29,17 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 LOCAL_HTTP = build_opener(ProxyHandler({}), NoRedirect())
+
+
+def default_scada_root(settings=None):
+    """按环境变量 SCADA_ROOT > startup.json(scada_root) > 同级目录探测默认 SCADA 路径。"""
+    env_root = str(os.environ.get("SCADA_ROOT") or "").strip()
+    if env_root:
+        return Path(env_root)
+    if isinstance(settings, dict) and str(settings.get("scada_root") or "").strip():
+        return (APP_ROOT / str(settings["scada_root"]).strip()).resolve()
+    sibling = (APP_ROOT / "../../scada").resolve()
+    return sibling
 
 
 def loopback_url(url):
@@ -46,10 +60,11 @@ def port_available(port):
     return True
 
 
-def request(base, path, payload=None):
+def request(base, path, payload=None, *, timeout=DEFAULT_HTTP_TIMEOUT):
     body = None if payload is None else json.dumps(payload).encode()
-    req = Request(base + path, body, {"Content-Type": "application/json"})
-    with LOCAL_HTTP.open(req, timeout=3) as response:
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    req = Request(base + path, body, headers)
+    with LOCAL_HTTP.open(req, timeout=timeout) as response:
         return json.load(response)
 
 
@@ -69,11 +84,20 @@ def read_points(base, model):
 
 
 class Bridge:
-    def __init__(self, server, simulator_url, first_port, interval=1.0):
+    def __init__(
+        self,
+        server,
+        simulator_url,
+        first_port,
+        interval=1.0,
+        *,
+        offline_failure_threshold=DEFAULT_OFFLINE_FAILURE_THRESHOLD,
+    ):
         self.server = server
         self.simulator_url = simulator_url
         self.first_port = first_port
         self.interval = interval
+        self.offline_failure_threshold = max(1, int(offline_failure_threshold))
         self.stop = threading.Event()
         self.lock = threading.RLock()
         self.online = {}
@@ -81,6 +105,9 @@ class Bridge:
         self.initialized = set()
         self.pending_reload = set()
         self.last_errors = {}
+        self._failure_counts = {}
+        self._point_def_cache = {}
+        self._last_samples = {}
         with server.store.connection() as db, db:
             db.execute("""CREATE TABLE IF NOT EXISTS simulator104_models (
                 model TEXT PRIMARY KEY, rtu_id INTEGER UNIQUE NOT NULL)""")
@@ -104,9 +131,16 @@ class Bridge:
             ) if value is not None}
             ports = {int(port) for port, in db.execute(
                 "SELECT remote_port FROM fes_channel_iec104_define WHERE remote_port IS NOT NULL")}
-            rtu = next(number for number in range(1, 65535) if number not in used)
-            port = next(number for number in range(self.first_port, 65536)
-                        if number not in ports and port_available(number))
+            rtu = next((number for number in range(1, 65535) if number not in used), None)
+            if rtu is None:
+                raise RuntimeError("没有可分配的 IEC104 RTU 编号")
+            port = next(
+                (number for number in range(self.first_port, 65536)
+                 if number not in ports and port_available(number)),
+                None,
+            )
+            if port is None:
+                raise RuntimeError("没有可分配的本机 IEC104 监听端口")
             db.execute("INSERT INTO fes_channel_iec104_define (id,name,channel_id,rtu_addr,remote_host,remote_port) "
                        "VALUES (?,?,?,?,'127.0.0.1',?)", (rtu, model, rtu, rtu, port))
             db.execute("INSERT INTO fes_rtu_define (rtu_id,channel_id,channel_type,name,process_enable) VALUES (?,?,'iec104',?,1)",
@@ -115,8 +149,58 @@ class Bridge:
         return rtu
 
     def sync_points(self, rtu, points):
+        """增量同步测点定义与数值，仅在定义或采样发生变化时才开启 SQLite 写事务。"""
+        def_signature = tuple(
+            (kind, tuple(sorted(current.keys())))
+            for kind, current in points.items()
+        )
+        cached_def = self._point_def_cache.get(rtu)
+        sample_updates = {}
+        if cached_def is not None and cached_def["signature"] == def_signature:
+            # 快速路径：点表定义未变，检查是否有遥测/遥信值变化，无变化则完全跳过写事务。
+            known_by_kind = cached_def["known"]
+            last_samples = self._last_samples.setdefault(rtu, {})
+            for kind in ("yc", "yx"):
+                current = points.get(kind, {})
+                known = known_by_kind.get(kind, {})
+                for name, row in current.items():
+                    no = known.get(name)
+                    if no is None:
+                        continue
+                    value = row.get("value") if row else None
+                    valid = isinstance(value, (int, float)) and math.isfinite(value) and bool(row.get("valid", 1))
+                    if kind == "yx":
+                        valid = valid and value in (0, 1)
+                    prev_value, prev_status = last_samples.get((kind, no), (None, None))
+                    quality = 0 if valid else 128
+                    effective_value = value if valid else (prev_value if prev_value is not None else 0)
+                    if (effective_value, quality) != (prev_value, prev_status):
+                        sample_updates[(kind, no)] = (effective_value, quality)
+            if not sample_updates:
+                return False
+            now = time.time_ns() // 1_000_000
+            with self.server.store.connection() as db, db:
+                db.execute("BEGIN IMMEDIATE")
+                for (kind, no), (val, quality) in sample_updates.items():
+                    table = f"fes_{kind}_define"
+                    if kind == "yc":
+                        db.execute(
+                            f"UPDATE {table} SET value=?,status=?,refresh_time=?,raw_value=?,raw_status=?,raw_time=? "
+                            "WHERE rtu_id=? AND pnt_no=?",
+                            (val, quality, now, val, quality, now, rtu, no),
+                        )
+                    else:
+                        db.execute(
+                            f"UPDATE {table} SET value=?,status=?,refresh_time=? WHERE rtu_id=? AND pnt_no=?",
+                            (val, quality, now, rtu, no),
+                        )
+                    last_samples[(kind, no)] = (val, quality)
+            return False
+
         now = time.time_ns() // 1_000_000
         changed = False
+        known_cache = {}
+        last_samples = self._last_samples.setdefault(rtu, {})
         with self.server.store.connection() as db, db:
             db.execute("BEGIN IMMEDIATE")
             for kind, current in points.items():
@@ -158,13 +242,17 @@ class Bridge:
                                 values += [value, quality, now]
                             db.execute(f"UPDATE {table} SET {fields} WHERE rtu_id=? AND pnt_no=?",
                                        (*values, rtu, no))
+                        last_samples[(kind, no)] = (value, quality)
                 for name, (no, active) in known.items():
                     if active and name not in current:
                         db.execute("UPDATE simulator104_points SET active=0 WHERE rtu_id=? AND kind=? AND source_name=?",
                                    (rtu, kind, name))
                         db.execute(f"UPDATE {table} SET status=128,refresh_time=? WHERE rtu_id=? AND pnt_no=?",
                                    (now, rtu, no))
+                        last_samples.pop((kind, no), None)
                         changed = True
+                known_cache[kind] = {name: no for name, (no, _active) in known.items() if name in current}
+        self._point_def_cache[rtu] = {"signature": def_signature, "known": known_cache}
         return changed
 
     def command_target(self, rtu, kind, number, value):
@@ -201,6 +289,8 @@ class Bridge:
         with self.server.store.connection() as db, db:
             offline = [int(rtu) for rtu, in db.execute("SELECT rtu_id FROM simulator104_models") if rtu not in seen]
             for rtu in offline:
+                self._last_samples.pop(rtu, None)
+                self._point_def_cache.pop(rtu, None)
                 for kind in ("yc", "yx"):
                     raw_status = ",raw_status=128" if kind == "yc" else ""
                     db.execute(
@@ -216,58 +306,147 @@ class Bridge:
         return {"simulator_url": self.simulator_url, "database": self.server.database_info()["database"],
                 "models": models, "errors": errors}
 
-    def poll(self):
-        while not self.stop.is_set():
-            seen = set()
-            try:
-                for model in request(self.simulator_url, "/api/models")["models"]:
-                    service = model.get("service") or {}
-                    if not service.get("healthy"):
-                        continue
-                    name = model["id"]
-                    try:
-                        base = loopback_url(service["base_url"])
-                        points = read_points(base, name)
-                        rtu = self.channel(name)
-                        changed = self.sync_points(rtu, points)
-                        seen.add(rtu)
-                        with self.lock:
-                            self.online[rtu] = (base, name)
-                        channel = self.server.channel_services(rtu_id=rtu)[f"iec104-rtu-{rtu}"]
-                        if rtu not in self.initialized or (changed and channel.status()["running"]):
-                            self.pending_reload.add(rtu)
-                        if rtu in self.pending_reload:
-                            if channel.status()["running"]:
-                                channel.stop()
-                            channel.start()
-                            self.pending_reload.remove(rtu)
-                            self.initialized.add(rtu)
-                        channel_status = channel.status()
-                        with self.lock:
-                            self.models[rtu] = {"model": name, "rtu_id": rtu, "model_url": base,
-                                                "online": True, "running": channel_status["running"],
-                                                "endpoint": channel_status.get("endpoint"),
-                                                "points": {key: len(items) for key, items in points.items()},
-                                                "updated_ms": time.time_ns() // 1_000_000}
-                            self.last_errors.pop(name, None)
-                    except Exception as exc:
-                        self.report_error(name, exc)
-                with self.lock:
-                    self.last_errors.pop("catalog", None)
-            except Exception as exc:
-                self.report_error("catalog", exc)
+    def list_control_points(self, rtu, kind):
+        """查询指定 RTU 已绑定且活跃的遥控/遥调测点列表，供前端下拉选择。"""
+        if kind not in {"yk", "yt"}:
+            raise ValueError("控制点类型仅支持 yk 或 yt")
+        with self.server.store.connection() as db:
+            rows = db.execute(
+                f"SELECT b.pnt_no, COALESCE(NULLIF(p.name, ''), b.source_name), b.source_name, "
+                "p.man_disable, p.auto_disable, p.value "
+                f"FROM simulator104_points b "
+                f"JOIN fes_{kind}_define p ON p.rtu_id=b.rtu_id AND p.pnt_no=b.pnt_no "
+                "WHERE b.rtu_id=? AND b.kind=? AND b.active=1 ORDER BY b.pnt_no",
+                (int(rtu), kind),
+            ).fetchall()
+        return [
+            {
+                "pnt_no": int(pnt_no),
+                "name": str(name or ""),
+                "source_name": str(source_name or ""),
+                "disabled": bool(man_disable or auto_disable),
+                "value": value,
+            }
+            for pnt_no, name, source_name, man_disable, auto_disable, value in rows
+        ]
+
+    def _sync_single_model(self, name, base_url):
+        base = loopback_url(base_url)
+        points = read_points(base, name)
+        rtu = self.channel(name)
+        changed = self.sync_points(rtu, points)
+        with self.lock:
+            self.online[rtu] = (base, name)
+            self._failure_counts.pop(rtu, None)
+        channel = self.server.channel_services(rtu_id=rtu)[f"iec104-rtu-{rtu}"]
+        if rtu not in self.initialized or (changed and channel.status()["running"]):
+            self.pending_reload.add(rtu)
+        if rtu in self.pending_reload:
+            if channel.status()["running"]:
+                channel.stop()
+            channel.start()
+            self.pending_reload.remove(rtu)
+            self.initialized.add(rtu)
+        channel_status = channel.status()
+        with self.lock:
+            self.models[rtu] = {"model": name, "rtu_id": rtu, "model_url": base,
+                                "online": True, "running": channel_status["running"],
+                                "endpoint": channel_status.get("endpoint"),
+                                "points": {key: len(items) for key, items in points.items()},
+                                "updated_ms": time.time_ns() // 1_000_000}
+            self.last_errors.pop(name, None)
+        return rtu
+
+    def poll_once(self):
+        """执行单轮目录发现与点表同步；目录瞬时超时不误将全站测点置为无效。"""
+        seen = set()
+        catalog_ok = False
+        catalog_models = None
+        try:
+            catalog_models = request(self.simulator_url, "/api/models")["models"]
+            catalog_ok = True
             with self.lock:
-                for rtu in self.online.keys() - seen:
+                self.last_errors.pop("catalog", None)
+        except Exception as exc:
+            self.report_error("catalog", exc)
+
+        if catalog_ok and isinstance(catalog_models, list):
+            healthy_targets = []
+            for model in catalog_models:
+                service = model.get("service") or {}
+                if not service.get("healthy"):
+                    continue
+                healthy_targets.append((model["id"], service["base_url"]))
+            for name, base_url in healthy_targets:
+                try:
+                    rtu = self._sync_single_model(name, base_url)
+                    seen.add(rtu)
+                except Exception as exc:
+                    self.report_error(name, exc)
+                    # 直连瞬时抖动未达阈值时保留当前在线态，避免单次丢包引起测点闪断。
+                    with self.lock:
+                        matched_rtu = next(
+                            (r for r, (_b, m) in self.online.items() if m == name),
+                            None,
+                        )
+                        if matched_rtu is not None:
+                            count = self._failure_counts.get(matched_rtu, 0) + 1
+                            self._failure_counts[matched_rtu] = count
+                            if count < self.offline_failure_threshold:
+                                seen.add(matched_rtu)
+        else:
+            # 目录接口超时/不可达时，继续直连已在线模型服务，绝不误判全站离线。
+            with self.lock:
+                known_online = list(self.online.items())
+            for rtu, (base_url, name) in known_online:
+                try:
+                    synced_rtu = self._sync_single_model(name, base_url)
+                    seen.add(synced_rtu)
+                except Exception as exc:
+                    self.report_error(name, exc)
+                    with self.lock:
+                        count = self._failure_counts.get(rtu, 0) + 1
+                        self._failure_counts[rtu] = count
+                        if count < self.offline_failure_threshold:
+                            seen.add(rtu)
+
+        if not catalog_ok:
+            # 仅对达到连续失败阈值的已知模型标记离线，跳过基于空目录的全表置无效。
+            with self.lock:
+                stale_rtus = [
+                    rtu for rtu in list(self.online.keys())
+                    if rtu not in seen
+                ]
+                for rtu in stale_rtus:
                     self.online.pop(rtu, None)
+                    self._failure_counts.pop(rtu, None)
                     if rtu in self.models:
                         self.models[rtu]["online"] = False
-            try:
-                self.invalidate_offline(seen)
-            except Exception as exc:
-                self.report_error("database", exc)
-            else:
-                with self.lock:
-                    self.last_errors.pop("database", None)
+            if stale_rtus:
+                try:
+                    keep_online = set(self.online.keys()) | seen
+                    self.invalidate_offline(keep_online)
+                except Exception as exc:
+                    self.report_error("database", exc)
+            return
+
+        with self.lock:
+            for rtu in self.online.keys() - seen:
+                self.online.pop(rtu, None)
+                self._failure_counts.pop(rtu, None)
+                if rtu in self.models:
+                    self.models[rtu]["online"] = False
+        try:
+            self.invalidate_offline(seen)
+        except Exception as exc:
+            self.report_error("database", exc)
+        else:
+            with self.lock:
+                self.last_errors.pop("database", None)
+
+    def poll(self):
+        while not self.stop.is_set():
+            self.poll_once()
             self.stop.wait(self.interval)
 
     def report_error(self, name, exc):
@@ -281,7 +460,7 @@ def main(argv=None):
     settings = json.loads((APP_ROOT / "startup.json").read_text(encoding="utf-8"))
     data_dir = (APP_ROOT / settings.get("data_dir", "data")).resolve()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scada-root", type=Path, default=Path(r"D:\codex\scada"))
+    parser.add_argument("--scada-root", type=Path, default=default_scada_root(settings))
     parser.add_argument("--db", type=Path, default=data_dir / "scdfe_s.sqlite3")
     parser.add_argument("--workspace-root", type=Path)
     parser.add_argument("--simulator-url", default=f"http://127.0.0.1:{settings['port']}")
@@ -295,7 +474,10 @@ def main(argv=None):
         simulator_url = loopback_url(args.simulator_url)
     except ValueError as exc:
         parser.error(str(exc))
-    sys.path.insert(0, str(args.scada_root.resolve()))
+    scada_root = args.scada_root.resolve()
+    if not scada_root.is_dir():
+        parser.error(f"SCADA 目录不存在: {scada_root}，请通过 --scada-root 或环境变量 SCADA_ROOT 指定")
+    sys.path.insert(0, str(scada_root))
     from scdfe_s.database import SimulatorStore
     from scdfe_s.web.iec104_service import IEC104Service, IEC104ServiceError
     from scdfe_s.web.server import ApiError, ScadaHandler, ScadaHTTPServer
@@ -337,6 +519,17 @@ def main(argv=None):
     class BridgeHandler(ScadaHandler):
         def _dispatch(self):
             parts, query = self._path()
+            if self.command == "GET" and parts == ["api", "simulator104", "points"]:
+                self._prepare_request()
+                raw_rtu = (query.get("rtu_id") or [""])[0]
+                raw_kind = str((query.get("kind") or ["yk"])[0]).strip().lower()
+                if not str(raw_rtu).strip().isdigit():
+                    return self._json(400, {"error": "请指定有效的 rtu_id"})
+                try:
+                    items = bridge.list_control_points(int(raw_rtu), raw_kind)
+                except ValueError as exc:
+                    return self._json(400, {"error": str(exc)})
+                return self._json(200, {"rtu_id": int(raw_rtu), "kind": raw_kind, "items": items})
             if self.command == "GET" and not query:
                 if parts == ["api", "simulator104", "status"]:
                     self._prepare_request()

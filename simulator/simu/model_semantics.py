@@ -89,17 +89,17 @@ def hydrogen_conversion_active_set_type(value: Any) -> str:
 
 
 def _model_blocks(model: Any) -> Mapping[str, Any]:
-    if hasattr(model, "data") and isinstance(model.data, Mapping):
+    if hasattr(model, "data") and (type(model.data) is dict or isinstance(model.data, Mapping)):
         return model.data
-    if not isinstance(model, Mapping):
+    if not (type(model) is dict or isinstance(model, Mapping)):
         return {}
     definitions = model.get("definitions")
-    if isinstance(definitions, Mapping):
+    if (type(definitions) is dict or isinstance(definitions, Mapping)):
         nested = definitions.get("model")
-        if isinstance(nested, Mapping):
+        if (type(nested) is dict or isinstance(nested, Mapping)):
             return nested
     nested = model.get("model")
-    if isinstance(nested, Mapping):
+    if (type(nested) is dict or isinstance(nested, Mapping)):
         return nested
     return model
 
@@ -110,13 +110,13 @@ def model_rows(model: Any, block_name: str) -> Tuple[Mapping[str, Any], ...]:
         return ()
     if hasattr(block, "data"):
         rows = block.data
-    elif isinstance(block, Mapping):
+    elif (type(block) is dict or isinstance(block, Mapping)):
         rows = block.get("rows", ())
     else:
         rows = block
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
         return ()
-    return tuple(row for row in rows if isinstance(row, Mapping))
+    return tuple(row for row in rows if (type(row) is dict or isinstance(row, Mapping)))
 
 
 def _coupling_endpoint_block(reference_field: Any) -> str:
@@ -379,9 +379,34 @@ def validate_hydrogen_power_setpoint_safety(
     return result
 
 
+_STRUCTURED_RESOURCES_CACHE: Dict[int, Tuple[Tuple[Any, ...], Tuple[StructuredResource, ...]]] = {}
+_STRUCTURED_RESOURCES_CACHE_MAX = 32
+_SOURCE_BLOCKS_TUPLE = tuple(sorted({spec.source_block for spec in RESOURCE_RELATION_SPECS}))
+_PARAM_BLOCKS_TUPLE = tuple(sorted({spec.parameter_block for spec in RESOURCE_RELATION_SPECS}))
+
+
+def _structured_resources_cache_sig(model: Any) -> Optional[Tuple[Any, ...]]:
+    data = getattr(model, "data", None)
+    if type(data) is not dict:
+        return None
+    parts = []
+    for block_name in _SOURCE_BLOCKS_TUPLE + _PARAM_BLOCKS_TUPLE:
+        blk = data.get(block_name)
+        rows = getattr(blk, "data", None) if blk is not None else None
+        if rows:
+            parts.append((block_name, id(rows), len(rows), id(rows[0]), id(rows[-1])))
+    return tuple(parts)
+
+
 def structured_resources(model: Any) -> Tuple[StructuredResource, ...]:
+    sig = _structured_resources_cache_sig(model)
+    model_id_key = id(model)
+    if sig is not None:
+        cached = _STRUCTURED_RESOURCES_CACHE.get(model_id_key)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
     sources_by_index: Dict[str, Dict[str, Mapping[str, Any]]] = {}
-    for source_block in {spec.source_block for spec in RESOURCE_RELATION_SPECS}:
+    for source_block in _SOURCE_BLOCKS_TUPLE:
         sources_by_index[source_block] = {
             str(row.get("idx", "")).strip(): row
             for row in model_rows(model, source_block)
@@ -411,11 +436,16 @@ def structured_resources(model: Any) -> Tuple[StructuredResource, ...]:
                     source=source,
                 )
             )
-    return tuple(
+    result = tuple(
         rows[0]
         for rows in candidates.values()
         if len(rows) == 1
     )
+    if sig is not None:
+        if len(_STRUCTURED_RESOURCES_CACHE) >= _STRUCTURED_RESOURCES_CACHE_MAX and model_id_key not in _STRUCTURED_RESOURCES_CACHE:
+            _STRUCTURED_RESOURCES_CACHE.pop(next(iter(_STRUCTURED_RESOURCES_CACHE)))
+        _STRUCTURED_RESOURCES_CACHE[model_id_key] = (sig, result)
+    return result
 
 
 def resource_aliases(resource: StructuredResource) -> Tuple[str, ...]:

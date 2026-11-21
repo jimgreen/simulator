@@ -4,7 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>极地微电网学员台</title>
-    <link rel="stylesheet" href="/styles.css?v=20260814-renewable-parameter-dialog-fit" />
+    <script>
+      try {
+        const savedTheme = localStorage.getItem("polarUiTheme");
+        if (savedTheme === "dark") document.documentElement.dataset.theme = "dark";
+      } catch (_e) {}
+    </script>
+    <link rel="stylesheet" href="/styles.css?v=20261122-precision-ui" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -36,6 +42,16 @@
             <small id="simSpeed">x1</small>
           </div>
         </div>
+        <div class="topbar-utility-group">
+          <button id="topbarAlertBadge" class="topbar-alert-badge" type="button" hidden title="查看未恢复的潮流告警">
+            <span class="alert-pulse-dot" aria-hidden="true"></span>
+            <span id="topbarAlertBadgeText">潮流异常</span>
+          </button>
+          <button id="themeToggleButton" class="icon-button theme-toggle-button" type="button" title="切换深色/浅色主题" aria-label="切换深色或浅色主题">
+            <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
+            <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32 1.41-1.41" /></svg>
+          </button>
+        </div>
       </header>
 
       <nav class="page-nav" aria-label="学员台主题导航">
@@ -58,11 +74,12 @@
         aria-live="assertive"
         hidden
       >
-        <span class="power-flow-failure-icon" aria-hidden="true">!</span>
-        <div>
+        <span class="alert-pulse-dot" aria-hidden="true"></span>
+        <div class="power-flow-failure-body">
           <strong id="powerFlowFailureTitle">模拟台潮流计算失败，仿真已暂停</strong>
           <p id="powerFlowFailureDetail"></p>
         </div>
+        <button id="powerFlowFailureDismiss" class="alert-dismiss-button" type="button">暂收起</button>
       </section>
 
       <main class="page-main">
@@ -1076,12 +1093,12 @@
                 <table class="system-parameter-table backend-runtime-parameter-table">
                   <thead><tr><th>参数名称</th><th>当前值</th><th>设置值</th><th>单位</th></tr></thead>
                   <tbody>
-                    <tr><td><strong>后台数据刷新周期</strong><small>学员台接收、后台处理和新能源趋势采样周期</small></td><td id="currentBackendRuntimeRefresh" class="numeric-cell">1</td><td><input id="backendRuntimeRefresh" type="number" min="0.1" max="60" step="0.1" data-runtime-setting="backend_refresh_seconds" /></td><td>s</td></tr>
-                    <tr><td><strong>后台请求超时</strong><small>与模拟台进行实时数据交换的单次最长等待</small></td><td id="currentBackendRuntimeRequestTimeout" class="numeric-cell">8</td><td><input id="backendRuntimeRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="backend_request_timeout_seconds" /></td><td>s</td></tr>
-                    <tr><td><strong>数据帧超时上限</strong><small>接收数据超过该时长后阻断闭环控制下发</small></td><td id="currentBackendRuntimeFrameAgeLimit" class="numeric-cell">15</td><td><input id="backendRuntimeFrameAgeLimit" type="number" min="1" max="3600" step="1" data-runtime-setting="frame_age_limit_seconds" /></td><td>s</td></tr>
-                    <tr><td><strong>同帧持续上限</strong><small>同一仿真数据帧持续过久时判定接收冻结</small></td><td id="currentBackendRuntimeSameFrameLimit" class="numeric-cell">30</td><td><input id="backendRuntimeSameFrameLimit" type="number" min="1" max="3600" step="1" data-runtime-setting="same_frame_limit_seconds" /></td><td>s</td></tr>
-                    <tr><td><strong>连续异常保护次数</strong><small>连续接收异常达到该次数后停止接收并告警</small></td><td id="currentBackendRuntimeReconnectAttempts" class="numeric-cell">3</td><td><input id="backendRuntimeReconnectAttempts" type="number" min="1" max="20" step="1" data-runtime-setting="receive_max_reconnect_attempts" /></td><td>次</td></tr>
-                    <tr><td><strong>量测增量历史上限</strong><small>学员台后台为增量同步保留的量测变更批次数</small></td><td id="currentBackendRuntimeMeasurementDeltaHistoryLimit" class="numeric-cell">200</td><td><input id="backendRuntimeMeasurementDeltaHistoryLimit" type="number" min="10" max="5000" step="10" data-runtime-setting="measurement_delta_history_limit" /></td><td>批</td></tr>
+                    <tr><td title="学员台接收、后台处理和新能源趋势采样周期"><strong>后台数据刷新周期</strong></td><td id="currentBackendRuntimeRefresh" class="numeric-cell">1</td><td><input id="backendRuntimeRefresh" type="number" min="0.1" max="60" step="0.1" data-runtime-setting="backend_refresh_seconds" /></td><td>s</td></tr>
+                    <tr><td title="与模拟台进行实时数据交换的单次最长等待"><strong>后台请求超时</strong></td><td id="currentBackendRuntimeRequestTimeout" class="numeric-cell">8</td><td><input id="backendRuntimeRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="backend_request_timeout_seconds" /></td><td>s</td></tr>
+                    <tr><td title="接收数据超过该时长后阻断闭环控制下发"><strong>数据帧超时上限</strong></td><td id="currentBackendRuntimeFrameAgeLimit" class="numeric-cell">15</td><td><input id="backendRuntimeFrameAgeLimit" type="number" min="1" max="3600" step="1" data-runtime-setting="frame_age_limit_seconds" /></td><td>s</td></tr>
+                    <tr><td title="同一仿真数据帧持续过久时判定接收冻结"><strong>同帧持续上限</strong></td><td id="currentBackendRuntimeSameFrameLimit" class="numeric-cell">30</td><td><input id="backendRuntimeSameFrameLimit" type="number" min="1" max="3600" step="1" data-runtime-setting="same_frame_limit_seconds" /></td><td>s</td></tr>
+                    <tr><td title="连续接收异常达到该次数后停止接收并告警"><strong>连续异常保护次数</strong></td><td id="currentBackendRuntimeReconnectAttempts" class="numeric-cell">3</td><td><select id="backendRuntimeReconnectAttempts" data-runtime-setting="receive_max_reconnect_attempts"><option value="1">1</option><option value="3" selected>3</option><option value="5">5</option><option value="10">10</option><option value="20">20</option></select></td><td>次</td></tr>
+                    <tr><td title="学员台后台为增量同步保留的量测变更批次数"><strong>量测增量历史上限</strong></td><td id="currentBackendRuntimeMeasurementDeltaHistoryLimit" class="numeric-cell">200</td><td><input id="backendRuntimeMeasurementDeltaHistoryLimit" type="number" min="10" max="5000" step="10" data-runtime-setting="measurement_delta_history_limit" /></td><td>批</td></tr>
                   </tbody>
                 </table>
               </form>
@@ -1101,13 +1118,13 @@
                 <table class="system-parameter-table web-runtime-parameter-table">
                   <thead><tr><th>参数名称</th><th>当前值</th><th>设置值</th><th>单位</th></tr></thead>
                   <tbody>
-                    <tr><td><strong>前端数据刷新周期</strong><small>未启动接收时页面轮询完成后的等待时长</small></td><td id="currentWebRuntimeFrontendRefresh" class="numeric-cell">1</td><td><input id="webRuntimeFrontendRefresh" type="number" min="0.2" max="60" step="0.1" data-runtime-setting="frontend_refresh_seconds" /></td><td>s</td></tr>
-                    <tr><td><strong>前端请求超时</strong><small>学员台页面调用本地 WEB API 的最长等待</small></td><td id="currentWebRuntimeFrontendRequestTimeout" class="numeric-cell">30</td><td><input id="webRuntimeFrontendRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="frontend_request_timeout_seconds" /></td><td>s</td></tr>
-                    <tr><td><strong>运行日志分页条数</strong><small>运行日志页面每页展示的记录数量</small></td><td id="currentWebRuntimeLogPageSize" class="numeric-cell">20</td><td><input id="webRuntimeLogPageSize" type="number" min="5" max="200" step="1" data-runtime-setting="runtime_log_page_size" /></td><td>条</td></tr>
-                    <tr><td><strong>运行日志缓存上限</strong><small>浏览器内存中保留的运行日志数量</small></td><td id="currentWebRuntimeLogCacheLimit" class="numeric-cell">300</td><td><input id="webRuntimeLogCacheLimit" type="number" min="50" max="5000" step="10" data-runtime-setting="runtime_log_cache_limit" /></td><td>条</td></tr>
-                    <tr><td><strong>接收状态同步周期</strong><small>WEB 前端读取学员台后台接收状态的周期</small></td><td id="currentWebRuntimeReceiveStateSync" class="numeric-cell">5</td><td><input id="webRuntimeReceiveStateSync" type="number" min="0.5" max="60" step="0.5" data-runtime-setting="receive_state_sync_seconds" /></td><td>s</td></tr>
-                    <tr><td><strong>电功率箭头显示门槛</strong><small>绝对值不超过门槛时隐藏电气潮流箭头</small></td><td id="currentWebRuntimeDiagramElectricFlowThreshold" class="numeric-cell">0.1</td><td><input id="webRuntimeDiagramElectricFlowThreshold" type="number" min="0" max="1000000" step="0.01" data-runtime-setting="diagram_flow_electric_threshold_kw" /></td><td>kW</td></tr>
-                    <tr><td><strong>氢流量箭头显示门槛</strong><small>绝对值不超过门槛时隐藏氢气流动箭头</small></td><td id="currentWebRuntimeDiagramHydrogenFlowThreshold" class="numeric-cell">0.1</td><td><input id="webRuntimeDiagramHydrogenFlowThreshold" type="number" min="0" max="1000000" step="0.01" data-runtime-setting="diagram_flow_hydrogen_threshold_nm3_h" /></td><td>Nm3/h</td></tr>
+                    <tr><td title="未启动接收时页面轮询完成后的等待时长"><strong>前端数据刷新周期</strong></td><td id="currentWebRuntimeFrontendRefresh" class="numeric-cell">1</td><td><input id="webRuntimeFrontendRefresh" type="number" min="0.2" max="60" step="0.1" data-runtime-setting="frontend_refresh_seconds" /></td><td>s</td></tr>
+                    <tr><td title="学员台页面调用本地 WEB API 的最长等待"><strong>前端请求超时</strong></td><td id="currentWebRuntimeFrontendRequestTimeout" class="numeric-cell">30</td><td><input id="webRuntimeFrontendRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="frontend_request_timeout_seconds" /></td><td>s</td></tr>
+                    <tr><td><strong>运行日志分页条数</strong></td><td id="currentWebRuntimeLogPageSize" class="numeric-cell">20</td><td><select id="webRuntimeLogPageSize" data-runtime-setting="runtime_log_page_size"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option><option value="200">200</option></select></td><td>条</td></tr>
+                    <tr><td title="浏览器内存中保留的运行日志数量"><strong>运行日志缓存上限</strong></td><td id="currentWebRuntimeLogCacheLimit" class="numeric-cell">300</td><td><select id="webRuntimeLogCacheLimit" data-runtime-setting="runtime_log_cache_limit"><option value="100">100</option><option value="300" selected>300</option><option value="500">500</option><option value="1000">1000</option><option value="3000">3000</option></select></td><td>条</td></tr>
+                    <tr><td title="WEB 前端读取学员台后台接收状态的周期"><strong>接收状态同步周期</strong></td><td id="currentWebRuntimeReceiveStateSync" class="numeric-cell">5</td><td><select id="webRuntimeReceiveStateSync" data-runtime-setting="receive_state_sync_seconds"><option value="1">1</option><option value="2">2</option><option value="5" selected>5</option><option value="10">10</option><option value="30">30</option></select></td><td>s</td></tr>
+                    <tr><td title="绝对值不超过门槛时隐藏电气潮流箭头"><strong>电功率箭头显示门槛</strong></td><td id="currentWebRuntimeDiagramElectricFlowThreshold" class="numeric-cell">0.1</td><td><input id="webRuntimeDiagramElectricFlowThreshold" type="number" min="0" max="1000000" step="0.01" data-runtime-setting="diagram_flow_electric_threshold_kw" /></td><td>kW</td></tr>
+                    <tr><td title="绝对值不超过门槛时隐藏氢气流动箭头"><strong>氢流量箭头显示门槛</strong></td><td id="currentWebRuntimeDiagramHydrogenFlowThreshold" class="numeric-cell">0.1</td><td><input id="webRuntimeDiagramHydrogenFlowThreshold" type="number" min="0" max="1000000" step="0.01" data-runtime-setting="diagram_flow_hydrogen_threshold_nm3_h" /></td><td>Nm3/h</td></tr>
                   </tbody>
                 </table>
               </form>
@@ -1190,7 +1207,6 @@
         <label class="modal-field">模型名称
           <input id="newModelName" name="newModelName" type="text" autocomplete="off" required />
         </label>
-        <p class="remote-control-hint">模型定义将在模型初始化时自动从模拟台获取，无需人工准备定义文件。</p>
         <p id="newModelMessage" class="model-management-message" aria-live="polite"></p>
         <div class="dialog-actions">
           <button id="cancelNewModel" type="button">取消</button>
@@ -1268,6 +1284,16 @@
           </div>
           <button id="closeRenewableControlParametersDialog" class="dialog-close-button" type="button" aria-label="关闭控制参数窗口">×</button>
         </div>
+        <div class="renewable-preset-bar">
+          <label>策略预设方案
+            <select id="renewableControlPreset" aria-label="选择新能源控制策略预设方案">
+              <option value="custom">自定义参数</option>
+              <option value="standard">标准均衡（默认）</option>
+              <option value="aggressive_renewable">新能源积极消纳</option>
+              <option value="conservative_protection">储能/氢能保守保护</option>
+            </select>
+          </label>
+        </div>
         <div id="renewableControlParameterTabs" class="renewable-control-parameter-tabs" role="tablist" aria-label="控制参数分类">
           <button id="renewableControlParameterTabRuntime" type="button" class="is-active" role="tab" data-renewable-parameter-tab="runtime" aria-controls="renewableControlParameterPaneRuntime" aria-selected="true">运行与步长</button>
           <button id="renewableControlParameterTabProtection" type="button" role="tab" data-renewable-parameter-tab="protection" aria-controls="renewableControlParameterPaneProtection" aria-selected="false">储能与保护</button>
@@ -1336,9 +1362,6 @@
                 <label>启机柴发出力最大值(%)
                   <input id="electrolyzerDieselPowerLimitRatio" type="number" min="0" max="100" step="0.1" value="35" />
                 </label>
-                <label>柴发出力死区(%)
-                  <input id="electrolyzerDieselPowerDeadbandRatio" type="number" min="0" max="100" step="0.1" value="5" />
-                </label>
                 <label>停机柴发最大值(%)
                   <input id="electrolyzerDieselPowerStopMaximumRatio" type="number" min="0" max="100" step="0.1" value="50" title="柴发出力严格大于该值时，电制氢逐步降功率直至停机" />
                 </label>
@@ -1392,35 +1415,45 @@
               <label>柴发出力权重
                 <input id="optimizationDieselOutputWeight" type="number" min="0" step="0.001" value="1" />
               </label>
-              <label>弃电平方权重
-                <input id="optimizationCurtailmentSquareWeight" type="number" min="0" step="0.000001" value="0.000001" />
-              </label>
-              <label>电源/储能调节平方权重
-                <input id="optimizationSourceStorageAdjustmentSquareWeight" type="number" min="0" step="0.000001" value="0.000001" />
-              </label>
-              <label>平衡松弛平方权重
-                <input id="optimizationBalanceDeltaSquareWeight" type="number" min="0" step="1000" value="10000" />
-              </label>
-              <label>平衡松弛告警(kW)
-                <input id="optimizationBalanceDeltaWarningKw" type="number" min="0" step="0.1" value="1" />
-              </label>
-              <label>平衡容差(kW)
-                <input id="optimizationBalanceToleranceKw" type="number" min="0" step="0.1" value="0.1" />
-              </label>
-              <label>边界容差(kW)
-                <input id="optimizationBoundToleranceKw" type="number" min="0" step="0.1" value="0.1" />
-              </label>
-              <label>求解收敛容差
-                <input id="optimizationFtol" type="number" min="0" step="0.001" value="0.001" />
-              </label>
               <label>最大迭代次数
-                <input id="optimizationMaxIterations" type="number" min="1" step="1" value="100" />
+                <select id="optimizationMaxIterations">
+                  <option value="50">50 次</option>
+                  <option value="100" selected>100 次</option>
+                  <option value="200">200 次</option>
+                  <option value="500">500 次</option>
+                </select>
               </label>
             </div>
+            <details class="advanced-solver-params">
+              <summary>高级求解器权重与容差（7 项）</summary>
+              <div class="renewable-control-parameter-fields">
+                <label>弃电平方权重
+                  <input id="optimizationCurtailmentSquareWeight" type="number" min="0" step="0.000001" value="0.000001" />
+                </label>
+                <label>电源/储能调节平方权重
+                  <input id="optimizationSourceStorageAdjustmentSquareWeight" type="number" min="0" step="0.000001" value="0.000001" />
+                </label>
+                <label>平衡松弛平方权重
+                  <input id="optimizationBalanceDeltaSquareWeight" type="number" min="0" step="1000" value="10000" />
+                </label>
+                <label>平衡松弛告警(kW)
+                  <input id="optimizationBalanceDeltaWarningKw" type="number" min="0" step="0.1" value="1" />
+                </label>
+                <label>平衡容差(kW)
+                  <input id="optimizationBalanceToleranceKw" type="number" min="0" step="0.1" value="0.1" />
+                </label>
+                <label>边界容差(kW)
+                  <input id="optimizationBoundToleranceKw" type="number" min="0" step="0.1" value="0.1" />
+                </label>
+                <label>求解收敛容差
+                  <input id="optimizationFtol" type="number" min="0" step="0.001" value="0.001" />
+                </label>
+              </div>
+            </details>
           </section>
         </div>
         <div class="renewable-control-parameter-footer">
-          <p id="renewableControlParametersMessage" class="remote-control-hint" aria-live="polite">参数修改后点击保存，写入学员台 WEB 后台，并供下次启动加载。</p>
+          <p id="renewableControlParametersMessage" class="remote-control-hint" aria-live="polite"></p>
           <div class="dialog-actions">
             <button id="cancelRenewableControlParametersDialog" type="button">取消</button>
             <button id="saveRenewableControlParameters" class="primary" type="button">保存</button>
@@ -1540,10 +1573,15 @@
           </div>
           <button id="receiveLinkClose" class="dialog-close-button" type="button" aria-label="关闭模型初始化窗口">×</button>
         </div>
-        <label class="receive-link-field">模拟台服务地址
-          <input id="receiveLinkInput" type="url" autocomplete="off" placeholder="http://127.0.0.1:8711" />
+        <label class="receive-link-field">模拟台服务
+          <select id="receiveLinkPreset">
+            <option value="__custom__">自定义地址...</option>
+          </select>
         </label>
-        <p id="receiveLinkMessage" class="remote-control-hint">一个服务地址可供多个学员台同时接入；具体接口路径由学员台内部组织。</p>
+        <label id="receiveLinkCustomField" class="receive-link-field">自定义地址
+          <input id="receiveLinkInput" type="url" autocomplete="off" placeholder="http://127.0.0.1:18716" />
+        </label>
+        <p id="receiveLinkMessage" class="remote-control-hint"></p>
         <div class="dialog-actions">
           <button id="receiveLinkCancel" type="button">取消</button>
           <button id="confirmReceiveLink" class="primary" type="button">开始初始化</button>
@@ -1586,13 +1624,42 @@
         <label class="remote-adjustment-value-field">控制值
           <input id="remoteAdjustmentValue" type="number" step="0.01" autocomplete="off" />
         </label>
-        <p id="remoteAdjustmentHint" class="remote-control-hint">确认后将立即向模拟台下发一条遥调指令。</p>
+        <div class="remote-adjustment-quick-actions" aria-label="快捷设定值">
+          <button type="button" data-remote-adjust-preset="zero">置 0</button>
+          <button type="button" data-remote-adjust-preset="minus10">-10%</button>
+          <button type="button" data-remote-adjust-preset="measured">当前量测</button>
+          <button type="button" data-remote-adjust-preset="plus10">+10%</button>
+        </div>
+        <p id="remoteAdjustmentHint" class="remote-control-hint"></p>
         <div class="dialog-actions">
           <button id="remoteAdjustmentCancel" type="button">取消</button>
           <button id="remoteAdjustmentConfirm" class="primary" type="button">确认下发</button>
         </div>
       </form>
     </dialog>
-    <script src="/app.js?v=20260816-service-origin-link"></script>
+
+    <dialog id="dangerConfirmDialog" class="danger-confirm-dialog" aria-labelledby="dangerConfirmTitle" aria-describedby="dangerConfirmMessage">
+      <div class="danger-confirm-card">
+        <div class="danger-confirm-head">
+          <span class="danger-confirm-badge">高危确认</span>
+          <h2 id="dangerConfirmTitle">确认执行此操作？</h2>
+        </div>
+        <p id="dangerConfirmTarget" class="danger-confirm-target" hidden></p>
+        <p id="dangerConfirmMessage" class="danger-confirm-message"></p>
+        <div class="danger-confirm-actions">
+          <button id="dangerConfirmCancel" type="button">取消</button>
+          <button id="dangerConfirmOk" class="danger-button" type="button">确认执行</button>
+        </div>
+      </div>
+    </dialog>
+    <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
+    <script defer src="/js/01-state-core.js?v=20261122-precision-ui"></script>
+    <script defer src="/js/02-diagram-core.js?v=20261122-precision-ui"></script>
+    <script defer src="/js/03-diagram-editor.js?v=20261122-precision-ui"></script>
+    <script defer src="/js/04-receive-models.js?v=20261122-precision-ui"></script>
+    <script defer src="/js/05-curves.js?v=20261122-precision-ui"></script>
+    <script defer src="/js/06-renewable-control.js?v=20261122-precision-ui"></script>
+    <script defer src="/js/07-measurements-commands.js?v=20261122-precision-ui"></script>
+    <script defer src="/js/08-bootstrap.js?v=20261122-precision-ui"></script>
   </body>
 </html>

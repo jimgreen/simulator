@@ -385,7 +385,7 @@ def normalize_device_changes(
     *,
     allow_out_of_bounds_setpoints: bool = False,
 ) -> dict[str, str]:
-    if not isinstance(changes, Mapping) or not changes:
+    if not (type(changes) is dict or isinstance(changes, Mapping)) or not changes:
         raise ValueError("At least one device parameter change is required")
     unknown = [field for field in changes if field not in current]
     if unknown:
@@ -457,7 +457,7 @@ def normalize_device_changes(
 
 
 def normalize_measurement_changes(current: Mapping[str, Any], changes: Mapping[str, Any]) -> dict[str, Any]:
-    if not isinstance(changes, Mapping) or not changes:
+    if not (type(changes) is dict or isinstance(changes, Mapping)) or not changes:
         raise ValueError("At least one measurement parameter change is required")
     allowed = {"weight", "error_sigma", "median_deviation", "valid", "status", "fixed_value"}
     unknown = [field for field in changes if field not in allowed]

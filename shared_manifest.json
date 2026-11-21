@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "source_app": "simulator",
+  "target_app": "trainee",
+  "shared_paths": [
+    "requirements.txt",
+    "simu_loop.py",
+    "weather_simu.py",
+    "scripts",
+    "src",
+    "simu/config",
+    "simu/service_parts",
+    "simu/renewable_control_parts",
+    "simu/__init__.py",
+    "simu/command_frame.py",
+    "simu/control_config.py",
+    "simu/definition_editing.py",
+    "simu/device_roles.py",
+    "simu/device_runtime_frame.py",
+    "simu/fixed_boundaries.py",
+    "simu/fuel_cell_control.py",
+    "simu/http_common.py",
+    "simu/http_routes.py",
+    "simu/measurement_delta.py",
+    "simu/measurement_history.py",
+    "simu/model_artifacts.py",
+    "simu/model_semantics.py",
+    "simu/point_names.py",
+    "simu/power_flow_worker.py",
+    "simu/renewable_capability.py",
+    "simu/renewable_control.py",
+    "simu/renewable_optimization.py",
+    "simu/resource_topology.py",
+    "simu/server.py",
+    "simu/service.py",
+    "simu/simulator_cluster.py",
+    "simu/simulator_proxy.py",
+    "simu/source_curves.py",
+    "simu/trainee_data_policy.py",
+    "simu/trainee_exchange.py",
+    "simu/web_runtime_settings.py"
+  ],
+  "role_specific_paths": [
+    "README.md",
+    "run.py",
+    "start.ps1",
+    "startup.json",
+    "scada104.py",
+    "scada104-dependency.patch",
+    "simu/web",
+    "tests"
+  ],
+  "ignore_names": [
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache"
+  ],
+  "ignore_suffixes": [
+    ".pyc",
+    ".pyo",
+    ".log"
+  ]
+}

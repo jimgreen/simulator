@@ -9,8 +9,12 @@
       if (searchParams.get("ui") === "direct") {
         document.documentElement.dataset.simulatorUiMode = "direct";
       }
+      try {
+        const savedTheme = localStorage.getItem("polarUiTheme");
+        if (savedTheme === "dark") document.documentElement.dataset.theme = "dark";
+      } catch (_e) {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20260812-runtime-log-column-resize" />
+    <link rel="stylesheet" href="/styles.css?v=20261122-precision-ui" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -77,6 +81,16 @@
             </button>
           </div>
         </div>
+        <div class="topbar-utility-group">
+          <button id="topbarAlertBadge" class="topbar-alert-badge" type="button" hidden title="查看未恢复的潮流告警">
+            <span class="alert-pulse-dot" aria-hidden="true"></span>
+            <span id="topbarAlertBadgeText">潮流异常</span>
+          </button>
+          <button id="themeToggleButton" class="icon-button theme-toggle-button" type="button" title="切换深色/浅色主题" aria-label="切换深色或浅色主题">
+            <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
+            <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32 1.41-1.41" /></svg>
+          </button>
+        </div>
       </header>
 
       <nav class="page-nav" aria-label="模拟台主题导航">
@@ -99,11 +113,12 @@
         aria-live="assertive"
         hidden
       >
-        <span class="power-flow-failure-icon" aria-hidden="true">!</span>
-        <div>
+        <span class="alert-pulse-dot" aria-hidden="true"></span>
+        <div class="power-flow-failure-body">
           <strong id="powerFlowFailureTitle">潮流计算失败，仿真已暂停</strong>
           <p id="powerFlowFailureDetail"></p>
         </div>
+        <button id="powerFlowFailureDismiss" class="alert-dismiss-button" type="button">暂收起</button>
       </section>
 
       <main class="page-main">
@@ -862,8 +877,7 @@
                     </tr>
                     <tr>
                       <td>
-                        <strong>遥调指令响应系数</strong>
-                        <small>每个仿真周期按“目标值 × 系数 + 当前潮流值 × (1 - 系数)”生成潮流边界</small>
+                        <strong title="每周期按：目标值 × 系数 + 当前值 × (1 - 系数)">遥调指令响应系数</strong>
                       </td>
                       <td id="currentRemoteAdjustmentResponseRatio" class="numeric-cell">0.5</td>
                       <td>
@@ -913,9 +927,17 @@
                       <td>s</td>
                     </tr>
                     <tr>
-                      <td><strong>运行日志分页条数</strong><small>每页展示的日志数量</small></td>
+                      <td><strong>运行日志分页条数</strong></td>
                       <td id="currentWebRuntimeLogPageSize" class="numeric-cell">20</td>
-                      <td><input id="webRuntimeLogPageSize" type="number" min="5" max="200" step="1" data-runtime-setting="runtime_log_page_size" /></td>
+                      <td>
+                        <select id="webRuntimeLogPageSize" data-runtime-setting="runtime_log_page_size">
+                          <option value="10">10</option>
+                          <option value="20" selected>20</option>
+                          <option value="50">50</option>
+                          <option value="100">100</option>
+                          <option value="200">200</option>
+                        </select>
+                      </td>
                       <td>条</td>
                     </tr>
                     <tr>
@@ -1291,13 +1313,13 @@
           </div>
           <div class="start-simulation-fields">
             <label id="startSimulationDayField" class="modal-field">起始日
-              <input id="startSimulationDay" name="startSimulationDay" type="number" min="1" max="365" step="1" inputmode="numeric" value="1" />
+              <select id="startSimulationDay" name="startSimulationDay"></select>
             </label>
             <label class="modal-field">起始时刻
               <input id="startSimulationTime" name="startSimulationTime" type="time" step="1" value="00:00:00" required />
             </label>
           </div>
-          <p id="startSimulationHint" class="modal-hint">仅从停止状态新启动时设置起点；后台会按当前时钟步长向上对齐。</p>
+          <p id="startSimulationHint" class="modal-hint"></p>
           <p id="startSimulationMessage" class="modal-message" aria-live="polite"></p>
           <div class="modal-actions">
             <button id="cancelStartSimulation" type="button">取消</button>
@@ -1414,7 +1436,15 @@
             <legend>访问链接</legend>
             <div class="model-service-field-grid">
               <label class="modal-field">地址
-                <input id="newModelServiceHost" name="newModelServiceHost" type="text" value="127.0.0.1" autocomplete="off" required />
+                <div class="service-host-combo">
+                  <select id="newModelServiceHostPreset" aria-label="选择新建模型服务地址">
+                    <option value="127.0.0.1">127.0.0.1（本机回环）</option>
+                    <option value="localhost">localhost</option>
+                    <option value="0.0.0.0">0.0.0.0（全部网卡）</option>
+                    <option value="__custom__">自定义地址...</option>
+                  </select>
+                  <input id="newModelServiceHost" name="newModelServiceHost" type="text" value="127.0.0.1" autocomplete="off" required hidden />
+                </div>
               </label>
               <label class="modal-field">端口
                 <input id="newModelServicePort" name="newModelServicePort" type="number" min="1" max="65535" step="1" inputmode="numeric" required />
@@ -1432,7 +1462,6 @@
             <input id="newModelSvgInput" type="file" accept=".svg,image/svg+xml" hidden />
             <span id="newModelSvgFilename">未选择图形</span>
           </div>
-          <p class="modal-hint">正式新建前将校验必要字段、E/SVG 设备匹配性，并利用候选 E 文件执行一次潮流计算。</p>
           <section id="newModelValidation" class="model-preflight-result" aria-label="新建模型预校核结果" hidden>
             <div class="model-preflight-summary">
               <strong>预校核结果</strong>
@@ -1465,7 +1494,15 @@
             <legend>访问链接</legend>
             <div class="model-service-field-grid">
               <label class="modal-field">地址
-                <input id="updateModelServiceHost" name="updateModelServiceHost" type="text" autocomplete="off" required />
+                <div class="service-host-combo">
+                  <select id="updateModelServiceHostPreset" aria-label="选择修改模型服务地址">
+                    <option value="127.0.0.1">127.0.0.1（本机回环）</option>
+                    <option value="localhost">localhost</option>
+                    <option value="0.0.0.0">0.0.0.0（全部网卡）</option>
+                    <option value="__custom__">自定义地址...</option>
+                  </select>
+                  <input id="updateModelServiceHost" name="updateModelServiceHost" type="text" autocomplete="off" required hidden />
+                </div>
               </label>
               <label class="modal-field">端口
                 <input id="updateModelServicePort" name="updateModelServicePort" type="number" min="1" max="65535" step="1" inputmode="numeric" required />
@@ -1476,14 +1513,13 @@
           <div class="new-model-file-row">
             <button id="selectUpdateModelFile" type="button">选择 E 文件</button>
             <input id="updateModelFileInput" type="file" accept=".e" hidden />
-            <span>导入修改后的 model.e，重新生成模型、量测、控制、状态与曲线定义</span>
+            <span>可选 · 替换 model.e</span>
           </div>
           <div class="new-model-file-row">
             <button id="selectUpdateModelSvgFile" type="button">选择 SVG 图</button>
             <input id="updateModelSvgInput" type="file" accept=".svg,image/svg+xml" hidden />
-            <span>导入修改后的 SVG 图形；未选择时保留现有接线图</span>
+            <span>可选 · 替换接线图</span>
           </div>
-          <p class="modal-hint">正式修改前将对候选 E 文件与候选 SVG 执行完整预校核；仅修改访问链接时不触碰模型定义。</p>
           <section id="updateModelValidation" class="model-preflight-result" aria-label="修改模型预校核结果" hidden>
             <div class="model-preflight-summary">
               <strong>预校核结果</strong>
@@ -1510,7 +1546,7 @@
           <label class="modal-field">模型名称
             <input id="cloneModelName" name="cloneModelName" type="text" autocomplete="off" required />
           </label>
-          <p id="cloneModelHint" class="modal-hint">将复制当前模型文件夹中的模型、曲线、状态、量测、指令与运行结果。</p>
+          <p id="cloneModelHint" class="modal-hint" hidden></p>
           <p id="cloneModelMessage" class="modal-message" aria-live="polite"></p>
           <div class="modal-actions">
             <button id="cancelCloneModel" type="button">取消</button>
@@ -1534,7 +1570,6 @@
           <label class="modal-field">新模型名称
             <input id="importModelName" name="importModelName" type="text" autocomplete="off" required />
           </label>
-          <p class="modal-hint">正式导入前将校验定义包内 model.e 的必要字段、E/SVG 设备匹配性和潮流收敛性。</p>
           <section id="importModelValidation" class="model-preflight-result" aria-label="导入模型预校核结果" hidden>
             <div class="model-preflight-summary">
               <strong>预校核结果</strong>
@@ -1565,7 +1600,7 @@
           <label class="modal-field trainee-link-field">模拟台服务地址
             <input id="traineeLinkValue" type="text" readonly autocomplete="off" />
           </label>
-          <p id="traineeLinkMessage" class="modal-message">只需将协议、IP 和端口发给学员台，具体接口路径由学员台内部组织。</p>
+          <p id="traineeLinkMessage" class="modal-message"></p>
           <div class="modal-actions">
             <button id="cancelTraineeLinkDialog" type="button">关闭</button>
             <button id="copyTraineeLink" class="primary" type="button">复制地址</button>
@@ -1573,6 +1608,28 @@
         </form>
       </div>
     </div>
-    <script src="/app.js?v=20260816-service-origin-link"></script>
+
+    <dialog id="dangerConfirmDialog" class="danger-confirm-dialog" aria-labelledby="dangerConfirmTitle" aria-describedby="dangerConfirmMessage">
+      <div class="danger-confirm-card">
+        <div class="danger-confirm-head">
+          <span class="danger-confirm-badge">高危确认</span>
+          <h2 id="dangerConfirmTitle">确认执行此操作？</h2>
+        </div>
+        <p id="dangerConfirmTarget" class="danger-confirm-target" hidden></p>
+        <p id="dangerConfirmMessage" class="danger-confirm-message"></p>
+        <div class="danger-confirm-actions">
+          <button id="dangerConfirmCancel" type="button">取消</button>
+          <button id="dangerConfirmOk" class="danger-button" type="button">确认执行</button>
+        </div>
+      </div>
+    </dialog>
+    <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
+    <script defer src="/js/01-state-core.js?v=20261122-precision-ui"></script>
+    <script defer src="/js/02-api-models.js?v=20261122-precision-ui"></script>
+    <script defer src="/js/03-diagram-core.js?v=20261122-precision-ui"></script>
+    <script defer src="/js/04-diagram-editor.js?v=20261122-precision-ui"></script>
+    <script defer src="/js/05-curves.js?v=20261122-precision-ui"></script>
+    <script defer src="/js/06-overview-runtime.js?v=20261122-precision-ui"></script>
+    <script defer src="/js/07-measurements-faults.js?v=20261122-precision-ui"></script>
   </body>
 </html>

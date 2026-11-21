@@ -7,10 +7,12 @@ import contextlib
 import io
 import logging
 import math
+import os
 import random
 import re
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -219,6 +221,29 @@ def setup_logger(log_file: Path) -> logging.Logger:
     return logger
 
 
+def _atomic_write_text(file_path: Path, content: str) -> None:
+    """以临时文件 + os.replace 原子写入文本文件，避免崩溃或并发读取产生半写损坏。"""
+    file_path = Path(file_path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = file_path.with_name(f".{file_path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    try:
+        for attempt in range(4):
+            try:
+                os.replace(tmp_path, file_path)
+                return
+            except PermissionError:
+                if attempt == 3:
+                    raise
+                time.sleep(0.015 * (attempt + 1))
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
 def write_ebook_aligned(book: EBook, file_path: Path) -> None:
     file_path = Path(file_path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,7 +259,7 @@ def write_ebook_aligned(book: EBook, file_path: Path) -> None:
         for row in block.data:
             parts.append("# " + "  ".join(f"{str(row.get(name, '')):<{widths[idx]}}" for idx, name in enumerate(header)).rstrip() + "\n")
         parts.append(f"</{block.name}>\n")
-    file_path.write_text("".join(parts), encoding="utf-8")
+    _atomic_write_text(file_path, "".join(parts))
 
 
 _MODEL_BOOK_CACHE: Dict[Path, Tuple[Tuple[int, int], EBook]] = {}
@@ -590,7 +615,7 @@ def _safe_int(value, default: int = 0) -> int:
 def _topology_node_alive_by_idx(grid: object) -> Dict[int, bool]:
     alive_by_idx: Dict[int, bool] = {}
     ppc = getattr(grid, "ppc", None)
-    topology = ppc.get("_topology_arrays") if isinstance(ppc, Mapping) else None
+    topology = ppc.get("_topology_arrays") if (type(ppc) is dict or isinstance(ppc, Mapping)) else None
     raw_node_ids = getattr(topology, "node_ids", None)
     raw_node_alive = getattr(topology, "node_alive_mask", None)
     node_ids = list(raw_node_ids) if raw_node_ids is not None else []
@@ -1410,7 +1435,7 @@ def _snapshot_hydrogen_storage_flow_by_name(snapshot: Any) -> Dict[str, float]:
     fluid_results = getattr(snapshot, "fluid_results", {}) or {}
     hydro_result = (
         fluid_results.get("hydro")
-        if isinstance(fluid_results, Mapping)
+        if (type(fluid_results) is dict or isinstance(fluid_results, Mapping))
         else getattr(fluid_results, "hydro", None)
     )
     storages = getattr(hydro_result, "storages", {}) if hydro_result is not None else {}
@@ -3078,12 +3103,12 @@ def _snapshot_device_state_by_key(snapshot) -> Dict[Tuple[str, str], Dict[str, A
             for fallback_name, device in devices.items():
                 add_device(str(dev_type), device, str(fallback_name))
     explicit_states = getattr(snapshot, "device_states", None)
-    if isinstance(explicit_states, Mapping):
+    if (type(explicit_states) is dict or isinstance(explicit_states, Mapping)):
         explicit_rows = list(explicit_states.values())
     else:
         explicit_rows = list(explicit_states or [])
     for row in explicit_rows:
-        if not isinstance(row, Mapping):
+        if not (type(row) is dict or isinstance(row, Mapping)):
             continue
         dev_type = str(row.get("dev_type", ""))
         dev_name = str(row.get("dev_name", row.get("name", "")))
@@ -4235,9 +4260,7 @@ def render_measurement_snapshot_aligned(before: Sequence[str], rows: Sequence[Se
 
 
 def write_measurement_snapshot(path: Path, before: Sequence[str], rows: Sequence[Sequence[str]], after: Sequence[str]) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_measurement_snapshot_aligned(before, rows, after), encoding="utf-8")
+    _atomic_write_text(Path(path), render_measurement_snapshot_aligned(before, rows, after))
 
 
 def _config_uses_memory_runtime(config: SimulationConfig) -> bool:

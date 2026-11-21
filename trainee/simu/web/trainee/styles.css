@@ -6688,3 +6688,669 @@ canvas {
     justify-content: flex-end;
   }
 }
+
+/* 学员端数值列统一等宽数字对齐、策略预设栏、高级参数折叠与遥调快捷按钮 */
+.numeric-cell,
+.measurement-table td,
+.command-table td,
+.renewable-plan-table td,
+.curve-table td,
+#simClock,
+#simStepCount {
+  font-variant-numeric: tabular-nums;
+}
+
+.renewable-preset-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 10px;
+}
+
+.renewable-preset-bar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.advanced-solver-params {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid #d5e0e5;
+  border-radius: 6px;
+  background: #f7fafb;
+}
+
+.advanced-solver-params summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #36505a;
+  user-select: none;
+}
+
+.advanced-solver-params[open] summary {
+  margin-bottom: 10px;
+}
+
+.remote-adjustment-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.remote-adjustment-quick-actions button {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.renewable-control-log-detail-steps {
+  list-style: none;
+  padding-left: 0;
+}
+
+.renewable-control-log-detail-steps li.is-section {
+  font-weight: 600;
+  color: #1c3944;
+  background: #f2f7f9;
+  border-left: 3px solid #167a8a;
+  padding: 6px 10px;
+  border-radius: 4px;
+}
+
+.renewable-control-log-detail-steps li.is-subitem {
+  padding: 4px 10px 4px 20px;
+  color: #364f59;
+  background: transparent;
+  border-left: 2px solid #d5e2e7;
+}
+
+.renewable-control-log-detail-steps li.is-warning {
+  font-weight: 600;
+  color: #8a4300;
+  background: #fff7eb;
+  border-left: 3px solid #d97706;
+  padding: 6px 10px;
+  border-radius: 4px;
+}
+
+
+/* ==========================================================================
+   Precision Instrument Design System (web-ui-design + scientific-dashboard)
+   ========================================================================== */
+
+:root {
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --surface-subtle: #f8fafc;
+  --surface-hover: #f1f5f9;
+  --ink: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --teal: #0d9488;
+  --teal-dark: #0f766e;
+  --teal-soft: rgba(13, 148, 136, 0.1);
+  --amber: #d97706;
+  --red: #dc2626;
+  --green: #059669;
+  --blue: #2563eb;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 20px rgba(15, 23, 42, 0.05);
+  --shadow-modal: 0 20px 50px rgba(15, 23, 42, 0.22);
+  --font-sans: "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-family: var(--font-sans);
+  color-scheme: light;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+.topbar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.03);
+}
+
+.topbar-utility-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.theme-toggle-button {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-subtle);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
+}
+
+.theme-toggle-button:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+  border-color: var(--teal);
+}
+
+.theme-toggle-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.theme-toggle-button .theme-icon-sun {
+  display: none;
+}
+
+:root[data-theme="dark"] .theme-toggle-button .theme-icon-moon {
+  display: none;
+}
+
+:root[data-theme="dark"] .theme-toggle-button .theme-icon-sun {
+  display: block;
+}
+
+.topbar-alert-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 9999px;
+  border: 1px solid rgba(220, 38, 38, 0.35);
+  background: rgba(220, 38, 38, 0.1);
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+
+.topbar-alert-badge:hover {
+  background: rgba(220, 38, 38, 0.16);
+}
+
+.topbar-alert-badge[hidden] {
+  display: none;
+}
+
+.page-nav {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.page-nav button,
+.page-nav a {
+  border-radius: var(--radius-sm);
+  transition: background 160ms cubic-bezier(0.2, 0, 0, 1), color 160ms ease, border-color 160ms ease;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow);
+}
+
+button,
+input,
+select,
+textarea {
+  border-radius: var(--radius-sm);
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease, color 160ms ease;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+
+#simTime,
+.clock-readout strong,
+.overview-status-metrics dd,
+.renewable-metric-value,
+.numeric-cell,
+.mono-cell {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 工程数据表格降噪规范：去竖线、弱水平线、吸顶表头、数值右对齐、整行高亮 */
+table.runtime-device-table,
+table.measurement-table,
+table.curve-table,
+table.runtime-log-table,
+table.parameter-editor-table,
+table.manual-change-table,
+table.model-param-table,
+table.storage-power-derating-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+table.runtime-device-table th,
+table.runtime-device-table td,
+table.measurement-table th,
+table.measurement-table td,
+table.curve-table th,
+table.curve-table td,
+table.runtime-log-table th,
+table.runtime-log-table td,
+table.parameter-editor-table th,
+table.parameter-editor-table td,
+table.manual-change-table th,
+table.manual-change-table td,
+table.model-param-table th,
+table.model-param-table td,
+table.storage-power-derating-table th,
+table.storage-power-derating-table td {
+  border-left: none !important;
+  border-right: none !important;
+  border-bottom: 1px solid var(--line);
+}
+
+table.runtime-device-table thead th,
+table.measurement-table thead th,
+table.curve-table thead th,
+table.runtime-log-table thead th,
+table.parameter-editor-table thead th,
+table.manual-change-table thead th,
+table.model-param-table thead th,
+table.storage-power-derating-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+table.runtime-device-table tbody tr:hover,
+table.measurement-table tbody tr:hover,
+table.curve-table tbody tr:hover,
+table.runtime-log-table tbody tr:hover,
+table.manual-change-table tbody tr:hover,
+table.model-param-table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.numeric-cell {
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 克制分级潮流失败告警条 */
+.power-flow-failure-alert {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 14px 0;
+  padding: 10px 14px;
+  background: var(--surface);
+  background-image: linear-gradient(90deg, rgba(220, 38, 38, 0.08) 0%, rgba(220, 38, 38, 0.02) 45%, transparent 100%);
+  color: var(--ink);
+  border: 1px solid rgba(220, 38, 38, 0.24);
+  border-left: 4px solid var(--red);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 2px 10px rgba(220, 38, 38, 0.08);
+}
+
+.power-flow-failure-alert[hidden] {
+  display: none;
+}
+
+.power-flow-failure-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.power-flow-failure-body strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--red);
+}
+
+.power-flow-failure-body p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.alert-dismiss-button {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.alert-dismiss-button:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.alert-pulse-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--red);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45);
+  animation: precisionAlertPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes precisionAlertPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(220, 38, 38, 0);
+    opacity: 0.72;
+  }
+}
+
+/* 统一高危操作模态确认弹窗 */
+dialog.danger-confirm-dialog {
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-modal);
+  width: min(440px, calc(100vw - 32px));
+  overflow: hidden;
+}
+
+dialog.danger-confirm-dialog::backdrop {
+  background: rgba(15, 23, 42, 0.48);
+  backdrop-filter: blur(2px);
+}
+
+.danger-confirm-card {
+  padding: 20px 22px 18px;
+  border-left: 4px solid var(--red);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.danger-confirm-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.danger-confirm-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--red);
+  background: rgba(220, 38, 38, 0.12);
+}
+
+.danger-confirm-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.danger-confirm-target {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink);
+  word-break: break-all;
+}
+
+.danger-confirm-message {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.danger-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.danger-confirm-actions button {
+  min-width: 82px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.danger-confirm-actions .danger-button {
+  background: var(--red);
+  border: 1px solid var(--red);
+  color: #ffffff;
+}
+
+.danger-confirm-actions .danger-button:hover {
+  background: #b91c1c;
+  border-color: #b91c1c;
+}
+
+/* 右上角非阻塞 Toast 轻提示 */
+.ui-toast-container {
+  position: fixed;
+  top: 62px;
+  right: 18px;
+  z-index: 4500;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.ui-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+  border-left: 4px solid var(--teal);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.14);
+  font-size: 13px;
+  line-height: 1.45;
+  animation: precisionToastIn 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.ui-toast.is-ok {
+  border-left-color: var(--green);
+}
+
+.ui-toast.is-warn {
+  border-left-color: var(--amber);
+}
+
+.ui-toast.is-error {
+  border-left-color: var(--red);
+}
+
+.ui-toast-text {
+  flex: 1 1 auto;
+}
+
+.ui-toast-close {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.ui-toast-close:hover {
+  color: var(--ink);
+}
+
+@keyframes precisionToastIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ==========================================================================
+   控制室深色模式 (Control Room Dark Theme)
+   ========================================================================== */
+:root[data-theme="dark"] {
+  --bg: #0b0f19;
+  --surface: #111827;
+  --surface-subtle: #161e2e;
+  --surface-hover: #1e293b;
+  --ink: #f1f5f9;
+  --muted: #94a3b8;
+  --line: rgba(255, 255, 255, 0.09);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --teal: #2dd4bf;
+  --teal-dark: #14b8a6;
+  --teal-soft: rgba(45, 212, 191, 0.14);
+  --amber: #fbbf24;
+  --red: #fb7185;
+  --green: #34d399;
+  --blue: #38bdf8;
+  --shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  --shadow-modal: 0 24px 60px rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
+}
+
+:root[data-theme="dark"] .topbar,
+:root[data-theme="dark"] .page-nav,
+:root[data-theme="dark"] .panel,
+:root[data-theme="dark"] dialog,
+:root[data-theme="dark"] .remote-control-form,
+:root[data-theme="dark"] .diagram-tooltip,
+:root[data-theme="dark"] .diagram-context-menu,
+:root[data-theme="dark"] .model-context-menu {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+:root[data-theme="dark"] .clock-readout,
+:root[data-theme="dark"] .overview-status-metrics > div,
+:root[data-theme="dark"] .energy-device-card,
+:root[data-theme="dark"] .energy-bus-card,
+:root[data-theme="dark"] .energy-converter-card,
+:root[data-theme="dark"] .renewable-kpi-card,
+:root[data-theme="dark"] .renewable-metric-card,
+:root[data-theme="dark"] .renewable-control-summary-card,
+:root[data-theme="dark"] .advanced-solver-params,
+:root[data-theme="dark"] .diagram-tooltip-head,
+:root[data-theme="dark"] .panel-header,
+:root[data-theme="dark"] .tree-panel,
+:root[data-theme="dark"] .filter-bar {
+  background: var(--surface-subtle);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea {
+  background: #0f172a;
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+:root[data-theme="dark"] button:not(.primary):not(.danger-button):not(.is-active):not(.topbar-alert-badge):not(.is-running) {
+  background: var(--surface-subtle);
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+:root[data-theme="dark"] button:not(.primary):not(.danger-button):not(.is-active):not(.topbar-alert-badge):not(.is-running):hover {
+  background: var(--surface-hover);
+  border-color: var(--teal);
+}
+
+:root[data-theme="dark"] button.primary {
+  background: #0d9488;
+  border-color: #0d9488;
+  color: #ffffff;
+}
+
+:root[data-theme="dark"] button.primary:hover {
+  background: #14b8a6;
+}
+
+:root[data-theme="dark"] .page-nav button.is-active {
+  background: var(--teal-soft);
+  color: var(--teal);
+  border-color: rgba(45, 212, 191, 0.32);
+}
+
+:root[data-theme="dark"] .renewable-control-log-detail-steps li.is-section {
+  background: rgba(45, 212, 191, 0.1);
+  color: #e2f8f5;
+  border-left-color: var(--teal);
+}
+
+:root[data-theme="dark"] .renewable-control-log-detail-steps li.is-subitem {
+  color: #cbd5e1;
+  border-left-color: rgba(255, 255, 255, 0.14);
+}
+
+:root[data-theme="dark"] .renewable-control-log-detail-steps li.is-warning {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fde68a;
+  border-left-color: var(--amber);
+}
+
+:root[data-theme="dark"] canvas {
+  border-radius: var(--radius-sm);
+  filter: invert(0.9) hue-rotate(180deg);
+}

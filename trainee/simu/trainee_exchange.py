@@ -4,6 +4,7 @@ import copy
 import gzip
 import http.client
 import json
+import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -24,7 +25,12 @@ from typing import (
 )
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+try:
+    from .http_common import local_urlopen
+except ImportError:  # pragma: no cover - legacy direct-module compatibility.
+    from http_common import local_urlopen
 
 try:
     from .command_frame import CommandFrameMismatchError, command_payload_signature
@@ -71,6 +77,9 @@ except ImportError:  # pragma: no cover - legacy package compatibility.
 CONTROL_STATIC_FIELDS = ("definitions", "settings", "device_parameters", "curves")
 
 
+_EXCHANGE_LOG = logging.getLogger("simu.trainee.exchange")
+
+
 class TraineeExchangeLifecycleError(RuntimeError):
     """Raised when an exchange request outlives its captured service generation."""
 
@@ -82,7 +91,7 @@ class _JsonConnectionSlot:
 
 
 class _PersistentJsonClient:
-    """Small thread-safe HTTP/1.1 pool used by the realtime data plane."""
+    """Small thread-safe HTTP/1.1 pool with separate read/write channels."""
 
     def __init__(
         self,
@@ -92,7 +101,7 @@ class _PersistentJsonClient:
     ) -> None:
         self._http_connection_factory = http_connection_factory
         self._https_connection_factory = https_connection_factory
-        self._connections: Dict[Tuple[str, str, int], _JsonConnectionSlot] = {}
+        self._connections: Dict[Tuple[str, str, str, int], _JsonConnectionSlot] = {}
         self._lock = threading.RLock()
         self._closed = False
 
@@ -113,16 +122,16 @@ class _PersistentJsonClient:
 
     def _connection_for(
         self,
-        origin: Tuple[str, str, int],
+        slot_key: Tuple[str, str, str, int],
         timeout: float,
     ) -> _JsonConnectionSlot:
         with self._lock:
             if self._closed:
                 raise RuntimeError("学员台实时数据连接池已关闭")
-            existing = self._connections.get(origin)
+            existing = self._connections.get(slot_key)
             if existing is not None:
                 return existing
-            scheme, hostname, port = origin
+            _channel, scheme, hostname, port = slot_key
             factory = (
                 self._https_connection_factory
                 if scheme == "https"
@@ -131,17 +140,17 @@ class _PersistentJsonClient:
             slot = _JsonConnectionSlot(
                 connection=factory(hostname, port=port, timeout=timeout)
             )
-            self._connections[origin] = slot
+            self._connections[slot_key] = slot
             return slot
 
     def _discard(
         self,
-        origin: Tuple[str, str, int],
+        slot_key: Tuple[str, str, str, int],
         slot: _JsonConnectionSlot,
     ) -> None:
         with self._lock:
-            if self._connections.get(origin) is slot:
-                self._connections.pop(origin, None)
+            if self._connections.get(slot_key) is slot:
+                self._connections.pop(slot_key, None)
         try:
             slot.connection.close()
         except OSError:
@@ -157,6 +166,9 @@ class _PersistentJsonClient:
     ) -> Any:
         origin, path = self._origin(url)
         request_method = str(method or "GET").upper()
+        # 读写通道分离：高频 GET 快照轮询不阻塞 POST 控制指令下发
+        channel = "read" if request_method in {"GET", "HEAD", "OPTIONS"} else "write"
+        slot_key = (channel, origin[0], origin[1], origin[2])
         body = None
         headers = {
             "Accept": "application/json",
@@ -171,19 +183,20 @@ class _PersistentJsonClient:
             headers["Content-Length"] = str(len(body))
 
         last_error: Optional[BaseException] = None
-        attempt_count = 2 if request_method in {"GET", "HEAD", "OPTIONS"} else 1
-        for attempt in range(attempt_count):
-            slot = self._connection_for(origin, timeout)
+        for attempt in range(2):
+            slot = self._connection_for(slot_key, timeout)
             response_body = b""
             response_status = 0
             response_reason = ""
             response_will_close = False
+            reused_connection = False
             try:
                 with slot.lock:
                     slot.connection.timeout = timeout
-                    socket = getattr(slot.connection, "sock", None)
-                    if socket is not None:
-                        socket.settimeout(timeout)
+                    socket_obj = getattr(slot.connection, "sock", None)
+                    reused_connection = socket_obj is not None
+                    if socket_obj is not None:
+                        socket_obj.settimeout(timeout)
                     slot.connection.request(
                         request_method,
                         path,
@@ -201,13 +214,26 @@ class _PersistentJsonClient:
                         response_body = gzip.decompress(response_body)
             except (OSError, http.client.HTTPException) as exc:
                 last_error = exc
-                self._discard(origin, slot)
-                if attempt + 1 < attempt_count:
+                self._discard(slot_key, slot)
+                # GET 允许一次重试；POST 仅当复用了陈旧空闲连接且对端零字节断开时安全重连重试一次
+                stale_write_disconnect = (
+                    reused_connection
+                    and isinstance(
+                        exc,
+                        (
+                            http.client.RemoteDisconnected,
+                            BrokenPipeError,
+                            ConnectionResetError,
+                            ConnectionAbortedError,
+                        ),
+                    )
+                )
+                if attempt == 0 and (channel == "read" or stale_write_disconnect):
                     continue
                 break
 
             if response_will_close:
-                self._discard(origin, slot)
+                self._discard(slot_key, slot)
             text = response_body.decode("utf-8", errors="replace")
             if response_status >= 400:
                 raise RuntimeError(text or response_reason or f"HTTP {response_status}")
@@ -227,11 +253,17 @@ class _PersistentJsonClient:
             slots = list(self._connections.values())
             self._connections.clear()
         for slot in slots:
-            with slot.lock:
-                try:
-                    slot.connection.close()
-                except OSError:
-                    pass
+            # 主动关闭底层 socket 以打断阻塞中的在途 I/O，避免关停时等待完整超时
+            try:
+                sock = getattr(slot.connection, "sock", None)
+                if sock is not None:
+                    sock.close()
+            except OSError:
+                pass
+            try:
+                slot.connection.close()
+            except OSError:
+                pass
 
 
 def _request_json(
@@ -248,7 +280,7 @@ def _request_json(
         headers["Content-Type"] = "application/json; charset=utf-8"
     request = Request(url, data=body, headers=headers, method=method)
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with local_urlopen(request, timeout=timeout) as response:
             response_body = response.read()
             if str(response.headers.get("Content-Encoding", "")).lower() == "gzip":
                 response_body = gzip.decompress(response_body)
@@ -464,24 +496,24 @@ def _merge_remote_measurements_with_local_definitions(
     expected_signature: Optional[str] = None,
     isolate_definitions: bool = True,
 ) -> Any:
-    if not isinstance(remote_measurements, Mapping):
+    if not (type(remote_measurements) is dict or isinstance(remote_measurements, Mapping)):
         return copy.deepcopy(remote_measurements)
     if normalized_definitions is None:
         definitions = local_snapshot.get("definitions")
-        local_rows = definitions.get("measurement") if isinstance(definitions, Mapping) else None
+        local_rows = definitions.get("measurement") if (type(definitions) is dict or isinstance(definitions, Mapping)) else None
         if not isinstance(local_rows, Sequence) or isinstance(local_rows, (str, bytes)):
             local_measurements = local_snapshot.get("measurements")
             local_rows = (
                 local_measurements.get("definitions")
-                if isinstance(local_measurements, Mapping)
+                if (type(local_measurements) is dict or isinstance(local_measurements, Mapping))
                 else None
             )
         if not isinstance(local_rows, Sequence) or isinstance(local_rows, (str, bytes)):
             return copy.deepcopy(remote_measurements)
-        normalized_rows = [dict(row) for row in local_rows if isinstance(row, Mapping)]
+        normalized_rows = [dict(row) for row in local_rows if (type(row) is dict or isinstance(row, Mapping))]
     elif isolate_definitions:
         normalized_rows = [
-            dict(row) for row in normalized_definitions if isinstance(row, Mapping)
+            dict(row) for row in normalized_definitions if (type(row) is dict or isinstance(row, Mapping))
         ]
     else:
         normalized_rows = normalized_definitions
@@ -513,7 +545,7 @@ def _merge_remote_measurements_with_local_definitions(
         updated_rows = []
         positional_fallback = len(rows) == len(normalized_rows)
         for position, raw_row in enumerate(rows):
-            if not isinstance(raw_row, Mapping):
+            if not (type(raw_row) is dict or isinstance(raw_row, Mapping)):
                 updated_rows.append(raw_row)
                 continue
             row = dict(raw_row)
@@ -535,12 +567,12 @@ def _merge_remote_runtime_devices(local_devices: Any, remote_devices: Any) -> An
     remote_by_key = {
         _device_key(device): device
         for device in remote_devices or []
-        if isinstance(device, Mapping)
+        if (type(device) is dict or isinstance(device, Mapping))
     }
     runtime_fields = ("run_stat", "status", "mode", "set_values", "soc_curr")
     merged_devices = []
     for raw_local in local_devices:
-        if not isinstance(raw_local, Mapping):
+        if not (type(raw_local) is dict or isinstance(raw_local, Mapping)):
             merged_devices.append(copy.deepcopy(raw_local))
             continue
         local_device = copy.deepcopy(dict(raw_local))
@@ -557,15 +589,16 @@ def _merge_runtime_snapshot_with_local_definitions(
     runtime_snapshot: Mapping[str, Any],
     static_projection: _ControlStaticProjection,
 ) -> Dict[str, Any]:
+    """合并远端运行态与本地静态定义；采用顶层 Copy-on-Write，避免每帧 130ms 的整包 deepcopy。"""
     local_snapshot = static_projection.snapshot
-    merged = copy.deepcopy(dict(runtime_snapshot))
+    merged = dict(runtime_snapshot)
     for key in CONTROL_STATIC_FIELDS:
         if key in local_snapshot:
-            merged[key] = copy.deepcopy(local_snapshot[key])
+            merged[key] = local_snapshot[key]
     if "model" in local_snapshot:
-        merged["model"] = copy.deepcopy(local_snapshot["model"])
+        merged["model"] = local_snapshot["model"]
     if "devices" in local_snapshot:
-        merged["devices"] = _merge_remote_runtime_devices(
+        merged["devices"] = _merge_remote_runtime_devices_read_only(
             local_snapshot.get("devices"),
             runtime_snapshot.get("devices"),
         )
@@ -575,9 +608,10 @@ def _merge_runtime_snapshot_with_local_definitions(
             local_snapshot,
             normalized_definitions=static_projection.measurement_definitions,
             expected_signature=static_projection.measurement_definition_signature,
+            isolate_definitions=False,
         )
     if "static_meta" in local_snapshot:
-        merged["static_meta"] = copy.deepcopy(local_snapshot["static_meta"])
+        merged["static_meta"] = local_snapshot["static_meta"]
     return merged
 
 
@@ -587,12 +621,12 @@ def _merge_remote_runtime_devices_read_only(local_devices: Any, remote_devices: 
     remote_by_key = {
         _device_key(device): device
         for device in remote_devices or []
-        if isinstance(device, Mapping)
+        if (type(device) is dict or isinstance(device, Mapping))
     }
     runtime_fields = ("run_stat", "status", "mode", "set_values", "soc_curr")
     merged_devices = []
     for raw_local in local_devices:
-        if not isinstance(raw_local, Mapping):
+        if not (type(raw_local) is dict or isinstance(raw_local, Mapping)):
             merged_devices.append(raw_local)
             continue
         local_device = dict(raw_local)
@@ -625,18 +659,18 @@ def _hydrate_measurement_backed_device_runtime(
 ) -> None:
     """Restore RUN_STAT, STATUS, and SOC from the already accepted SCADA frame."""
 
-    if not isinstance(measurements, Mapping):
+    if not (type(measurements) is dict or isinstance(measurements, Mapping)):
         return
     definitions = [
         row
         for row in measurements.get("definitions", []) or []
-        if isinstance(row, Mapping)
+        if (type(row) is dict or isinstance(row, Mapping))
     ]
     measurement_keys = {_measurement_runtime_key(row) for row in definitions}
     scada_by_key = {
         _measurement_runtime_key(row): row
         for row in measurements.get("scada", []) or []
-        if isinstance(row, Mapping)
+        if (type(row) is dict or isinstance(row, Mapping))
     }
 
     def hydrate_row(row: MutableMapping[str, Any], measurement_type: str, field_name: str) -> None:
@@ -645,7 +679,7 @@ def _hydrate_measurement_backed_device_runtime(
             return
         measurement = scada_by_key.get(key)
         valid = (
-            isinstance(measurement, Mapping)
+            (type(measurement) is dict or isinstance(measurement, Mapping))
             and int(float(measurement.get("valid", 0) or 0)) == 1
             and measurement.get("value") is not None
         )
@@ -708,7 +742,7 @@ def _restore_local_runtime_derivatives(service: Any, snapshot: MutableMapping[st
     )
 
     measurements = snapshot.get("measurements")
-    if not isinstance(measurements, Mapping):
+    if not (type(measurements) is dict or isinstance(measurements, Mapping)):
         return
     summary = dict(service._summary(measurements))
     compute = snapshot.get("compute") if isinstance(snapshot.get("compute"), Mapping) else {}
@@ -717,7 +751,7 @@ def _restore_local_runtime_derivatives(service: Any, snapshot: MutableMapping[st
     summary["power_flow_alarm_count"] = power_flow_alarm_count
     summary["alarm_count"] = int(summary.get("measurement_alarm_count", 0) or 0) + power_flow_alarm_count
     commands = snapshot.get("commands")
-    effective_commands = commands.get("effective", []) if isinstance(commands, Mapping) else []
+    effective_commands = commands.get("effective", []) if (type(commands) is dict or isinstance(commands, Mapping)) else []
     summary["command_count"] = len(effective_commands) if isinstance(effective_commands, Sequence) else 0
     snapshot["summary"] = summary
     snapshot["power_summary"] = service._latest_power_summary(measurements)
@@ -776,7 +810,7 @@ def _measurement_delta_items(
     received_at: float,
 ) -> Dict[str, Dict[str, Any]]:
     measurements = snapshot.get("measurements")
-    if not isinstance(measurements, Mapping):
+    if not (type(measurements) is dict or isinstance(measurements, Mapping)):
         return {}
     definitions = measurements.get("definitions") or []
     if not isinstance(definitions, Sequence) or isinstance(definitions, (str, bytes)):
@@ -788,7 +822,7 @@ def _measurement_delta_items(
     measurement_clock = snapshot.get("measurement_clock")
     clock = (
         measurement_clock
-        if isinstance(measurement_clock, Mapping) and measurement_clock
+        if (type(measurement_clock) is dict or isinstance(measurement_clock, Mapping)) and measurement_clock
         else snapshot.get("clock")
         if isinstance(snapshot.get("clock"), Mapping)
         else {}
@@ -802,7 +836,7 @@ def _measurement_delta_items(
     )
     items: Dict[str, Dict[str, Any]] = {}
     for index, definition in enumerate(definitions):
-        if not isinstance(definition, Mapping):
+        if not (type(definition) is dict or isinstance(definition, Mapping)):
             continue
         key = str(index)
         name = str(definition.get("name", "")).strip()
@@ -922,7 +956,7 @@ class TraineeRealtimeExchange:
             try:
                 payload = getter("trainee")
                 saved = payload.get("effectiveSettings", payload.get("settings", {}))
-                if isinstance(saved, Mapping):
+                if (type(saved) is dict or isinstance(saved, Mapping)):
                     settings.update(saved)
             except (TypeError, ValueError):
                 pass
@@ -1032,7 +1066,7 @@ class TraineeRealtimeExchange:
             entered: set[int] = set()
             self._enter_unique_lock(stack, getattr(service, "lock", None), entered)
             receive = service.trainee_receive_state()
-            if not isinstance(receive, Mapping):
+            if not (type(receive) is dict or isinstance(receive, Mapping)):
                 receive = {}
             connection = self._connection_from_receive(receive)
             signature = self._connection_signature_from_receive(service, receive)
@@ -1269,7 +1303,7 @@ class TraineeRealtimeExchange:
         runtime = dict(snapshot) if snapshot_owned else copy.deepcopy(dict(snapshot))
         strip_trainee_remote_details_from_snapshot(runtime)
         remote_measurements = runtime.get("measurements")
-        if isinstance(remote_measurements, Mapping) and not measurement_frame_unchanged:
+        if (type(remote_measurements) is dict or isinstance(remote_measurements, Mapping)) and not measurement_frame_unchanged:
             if snapshot_owned:
                 merged_measurements = remote_measurements
             else:
@@ -1342,11 +1376,11 @@ class TraineeRealtimeExchange:
             state.runtime_snapshot = runtime
             history_measurements = runtime.get("measurements")
             history_clock = runtime.get("measurement_clock") or runtime.get("clock")
-            if isinstance(history_measurements, Mapping) and isinstance(history_clock, Mapping):
+            if (type(history_measurements) is dict or isinstance(history_measurements, Mapping)) and (type(history_clock) is dict or isinstance(history_clock, Mapping)):
                 history_definitions = [
                     row
                     for row in history_measurements.get("definitions", []) or []
-                    if isinstance(row, Mapping)
+                    if (type(row) is dict or isinstance(row, Mapping))
                 ]
                 state.measurement_history.append(
                     history_clock,
@@ -1496,7 +1530,7 @@ class TraineeRealtimeExchange:
         )
         definitions = local.get("definitions")
         measurement_rows = (
-            definitions.get("measurement") if isinstance(definitions, Mapping) else None
+            definitions.get("measurement") if (type(definitions) is dict or isinstance(definitions, Mapping)) else None
         )
         if not isinstance(measurement_rows, Sequence) or isinstance(
             measurement_rows,
@@ -1504,7 +1538,7 @@ class TraineeRealtimeExchange:
         ):
             measurement_rows = []
         normalized_definitions = [
-            dict(row) for row in measurement_rows if isinstance(row, Mapping)
+            dict(row) for row in measurement_rows if (type(row) is dict or isinstance(row, Mapping))
         ]
         projection = _ControlStaticProjection(
             snapshot=local,
@@ -1699,7 +1733,7 @@ class TraineeRealtimeExchange:
             )
         clock = runtime.get("clock")
         schedule_snapshot = {
-            "clock": clock if isinstance(clock, Mapping) else {},
+            "clock": clock if (type(clock) is dict or isinstance(clock, Mapping)) else {},
         }
         age = max(0.0, time.time() - received_at) if received_at else 0.0
         source = "trainee-live" if not error else "trainee-cache"
@@ -1723,7 +1757,7 @@ class TraineeRealtimeExchange:
         runtime_settings = self._runtime_settings_for_service(service)
         frame_age_limit = max(0.0, float(runtime_settings["frame_age_limit_seconds"]))
         same_frame_limit = max(0.0, float(runtime_settings["same_frame_limit_seconds"]))
-        active = bool(receive_state.get("active")) if isinstance(receive_state, Mapping) else False
+        active = bool(receive_state.get("active")) if (type(receive_state) is dict or isinstance(receive_state, Mapping)) else False
         now = time.time()
         with state.lock:
             ready = state.runtime_snapshot is not None
@@ -1766,7 +1800,7 @@ class TraineeRealtimeExchange:
             last_command_error = state.last_command_error
         runtime_clock = (
             runtime_snapshot.get("clock")
-            if isinstance(runtime_snapshot, Mapping)
+            if (type(runtime_snapshot) is dict or isinstance(runtime_snapshot, Mapping))
             and isinstance(runtime_snapshot.get("clock"), Mapping)
             else {}
         )
@@ -1939,7 +1973,7 @@ class TraineeRealtimeExchange:
             raise RuntimeError("当前模型未启动接收")
         if not view.ready:
             raise RuntimeError(view.error or "学员台正在等待第一份实时数据")
-        payload = copy.deepcopy(view.snapshot)
+        payload = dict(view.snapshot)
         if str(requested.get("measurements", "1")) == "0":
             payload.pop("measurements", None)
         if str(requested.get("devices", "1")) == "0":
@@ -1950,13 +1984,10 @@ class TraineeRealtimeExchange:
             payload.pop("commands", None)
         elif str(requested.get("command_history", "1")) == "0":
             commands = payload.get("commands")
-            if isinstance(commands, Mapping):
-                payload["commands"] = {
-                    key: copy.deepcopy(value)
-                    for key, value in commands.items()
-                    if key != "history"
-                }
-                payload["commands"]["history"] = []
+            if (type(commands) is dict or isinstance(commands, Mapping)):
+                commands_copy = dict(commands)
+                commands_copy["history"] = []
+                payload["commands"] = commands_copy
         if str(requested.get("logs", requested.get("runtime_logs", "1"))) == "0":
             payload.pop("runtime_logs", None)
         if str(requested.get("static", "1")) == "0":
@@ -2117,7 +2148,7 @@ class TraineeRealtimeExchange:
                         if not isinstance(entry_keys, Sequence) or isinstance(entry_keys, (str, bytes)):
                             entry_keys = []
                         for position, item in enumerate(entry_items):
-                            if isinstance(item, Mapping):
+                            if (type(item) is dict or isinstance(item, Mapping)):
                                 key = (
                                     str(entry_keys[position])
                                     if position < len(entry_keys)
@@ -2129,7 +2160,7 @@ class TraineeRealtimeExchange:
             measurement_clock = runtime.get("measurement_clock")
             clock = (
                 measurement_clock
-                if isinstance(measurement_clock, Mapping) and measurement_clock
+                if (type(measurement_clock) is dict or isinstance(measurement_clock, Mapping)) and measurement_clock
                 else runtime.get("clock")
                 if isinstance(runtime.get("clock"), Mapping)
                 else {}
@@ -2139,7 +2170,7 @@ class TraineeRealtimeExchange:
             runtime_measurements = runtime.get("measurements")
             definition_refs = (
                 list(runtime_measurements.get("definitions", []))
-                if isinstance(runtime_measurements, Mapping)
+                if (type(runtime_measurements) is dict or isinstance(runtime_measurements, Mapping))
                 else []
             )
             received_at = state.received_at
@@ -2148,7 +2179,7 @@ class TraineeRealtimeExchange:
         definitions = [
             row
             for row in definition_refs
-            if isinstance(row, Mapping)
+            if (type(row) is dict or isinstance(row, Mapping))
         ]
         wall_time = (
             datetime.fromtimestamp(received_at).strftime("%H:%M:%S")
@@ -2211,7 +2242,7 @@ class TraineeRealtimeExchange:
             measurements = runtime.get("measurements")
             definitions = (
                 list(measurements.get("definitions", []))
-                if isinstance(measurements, Mapping)
+                if (type(measurements) is dict or isinstance(measurements, Mapping))
                 else []
             )
             history = state.measurement_history
@@ -2228,11 +2259,11 @@ class TraineeRealtimeExchange:
             local_definitions = local.get("definitions")
             definitions = (
                 list(local_definitions.get("measurement", []))
-                if isinstance(local_definitions, Mapping)
+                if (type(local_definitions) is dict or isinstance(local_definitions, Mapping))
                 else []
             )
         history.ensure_definition(
-            [row for row in definitions if isinstance(row, Mapping)],
+            [row for row in definitions if (type(row) is dict or isinstance(row, Mapping))],
             definition_revision=self._definition_revision(service),
         )
         payload = history.payload(
@@ -2270,7 +2301,7 @@ class TraineeRealtimeExchange:
                     "学员台指令请求所属模型生命周期已失效或已退休。"
                 )
             receive = service.trainee_receive_state()
-            if not isinstance(receive, Mapping):
+            if not (type(receive) is dict or isinstance(receive, Mapping)):
                 receive = {}
             command_url = self._command_url_from_receive(receive)
             signature = self._connection_signature_from_receive(service, receive)
@@ -2342,7 +2373,7 @@ class TraineeRealtimeExchange:
                 payload=forwarded,
                 timeout=max(1.0, float(timeout_seconds)),
             )
-            if not isinstance(result, Mapping):
+            if not (type(result) is dict or isinstance(result, Mapping)):
                 raise RuntimeError("学员台指令入口返回内容不是对象")
         except Exception as exc:
             if state is not None:
@@ -2391,7 +2422,7 @@ class TraineeRealtimeExchange:
     @staticmethod
     def _connection(service: Any) -> Optional[Dict[str, str]]:
         receive = service.trainee_receive_state()
-        if not isinstance(receive, Mapping):
+        if not (type(receive) is dict or isinstance(receive, Mapping)):
             receive = {}
         return TraineeRealtimeExchange._connection_from_receive(receive)
 
@@ -2424,7 +2455,7 @@ class TraineeRealtimeExchange:
             receive = service.trainee_receive_state()
         except Exception:
             receive = {}
-        if not isinstance(receive, Mapping):
+        if not (type(receive) is dict or isinstance(receive, Mapping)):
             receive = {}
         return TraineeRealtimeExchange._connection_signature_from_receive(service, receive)
 
@@ -2593,7 +2624,7 @@ class TraineeRealtimeExchange:
                     snapshot_url,
                     timeout=max(1.0, float(runtime_settings["backend_request_timeout_seconds"])),
                 )
-                if not isinstance(current, Mapping):
+                if not (type(current) is dict or isinstance(current, Mapping)):
                     raise RuntimeError("学员台实时快照不是 JSON 对象")
             except Exception as exc:
                 request_duration = max(0.0, time.monotonic() - request_started)
@@ -2667,7 +2698,7 @@ class TraineeRealtimeExchange:
                     previous_measurements = (
                         (state.runtime_snapshot or {}).get("measurements", {})
                     )
-                if not isinstance(previous_measurements, Mapping):
+                if not (type(previous_measurements) is dict or isinstance(previous_measurements, Mapping)):
                     previous_measurements = {}
                 definitions = previous_measurements.get("definitions", [])
                 if not definitions:
@@ -2687,7 +2718,7 @@ class TraineeRealtimeExchange:
                         else []
                     )
                 runtime_definitions = service.measurement_runtime_definitions(definitions)
-                if isinstance(device_runtime_frame, Mapping):
+                if (type(device_runtime_frame) is dict or isinstance(device_runtime_frame, Mapping)):
                     frame_signature = str(
                         device_runtime_frame.get("runtime_signature", "") or ""
                     ).strip()
@@ -2734,7 +2765,7 @@ class TraineeRealtimeExchange:
                         raise DeviceRuntimeFrameMismatchError(
                             "device runtime signature changed without frame content"
                         )
-                if isinstance(embedded_delta, Mapping):
+                if (type(embedded_delta) is dict or isinstance(embedded_delta, Mapping)):
                     current_payload["measurements"] = apply_measurement_delta(
                         previous_measurements,
                         runtime_definitions,
@@ -2762,7 +2793,7 @@ class TraineeRealtimeExchange:
                         measurement_frame_unchanged = True
                 commands_payload = current_payload.get("commands")
                 if advertised_command_signature:
-                    if isinstance(commands_payload, Mapping):
+                    if (type(commands_payload) is dict or isinstance(commands_payload, Mapping)):
                         actual_command_signature = command_payload_signature(commands_payload)
                         if actual_command_signature != advertised_command_signature:
                             raise CommandFrameMismatchError("指令签名与指令内容不一致")
@@ -2772,13 +2803,13 @@ class TraineeRealtimeExchange:
                     ):
                         with state.lock:
                             previous_commands = (state.runtime_snapshot or {}).get("commands")
-                        if not isinstance(previous_commands, Mapping):
+                        if not (type(previous_commands) is dict or isinstance(previous_commands, Mapping)):
                             raise CommandFrameMismatchError("指令签名命中但本地没有可复用指令")
                         current_payload["commands"] = previous_commands
                     else:
                         raise CommandFrameMismatchError("指令签名变化但响应未携带指令内容")
                     next_remote_command_signature = advertised_command_signature
-                elif isinstance(commands_payload, Mapping):
+                elif (type(commands_payload) is dict or isinstance(commands_payload, Mapping)):
                     next_remote_command_signature = command_payload_signature(commands_payload)
                 _hydrate_measurement_backed_device_runtime(
                     current_payload.get("devices"),
@@ -2799,7 +2830,7 @@ class TraineeRealtimeExchange:
                     attempted_at=attempted_at,
                     request_duration_seconds=request_duration,
                     rejected_measurement_frame=(
-                        embedded_delta if isinstance(embedded_delta, Mapping) else None
+                        embedded_delta if (type(embedded_delta) is dict or isinstance(embedded_delta, Mapping)) else None
                     ),
                 )
                 self._record_refresh_phase_durations_for_service(
@@ -3017,8 +3048,12 @@ class TraineeRealtimeExchange:
         def refresh_pending() -> None:
             try:
                 self.refresh_once_for_service(service, materialize_result=False)
-            except Exception:
-                pass
+            except Exception as exc:
+                _EXCHANGE_LOG.warning(
+                    "Background trainee refresh failed for %s: %s",
+                    pending_key[0],
+                    exc,
+                )
             finally:
                 with self._refresh_pending_lock:
                     self._refresh_pending.discard(pending_key)
@@ -3090,7 +3125,12 @@ class TraineeRealtimeExchange:
                         next_delays.append(max(0.0, state.next_refresh_at_monotonic - now_monotonic))
                     if due:
                         self._submit_refresh_for_service(service)
-                except Exception:
+                except Exception as exc:
+                    _EXCHANGE_LOG.warning(
+                        "Trainee exchange worker loop error for %s: %s",
+                        getattr(service, "model_id", ""),
+                        exc,
+                    )
                     continue
             if enumeration_succeeded:
                 with self._states_lock:
@@ -3120,12 +3160,11 @@ class TraineeRealtimeExchange:
                 self._closed = True
             self._stop_event.set()
             self._wake_event.set()
-            if self._worker and self._worker.is_alive():
-                self._worker.join()
-            # No exchange task may outlive close. Normal HTTP refreshes have a
-            # finite request timeout, and no service/exchange lock is held here.
-            self._refresh_executor.shutdown(wait=True, cancel_futures=True)
+            # 先关闭底层连接池打断阻塞 socket，再有界回收后台线程与线程池，杜绝退出卡死
             if self._request_client is not None:
                 self._request_client.close()
+            if self._worker and self._worker.is_alive():
+                self._worker.join(timeout=3.0)
+            self._refresh_executor.shutdown(wait=False, cancel_futures=True)
             with self._refresh_pending_lock:
                 self._refresh_pending.clear()

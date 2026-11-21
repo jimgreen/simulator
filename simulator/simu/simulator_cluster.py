@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import re
@@ -12,15 +13,26 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+try:
+    from .http_common import local_urlopen
+except ImportError:  # pragma: no cover - legacy direct-module compatibility.
+    from http_common import local_urlopen
 
 
 HealthResult = tuple[bool, Mapping[str, Any], str]
 HealthChecker = Callable[[str, int, str, float], HealthResult]
 ClockStateChecker = Callable[[str, int, str, float], str]
+
+CHILD_LOG_MAX_BYTES = 5 * 1024 * 1024
+CHILD_LOG_BACKUP_COUNT = 3
+DEFAULT_HEALTH_CACHE_TTL_SECONDS = 0.8
 
 
 def _safe_model_id(value: Any) -> str:
@@ -67,6 +79,48 @@ def _normalize_service_port(value: Any) -> int:
     return port
 
 
+def _read_log_tail(log_path: Path, *, max_lines: int = 8, max_chars: int = 800) -> str:
+    """读取子服务日志尾部关键行，便于异常退出时直接向前端透出崩溃原因。"""
+    try:
+        if not log_path.is_file():
+            return ""
+        size = log_path.stat().st_size
+        read_bytes = min(size, 8192)
+        with log_path.open("rb") as fh:
+            if size > read_bytes:
+                fh.seek(size - read_bytes)
+            text = fh.read().decode("utf-8", errors="replace")
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return ""
+        tail = " | ".join(lines[-max_lines:])
+        return tail[-max_chars:]
+    except OSError:
+        return ""
+
+
+def _rotate_log_if_needed(
+    log_path: Path,
+    *,
+    max_bytes: int = CHILD_LOG_MAX_BYTES,
+    backup_count: int = CHILD_LOG_BACKUP_COUNT,
+) -> None:
+    """在启动子服务前按大小轮转历史日志，防止单文件无限膨胀。"""
+    try:
+        if not log_path.exists() or log_path.stat().st_size < max_bytes:
+            return
+        for index in range(backup_count, 0, -1):
+            src = log_path if index == 1 else log_path.with_name(f"{log_path.name}.{index - 1}")
+            dst = log_path.with_name(f"{log_path.name}.{index}")
+            if src.exists():
+                try:
+                    src.replace(dst)
+                except OSError:
+                    continue
+    except OSError:
+        return
+
+
 class SimulatorClusterManager:
     """Own one independently addressable simulator process per source model."""
 
@@ -92,6 +146,7 @@ class SimulatorClusterManager:
         shutdown_timeout_seconds: float = 8.0,
         poll_interval_seconds: float = 0.1,
         log_dir: Optional[Path] = None,
+        health_cache_ttl_seconds: float = DEFAULT_HEALTH_CACHE_TTL_SECONDS,
     ) -> None:
         self.sim_dir = Path(sim_dir).resolve()
         self.models_root = Path(models_root).resolve()
@@ -109,7 +164,11 @@ class SimulatorClusterManager:
         self.startup_timeout_seconds = max(0.01, float(startup_timeout_seconds))
         self.shutdown_timeout_seconds = max(0.01, float(shutdown_timeout_seconds))
         self.poll_interval_seconds = max(0.001, float(poll_interval_seconds))
+        self.health_cache_ttl_seconds = max(0.0, float(health_cache_ttl_seconds))
         self.lock = threading.RLock()
+        self._model_op_locks: dict[str, threading.RLock] = {}
+        self._health_cache: dict[str, tuple[float, HealthResult]] = {}
+        self._inflight_probes: dict[str, threading.Event] = {}
         self.models_root.mkdir(parents=True, exist_ok=True)
         self.runtime_root.mkdir(parents=True, exist_ok=True)
         self.cluster_runtime_dir = self.runtime_root / ".cluster"
@@ -139,6 +198,25 @@ class SimulatorClusterManager:
             {model_id: 0.0 for model_id in self._registry.get("services", {})}
         )
 
+    @contextmanager
+    def model_operation_lock(self, model_id: Any) -> Iterator[None]:
+        """按模型维度的细粒度互斥锁，用于串行化同一模型的更新与导入流程。"""
+        key = _model_key(model_id or self.default_model_id or "__default__")
+        with self.lock:
+            op_lock = self._model_op_locks.get(key)
+            if op_lock is None:
+                op_lock = threading.RLock()
+                self._model_op_locks[key] = op_lock
+        with op_lock:
+            yield
+
+    def invalidate_health_cache(self, model_id: Optional[str] = None) -> None:
+        with self.lock:
+            if model_id is None:
+                self._health_cache.clear()
+            else:
+                self._health_cache.pop(model_id, None)
+
     def _load_registry(self) -> dict[str, Any]:
         if not self.registry_path.exists():
             return {"version": self.REGISTRY_VERSION, "services": {}}
@@ -161,12 +239,26 @@ class SimulatorClusterManager:
             "first_service_port": self.first_service_port,
             "services": self._registry.get("services", {}),
         }
-        temporary = self.registry_path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        temporary = self.registry_path.with_name(
+            f"{self.registry_path.stem}.{uuid.uuid4().hex[:8]}.tmp"
         )
-        temporary.replace(self.registry_path)
+        content = json.dumps(payload, ensure_ascii=False, indent=2)
+        temporary.write_text(content, encoding="utf-8")
+        try:
+            for attempt in range(4):
+                try:
+                    temporary.replace(self.registry_path)
+                    return
+                except PermissionError:
+                    if attempt == 3:
+                        raise
+                    time.sleep(0.02 * (attempt + 1))
+        finally:
+            if temporary.exists():
+                try:
+                    temporary.unlink()
+                except OSError:
+                    pass
 
     def _model_dirs_locked(self) -> list[Path]:
         return [
@@ -241,13 +333,16 @@ class SimulatorClusterManager:
             self._errors.setdefault(model_id, "")
         if set(services) != set(normalized):
             changed = True
+            for removed_id in set(services) - set(normalized):
+                self._health_cache.pop(removed_id, None)
         self._registry["services"] = normalized
         self.default_model_id = self._preferred_default_model_id(model_ids)
         if changed or not self.registry_path.exists():
             self._save_registry_locked()
 
-    def _entry_locked(self, model_id: Any) -> tuple[str, dict[str, Any]]:
-        self._sync_models_locked()
+    def _entry_locked(self, model_id: Any, *, sync: bool = True) -> tuple[str, dict[str, Any]]:
+        if sync:
+            self._sync_models_locked()
         target_id = _safe_model_id(model_id or self.default_model_id)
         entry = self._registry["services"].get(target_id)
         if not isinstance(entry, dict):
@@ -261,7 +356,7 @@ class SimulatorClusterManager:
             headers={"Accept": "application/json"},
         )
         try:
-            with urlopen(request, timeout=timeout) as response:
+            with local_urlopen(request, timeout=timeout, allow_redirects=False) as response:
                 data = response.read().decode("utf-8")
         except (HTTPError, URLError, OSError) as exc:
             return False, {}, str(exc)
@@ -289,7 +384,7 @@ class SimulatorClusterManager:
             headers={"Accept": "application/json"},
         )
         try:
-            with urlopen(request, timeout=timeout) as response:
+            with local_urlopen(request, timeout=timeout, allow_redirects=False) as response:
                 data = response.read().decode("utf-8")
         except (HTTPError, URLError, OSError) as exc:
             raise RuntimeError(f"无法核实模型 {model_id} 的仿真时钟状态: {exc}") from exc
@@ -326,12 +421,12 @@ class SimulatorClusterManager:
             return state
         return ""
 
-    def _probe_locked(self, model_id: str, entry: Mapping[str, Any]) -> HealthResult:
+    def _probe_unlocked(self, model_id: str, host: str, port: int) -> HealthResult:
         return self.health_checker(
-            str(entry["host"]),
-            int(entry["port"]),
+            host,
+            port,
             model_id,
-            min(5.0, self.startup_timeout_seconds),
+            min(2.5, self.startup_timeout_seconds),
         )
 
     def _close_log_handle_locked(self, model_id: str) -> None:
@@ -342,67 +437,124 @@ class SimulatorClusterManager:
             except OSError:
                 pass
 
-    def _reconcile_locked(self, model_id: str, entry: dict[str, Any]) -> HealthResult:
-        process = self._processes.get(model_id)
-        if process is not None and process.poll() is not None:
-            self._processes.pop(model_id, None)
-            self._close_log_handle_locked(model_id)
-            self._states[model_id] = "failed" if process.returncode else "stopped"
-            if process.returncode:
-                self._errors[model_id] = f"模拟服务已退出，返回码 {process.returncode}"
-            entry["pid"] = None
-            self._save_registry_locked()
-        state = self._states.get(model_id, "stopped")
-        if process is None and not entry.get("pid") and state in {"stopped", "failed"}:
-            # A child can finish starting after the proxy has already discarded
-            # the stale PID from the previous proxy process.  A listening port
-            # is cheap to detect and must be probed so the proxy can adopt that
-            # healthy independently running model service on the next catalog
-            # refresh instead of leaving the UI permanently at "stopped".
-            adoption_deadline = self._adoption_deadlines.get(model_id, 0.0)
-            now = time.monotonic()
-            if adoption_deadline <= now:
-                self._adoption_deadlines.pop(model_id, None)
-                self._adoption_next_probe_at.pop(model_id, None)
-                return False, {}, self._errors.get(model_id, "")
-            if self._adoption_next_probe_at.get(model_id, 0.0) > now:
-                return False, {}, self._errors.get(model_id, "")
-            self._adoption_next_probe_at[model_id] = now + self.poll_interval_seconds
-            if not self.port_checker(str(entry["host"]), int(entry["port"])):
-                return False, {}, self._errors.get(model_id, "")
-        healthy, payload, error = self._probe_locked(model_id, entry)
-        if healthy:
-            self._adoption_deadlines.pop(model_id, None)
-            self._adoption_next_probe_at.pop(model_id, None)
-            self._states[model_id] = "running"
-            self._errors[model_id] = ""
-            process_payload = payload.get("process", {}) if isinstance(payload, Mapping) else {}
-            pid = process_payload.get("pid") if isinstance(process_payload, Mapping) else None
-            next_pid = pid or entry.get("pid")
-            if next_pid != entry.get("pid"):
-                entry["pid"] = next_pid
-                self._save_registry_locked()
-        elif process is None and entry.get("pid"):
-            # A proxy restart can leave the last child PID in the registry even
-            # though that process no longer exists. Probe it once so a live
-            # independently-addressable service can be adopted; after a failed
-            # identity/health check, discard the stale marker instead of making
-            # every catalog request wait for the same timeout.
-            entry["pid"] = None
-            self._states[model_id] = "stopped"
-            self._errors[model_id] = ""
-            self._adoption_deadlines[model_id] = (
-                time.monotonic() + self.startup_timeout_seconds
-            )
-            self._adoption_next_probe_at[model_id] = 0.0
-            self._save_registry_locked()
-        elif self._states.get(model_id) == "running":
-            self._states[model_id] = "failed"
-            self._errors[model_id] = error or "模拟服务健康检查失败"
-        return healthy, payload, error
+    def _reconcile_model(self, model_id: str, *, force_probe: bool = False) -> HealthResult:
+        """在不持全局锁的前提下完成健康探测，并结合 Singleflight + 短 TTL 缓存消除并发排队。"""
+        while True:
+            with self.lock:
+                entry = self._registry["services"].get(model_id)
+                if not isinstance(entry, dict):
+                    return False, {}, f"Unknown simulation model: {model_id}"
+                process = self._processes.get(model_id)
+                if process is not None and process.poll() is not None:
+                    self._processes.pop(model_id, None)
+                    self._close_log_handle_locked(model_id)
+                    self._states[model_id] = "failed" if process.returncode else "stopped"
+                    if process.returncode:
+                        tail = _read_log_tail(self.log_dir / f"{model_id}.log")
+                        base_msg = f"模拟服务已退出，返回码 {process.returncode}"
+                        self._errors[model_id] = f"{base_msg}：{tail}" if tail else base_msg
+                    entry["pid"] = None
+                    self._health_cache.pop(model_id, None)
+                    self._save_registry_locked()
+                    process = None
 
-    def _service_payload_locked(self, model_id: str, entry: dict[str, Any]) -> dict[str, Any]:
-        healthy, payload, error = self._reconcile_locked(model_id, entry)
+                state = self._states.get(model_id, "stopped")
+                now = time.monotonic()
+                if not force_probe and self.health_cache_ttl_seconds > 0.0:
+                    cached = self._health_cache.get(model_id)
+                    if cached is not None and now - cached[0] < self.health_cache_ttl_seconds:
+                        return cached[1]
+
+                need_adoption_port_check = False
+                if process is None and not entry.get("pid") and state in {"stopped", "failed"}:
+                    adoption_deadline = self._adoption_deadlines.get(model_id, 0.0)
+                    if adoption_deadline <= now:
+                        self._adoption_deadlines.pop(model_id, None)
+                        self._adoption_next_probe_at.pop(model_id, None)
+                        result: HealthResult = (False, {}, self._errors.get(model_id, ""))
+                        self._health_cache[model_id] = (now, result)
+                        return result
+                    if not force_probe and self._adoption_next_probe_at.get(model_id, 0.0) > now:
+                        return False, {}, self._errors.get(model_id, "")
+                    self._adoption_next_probe_at[model_id] = now + self.poll_interval_seconds
+                    need_adoption_port_check = True
+
+                # 若已有同模型探测在途，且无需强制重探，等待其完成后直接复用缓存（Singleflight）。
+                inflight = self._inflight_probes.get(model_id)
+                if inflight is not None:
+                    wait_event = inflight
+                    should_probe = False
+                else:
+                    wait_event = threading.Event()
+                    self._inflight_probes[model_id] = wait_event
+                    should_probe = True
+                    host = str(entry["host"])
+                    port = int(entry["port"])
+                    had_process = process is not None
+                    had_pid = bool(entry.get("pid"))
+
+            if not should_probe:
+                wait_event.wait(timeout=min(3.0, self.startup_timeout_seconds))
+                if not force_probe:
+                    with self.lock:
+                        cached = self._health_cache.get(model_id)
+                        if cached is not None:
+                            return cached[1]
+                force_probe = False
+                continue
+
+            # 锁外执行网络/端口探测，彻底释放全局锁。
+            try:
+                if need_adoption_port_check and not self.port_checker(host, port):
+                    result = (False, {}, self._errors.get(model_id, ""))
+                    with self.lock:
+                        self._health_cache[model_id] = (time.monotonic(), result)
+                    return result
+                healthy, payload, error = self._probe_unlocked(model_id, host, port)
+                with self.lock:
+                    current_entry = self._registry["services"].get(model_id)
+                    if isinstance(current_entry, dict):
+                        current_process = self._processes.get(model_id)
+                        if healthy:
+                            self._adoption_deadlines.pop(model_id, None)
+                            self._adoption_next_probe_at.pop(model_id, None)
+                            if self._states.get(model_id) != "stopping":
+                                self._states[model_id] = "running"
+                                self._errors[model_id] = ""
+                            process_payload = payload.get("process", {}) if isinstance(payload, Mapping) else {}
+                            pid = process_payload.get("pid") if isinstance(process_payload, Mapping) else None
+                            next_pid = pid or current_entry.get("pid")
+                            if next_pid != current_entry.get("pid"):
+                                current_entry["pid"] = next_pid
+                                self._save_registry_locked()
+                        elif current_process is None and not had_process and had_pid and current_entry.get("pid"):
+                            current_entry["pid"] = None
+                            self._states[model_id] = "stopped"
+                            self._errors[model_id] = ""
+                            self._adoption_deadlines[model_id] = (
+                                time.monotonic() + self.startup_timeout_seconds
+                            )
+                            self._adoption_next_probe_at[model_id] = 0.0
+                            self._save_registry_locked()
+                        elif self._states.get(model_id) == "running":
+                            self._states[model_id] = "failed"
+                            self._errors[model_id] = error or "模拟服务健康检查失败"
+                    result = (healthy, payload, error)
+                    self._health_cache[model_id] = (time.monotonic(), result)
+                return result
+            finally:
+                with self.lock:
+                    if self._inflight_probes.get(model_id) is wait_event:
+                        self._inflight_probes.pop(model_id, None)
+                wait_event.set()
+
+    def _build_service_payload_locked(
+        self,
+        model_id: str,
+        entry: Mapping[str, Any],
+        health: HealthResult,
+    ) -> dict[str, Any]:
+        healthy, payload, error = health
         state = self._states.get(model_id, "stopped")
         if not healthy and state not in {"starting", "stopping", "failed"}:
             state = "stopped"
@@ -420,32 +572,60 @@ class SimulatorClusterManager:
             "error": self._errors.get(model_id, "") or (error if state == "failed" else ""),
         }
 
-    def model_info(self, model_id: Any) -> dict[str, Any]:
+    def _format_model_info_locked(
+        self,
+        target_id: str,
+        entry: Mapping[str, Any],
+        health: HealthResult,
+    ) -> dict[str, Any]:
+        service = self._build_service_payload_locked(target_id, entry, health)
+        clock_state = str(service.get("clock_state") or "")
+        return {
+            "id": target_id,
+            "name": target_id,
+            "sim_dir": str(self.models_root / target_id),
+            "runtime_dir": str(self.runtime_root / target_id),
+            "clock_state": clock_state or ("unknown" if service["healthy"] else "stopped"),
+            "service": service,
+        }
+
+    def model_info(self, model_id: Any, *, force_probe: bool = False) -> dict[str, Any]:
         with self.lock:
-            target_id, entry = self._entry_locked(model_id)
-            service = self._service_payload_locked(target_id, entry)
-            clock_state = str(service.get("clock_state") or "")
-            return {
-                "id": target_id,
-                "name": target_id,
-                "sim_dir": str(self.models_root / target_id),
-                "runtime_dir": str(self.runtime_root / target_id),
-                "clock_state": clock_state or ("unknown" if service["healthy"] else "stopped"),
-                "service": service,
-            }
+            target_id, _entry = self._entry_locked(model_id, sync=True)
+        health = self._reconcile_model(target_id, force_probe=force_probe)
+        with self.lock:
+            target_id, entry = self._entry_locked(target_id, sync=False)
+            return self._format_model_info_locked(target_id, entry, health)
 
     def models(self) -> list[dict[str, Any]]:
         with self.lock:
             self._sync_models_locked()
-            return [self.model_info(model_id) for model_id in self._registry["services"]]
+            model_ids = list(self._registry["services"])
+        if len(model_ids) <= 1:
+            health_map = {mid: self._reconcile_model(mid) for mid in model_ids}
+        else:
+            # 锁外并发探测多模型，避免慢模型线性放大 catalog 延迟。
+            max_workers = min(8, len(model_ids))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(self._reconcile_model, mid): mid for mid in model_ids}
+                health_map = {futures[f]: f.result() for f in futures}
+        with self.lock:
+            result: list[dict[str, Any]] = []
+            services = self._registry["services"]
+            for mid in model_ids:
+                entry = services.get(mid)
+                if isinstance(entry, Mapping):
+                    result.append(self._format_model_info_locked(mid, entry, health_map[mid]))
+            return result
 
     def catalog(self) -> dict[str, Any]:
+        models_list = self.models()
         return {
-            "models": self.models(),
+            "models": models_list,
             "active_model_id": self.default_model_id,
             "models_root": str(self.models_root),
             "data_plane": "direct",
-            "service_suggestion": self.suggest_service_address(),
+            "service_suggestion": self.suggest_service_address(sync=False),
         }
 
     def _validate_service_address_locked(
@@ -507,16 +687,17 @@ class SimulatorClusterManager:
             excluded = str(exclude_model_id or "").strip()
             return self._validate_service_address_locked(host, port, exclude_model_id=excluded)
 
-    def suggest_service_address(self, host: Any = None) -> dict[str, Any]:
+    def suggest_service_address(self, host: Any = None, *, sync: bool = True) -> dict[str, Any]:
         with self.lock:
-            self._sync_models_locked()
+            if sync:
+                self._sync_models_locked()
             normalized_host = _normalize_service_host(host, self.service_host)
             now = time.monotonic()
             cached = self._service_suggestion_cache
             if (
                 cached
                 and cached.get("host") == normalized_host
-                and now - self._service_suggestion_cached_at < 1.0
+                and now - self._service_suggestion_cached_at < 2.0
             ):
                 return dict(cached)
             suggestion = self._validate_service_address_locked(normalized_host, None)
@@ -525,27 +706,31 @@ class SimulatorClusterManager:
             return suggestion
 
     def configure_model_service(self, model_id: Any, host: Any, port: Any) -> dict[str, Any]:
-        with self.lock:
-            target_id, entry = self._entry_locked(model_id)
-            healthy, _payload, _error = self._reconcile_locked(target_id, entry)
-            process = self._processes.get(target_id)
-            if healthy or (process is not None and process.poll() is None):
-                raise ValueError(f"模型模拟服务运行中，无法修改访问链接: {target_id}")
-            address = self._validate_service_address_locked(
-                host,
-                port,
-                exclude_model_id=target_id,
-            )
-            changed = entry.get("host") != address["host"] or entry.get("port") != address["port"]
-            if changed:
-                entry["host"] = address["host"]
-                entry["port"] = address["port"]
-                entry["pid"] = None
-                self._states[target_id] = "stopped"
-                self._errors[target_id] = ""
-                self._adoption_deadlines.pop(target_id, None)
-                self._adoption_next_probe_at.pop(target_id, None)
-                self._save_registry_locked()
+        with self.model_operation_lock(model_id):
+            with self.lock:
+                target_id, _entry = self._entry_locked(model_id)
+            healthy, _payload, _error = self._reconcile_model(target_id, force_probe=True)
+            with self.lock:
+                target_id, entry = self._entry_locked(target_id, sync=False)
+                process = self._processes.get(target_id)
+                if healthy or (process is not None and process.poll() is None):
+                    raise ValueError(f"模型模拟服务运行中，无法修改访问链接: {target_id}")
+                address = self._validate_service_address_locked(
+                    host,
+                    port,
+                    exclude_model_id=target_id,
+                )
+                changed = entry.get("host") != address["host"] or entry.get("port") != address["port"]
+                if changed:
+                    entry["host"] = address["host"]
+                    entry["port"] = address["port"]
+                    entry["pid"] = None
+                    self._states[target_id] = "stopped"
+                    self._errors[target_id] = ""
+                    self._adoption_deadlines.pop(target_id, None)
+                    self._adoption_next_probe_at.pop(target_id, None)
+                    self._health_cache.pop(target_id, None)
+                    self._save_registry_locked()
             return self.model_info(target_id)
 
     def _command_locked(self, model_id: str, entry: Mapping[str, Any]) -> list[str]:
@@ -582,74 +767,88 @@ class SimulatorClusterManager:
         return command
 
     def start(self, model_id: Any) -> dict[str, Any]:
-        with self.lock:
-            target_id, entry = self._entry_locked(model_id)
-            healthy, payload, _error = self._probe_locked(target_id, entry)
-            if healthy:
-                self._adoption_deadlines.pop(target_id, None)
-                self._adoption_next_probe_at.pop(target_id, None)
-                self._states[target_id] = "running"
-                process_payload = payload.get("process", {}) if isinstance(payload, Mapping) else {}
-                if isinstance(process_payload, Mapping) and process_payload.get("pid"):
-                    entry["pid"] = process_payload["pid"]
-                self._save_registry_locked()
-                return self._service_payload_locked(target_id, entry)
-            if self.port_checker(str(entry["host"]), int(entry["port"])):
-                raise RuntimeError(
-                    f"端口 {entry['host']}:{entry['port']} 已被非目标模拟服务占用"
-                )
-
-            previous = self._processes.get(target_id)
-            if previous is not None and previous.poll() is None:
-                self._states[target_id] = "starting"
-            else:
-                self._states[target_id] = "starting"
-                self._errors[target_id] = ""
-                log_path = self.log_dir / f"{target_id}.log"
-                log_handle = log_path.open("ab", buffering=0)
-                environment = os.environ.copy()
-                environment.setdefault("PYTHONUTF8", "1")
-                kwargs: dict[str, Any] = {
-                    "cwd": str(self.sim_dir),
-                    "env": environment,
-                    "stdout": log_handle,
-                    "stderr": subprocess.STDOUT,
-                }
-                if os.name == "nt":
-                    kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                try:
-                    process = self.process_factory(self._command_locked(target_id, entry), **kwargs)
-                except Exception:
-                    log_handle.close()
-                    self._states[target_id] = "failed"
-                    raise
-                self._processes[target_id] = process
-                self._log_handles[target_id] = log_handle
-                entry["pid"] = getattr(process, "pid", None)
-                self._save_registry_locked()
-
-        deadline = time.monotonic() + self.startup_timeout_seconds
-        last_error = "模拟服务启动超时"
-        while time.monotonic() < deadline:
+        with self.model_operation_lock(model_id):
             with self.lock:
-                process = self._processes.get(target_id)
-                if process is not None and process.poll() is not None:
-                    self._states[target_id] = "failed"
-                    last_error = f"模拟服务启动失败，返回码 {process.returncode}"
-                    self._errors[target_id] = last_error
-                    break
-                healthy, _payload, last_error = self._probe_locked(target_id, entry)
-                if healthy:
+                target_id, entry = self._entry_locked(model_id)
+                host = str(entry["host"])
+                port = int(entry["port"])
+            healthy, payload, error = self._probe_unlocked(target_id, host, port)
+            if healthy:
+                with self.lock:
+                    target_id, entry = self._entry_locked(target_id, sync=False)
+                    self._adoption_deadlines.pop(target_id, None)
+                    self._adoption_next_probe_at.pop(target_id, None)
                     self._states[target_id] = "running"
                     self._errors[target_id] = ""
+                    process_payload = payload.get("process", {}) if isinstance(payload, Mapping) else {}
+                    if isinstance(process_payload, Mapping) and process_payload.get("pid"):
+                        entry["pid"] = process_payload["pid"]
+                    self._health_cache[target_id] = (time.monotonic(), (healthy, payload, error))
                     self._save_registry_locked()
-                    return self._service_payload_locked(target_id, entry)
-            time.sleep(self.poll_interval_seconds)
+                    return self._build_service_payload_locked(target_id, entry, (healthy, payload, error))
+            if self.port_checker(host, port):
+                raise RuntimeError(f"端口 {host}:{port} 已被非目标模拟服务占用")
 
-        with self.lock:
-            self._states[target_id] = "failed"
-            self._errors[target_id] = last_error or "模拟服务启动失败"
-            process = self._processes.pop(target_id, None)
+            with self.lock:
+                target_id, entry = self._entry_locked(target_id, sync=False)
+                previous = self._processes.get(target_id)
+                if previous is not None and previous.poll() is None:
+                    self._states[target_id] = "starting"
+                else:
+                    self._states[target_id] = "starting"
+                    self._errors[target_id] = ""
+                    self._health_cache.pop(target_id, None)
+                    log_path = self.log_dir / f"{target_id}.log"
+                    _rotate_log_if_needed(log_path)
+                    log_handle = log_path.open("ab", buffering=0)
+                    environment = os.environ.copy()
+                    environment.setdefault("PYTHONUTF8", "1")
+                    kwargs: dict[str, Any] = {
+                        "cwd": str(self.sim_dir),
+                        "env": environment,
+                        "stdout": log_handle,
+                        "stderr": subprocess.STDOUT,
+                    }
+                    if os.name == "nt":
+                        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    try:
+                        process = self.process_factory(self._command_locked(target_id, entry), **kwargs)
+                    except Exception:
+                        log_handle.close()
+                        self._states[target_id] = "failed"
+                        raise
+                    self._processes[target_id] = process
+                    self._log_handles[target_id] = log_handle
+                    entry["pid"] = getattr(process, "pid", None)
+                    self._save_registry_locked()
+
+            deadline = time.monotonic() + self.startup_timeout_seconds
+            last_error = "模拟服务启动超时"
+            while time.monotonic() < deadline:
+                with self.lock:
+                    process = self._processes.get(target_id)
+                    if process is not None and process.poll() is not None:
+                        self._states[target_id] = "failed"
+                        tail = _read_log_tail(self.log_dir / f"{target_id}.log")
+                        base_msg = f"模拟服务启动失败，返回码 {process.returncode}"
+                        last_error = f"{base_msg}：{tail}" if tail else base_msg
+                        self._errors[target_id] = last_error
+                        break
+                healthy, payload, last_error = self._probe_unlocked(target_id, host, port)
+                if healthy:
+                    with self.lock:
+                        target_id, entry = self._entry_locked(target_id, sync=False)
+                        self._states[target_id] = "running"
+                        self._errors[target_id] = ""
+                        self._health_cache[target_id] = (time.monotonic(), (healthy, payload, last_error))
+                        self._save_registry_locked()
+                        return self._build_service_payload_locked(
+                            target_id, entry, (healthy, payload, last_error)
+                        )
+                time.sleep(self.poll_interval_seconds)
+
+            with self.lock:
+                process = self._processes.pop(target_id, None)
             if process is not None and process.poll() is None:
                 process.terminate()
                 try:
@@ -657,11 +856,17 @@ class SimulatorClusterManager:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=self.shutdown_timeout_seconds)
-            self._close_log_handle_locked(target_id)
-            entry["pid"] = None
-            self._save_registry_locked()
-            failure_message = self._errors[target_id]
-        raise RuntimeError(failure_message)
+            with self.lock:
+                self._states[target_id] = "failed"
+                self._errors[target_id] = last_error or "模拟服务启动失败"
+                self._close_log_handle_locked(target_id)
+                entry_ref = self._registry["services"].get(target_id)
+                if isinstance(entry_ref, dict):
+                    entry_ref["pid"] = None
+                self._health_cache.pop(target_id, None)
+                self._save_registry_locked()
+                failure_message = self._errors[target_id]
+            raise RuntimeError(failure_message)
 
     @staticmethod
     def _terminate_pid(pid: int) -> None:
@@ -672,13 +877,36 @@ class SimulatorClusterManager:
         except (OSError, ValueError):
             return
 
+    def _wait_adopted_exit(self, model_id: str, host: str, port: int, pid: int) -> None:
+        """等待已领养的子服务退出并释放监听端口，防止随后立即删目录或重启时发生竞态。"""
+        deadline = time.monotonic() + self.shutdown_timeout_seconds
+        while time.monotonic() < deadline:
+            if not self.port_checker(host, port):
+                return
+            healthy, _payload, _err = self._probe_unlocked(model_id, host, port)
+            if not healthy:
+                return
+            time.sleep(min(0.1, self.poll_interval_seconds))
+        if hasattr(signal, "SIGKILL"):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (OSError, ValueError):
+                pass
+
     def stop(self, model_id: Any) -> dict[str, Any]:
-        with self.lock:
-            target_id, entry = self._entry_locked(model_id)
-            process = self._processes.get(target_id)
-            self._states[target_id] = "stopping"
-            self._adoption_deadlines.pop(target_id, None)
-            self._adoption_next_probe_at.pop(target_id, None)
+        with self.model_operation_lock(model_id):
+            with self.lock:
+                target_id, entry = self._entry_locked(model_id)
+                process = self._processes.get(target_id)
+                host = str(entry["host"])
+                port = int(entry["port"])
+                recorded_pid = entry.get("pid")
+                self._states[target_id] = "stopping"
+                self._adoption_deadlines.pop(target_id, None)
+                self._adoption_next_probe_at.pop(target_id, None)
+                self._health_cache.pop(target_id, None)
+
+            # 锁外等待子进程退出，避免阻塞其他模型的并发查询。
             if process is not None and process.poll() is None:
                 process.terminate()
                 try:
@@ -686,36 +914,42 @@ class SimulatorClusterManager:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=self.shutdown_timeout_seconds)
-            elif entry.get("pid"):
-                healthy, payload, _error = self._probe_locked(target_id, entry)
+            elif recorded_pid:
+                healthy, payload, _error = self._probe_unlocked(target_id, host, port)
                 if healthy:
                     process_payload = payload.get("process", {}) if isinstance(payload, Mapping) else {}
                     verified_pid = process_payload.get("pid") if isinstance(process_payload, Mapping) else None
                     if verified_pid:
                         self._terminate_pid(int(verified_pid))
-            self._processes.pop(target_id, None)
-            self._close_log_handle_locked(target_id)
-            entry["pid"] = None
-            self._states[target_id] = "stopped"
-            self._errors[target_id] = ""
-            self._save_registry_locked()
-            host = str(entry["host"])
-            port = int(entry["port"])
-        return {
-            "state": "stopped",
-            "host": host,
-            "port": port,
-            "access_link": f"{host}:{port}",
-            "base_url": f"http://{host}:{port}",
-            "pid": None,
-            "healthy": False,
-            "error": "",
-        }
+                        self._wait_adopted_exit(target_id, host, port, int(verified_pid))
+
+            with self.lock:
+                target_id, entry = self._entry_locked(target_id, sync=False)
+                self._processes.pop(target_id, None)
+                self._close_log_handle_locked(target_id)
+                entry["pid"] = None
+                self._states[target_id] = "stopped"
+                self._errors[target_id] = ""
+                self._health_cache[target_id] = (time.monotonic(), (False, {}, ""))
+                self._save_registry_locked()
+                host = str(entry["host"])
+                port = int(entry["port"])
+            return {
+                "state": "stopped",
+                "host": host,
+                "port": port,
+                "access_link": f"{host}:{port}",
+                "base_url": f"http://{host}:{port}",
+                "pid": None,
+                "healthy": False,
+                "error": "",
+            }
 
     def require_stopped(self, model_id: Any) -> tuple[str, Path, Path]:
         with self.lock:
-            target_id, entry = self._entry_locked(model_id)
-            healthy, _payload, _error = self._reconcile_locked(target_id, entry)
+            target_id, _entry = self._entry_locked(model_id)
+        healthy, _payload, _error = self._reconcile_model(target_id, force_probe=True)
+        with self.lock:
             process = self._processes.get(target_id)
             if healthy or (process is not None and process.poll() is None):
                 raise ValueError(f"模型模拟服务运行中，无法修改: {target_id}")
@@ -724,12 +958,12 @@ class SimulatorClusterManager:
     def simulation_clock_state(self, model_id: Any) -> str:
         with self.lock:
             target_id, entry = self._entry_locked(model_id)
-            healthy, _payload, error = self._reconcile_locked(target_id, entry)
-            if not healthy:
-                raise RuntimeError(error or f"模型 {target_id} 的模拟服务未运行，无法核实仿真时钟状态")
             host = str(entry["host"])
             port = int(entry["port"])
             timeout = min(2.0, self.startup_timeout_seconds)
+        healthy, _payload, error = self._reconcile_model(target_id, force_probe=True)
+        if not healthy:
+            raise RuntimeError(error or f"模型 {target_id} 的模拟服务未运行，无法核实仿真时钟状态")
         return self.clock_state_checker(host, port, target_id, timeout)
 
     def validate_new_model_name(self, new_model_id: Any) -> str:
@@ -763,8 +997,9 @@ class SimulatorClusterManager:
                 entry["host"] = address["host"]
                 entry["port"] = address["port"]
                 entry["pid"] = None
+                self._health_cache.pop(target_id, None)
                 self._save_registry_locked()
-            return self.model_info(target_id)
+        return self.model_info(target_id)
 
     def model_source_dir(self, model_id: Any) -> tuple[str, Path]:
         with self.lock:
@@ -783,21 +1018,23 @@ class SimulatorClusterManager:
             raise
 
     def delete_model(self, model_id: Any) -> dict[str, Any]:
-        target_id, source_dir, runtime_dir = self.require_stopped(model_id)
-        with self.lock:
-            self._sync_models_locked()
-            if len(self._registry["services"]) <= 1:
-                raise ValueError("至少需要保留一个模型")
+        with self.model_operation_lock(model_id):
+            target_id, source_dir, runtime_dir = self.require_stopped(model_id)
             removed = self.model_info(target_id)
-            shutil.rmtree(source_dir)
-            if runtime_dir.exists():
-                shutil.rmtree(runtime_dir)
-            self._registry["services"].pop(target_id, None)
-            self._states.pop(target_id, None)
-            self._errors.pop(target_id, None)
-            self._save_registry_locked()
-            self._sync_models_locked()
-            return {**removed, "deleted": True, "active_model_id": self.default_model_id}
+            with self.lock:
+                self._sync_models_locked()
+                if len(self._registry["services"]) <= 1:
+                    raise ValueError("至少需要保留一个模型")
+                shutil.rmtree(source_dir)
+                if runtime_dir.exists():
+                    shutil.rmtree(runtime_dir)
+                self._registry["services"].pop(target_id, None)
+                self._states.pop(target_id, None)
+                self._errors.pop(target_id, None)
+                self._health_cache.pop(target_id, None)
+                self._save_registry_locked()
+                self._sync_models_locked()
+                return {**removed, "deleted": True, "active_model_id": self.default_model_id}
 
     def clear_model_runtime(self, model_id: Any) -> None:
         _target_id, _source_dir, runtime_dir = self.require_stopped(model_id)

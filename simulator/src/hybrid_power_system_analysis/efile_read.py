@@ -280,54 +280,36 @@ def _class_factory(class_name, attrs, converters=None):
     else:
         converters = tuple(converters)
     attr_names = tuple(attrs)
+    bindings = tuple(zip(attr_names, converters))
 
-    init_globals = {}
-    init_lines = [
-        "def __init__(self, row=None, **kwargs):",
-        "    source = kwargs if row is None else row",
-        "    values = self.__dict__",
-    ]
-    for idx, (attr, convert) in enumerate(zip(attr_names, converters)):
-        source_expr = f"source[{attr!r}]"
-        if convert is _identity_cell:
-            init_lines.append(f"    values[{attr!r}] = {source_expr}")
-        elif convert is _safe_int_cell:
-            value_name = f"_value_{idx}"
-            init_lines.extend(
-                [
-                    f"    {value_name} = {source_expr}",
-                    f"    if isinstance({value_name}, str):",
-                    "        try:",
-                    f"            values[{attr!r}] = int({value_name})",
-                    "        except ValueError:",
-                    "            try:",
-                    f"                values[{attr!r}] = float({value_name})",
-                    "            except ValueError:",
-                    f"                values[{attr!r}] = {value_name}",
-                    "    else:",
-                    f"        values[{attr!r}] = {value_name}",
-                ]
-            )
-        elif convert is _safe_float_cell:
-            value_name = f"_value_{idx}"
-            init_lines.extend(
-                [
-                    f"    {value_name} = {source_expr}",
-                    f"    if isinstance({value_name}, str):",
-                    "        try:",
-                    f"            values[{attr!r}] = float({value_name})",
-                    "        except ValueError:",
-                    f"            values[{attr!r}] = {value_name}",
-                    "    else:",
-                    f"        values[{attr!r}] = {value_name}",
-                ]
-            )
-        else:
-            converter_name = f"_converter_{idx}"
-            init_globals[converter_name] = convert
-            init_lines.append(f"    values[{attr!r}] = {converter_name}({source_expr})")
-    exec("\n".join(init_lines), init_globals)
-    __init__ = init_globals["__init__"]
+    def __init__(self, row=None, **kwargs):
+        source = kwargs if row is None else row
+        values = self.__dict__
+        for attr, convert in bindings:
+            raw_value = source[attr]
+            if convert is _identity_cell:
+                values[attr] = raw_value
+            elif convert is _safe_int_cell:
+                if isinstance(raw_value, str):
+                    try:
+                        values[attr] = int(raw_value)
+                    except ValueError:
+                        try:
+                            values[attr] = float(raw_value)
+                        except ValueError:
+                            values[attr] = raw_value
+                else:
+                    values[attr] = raw_value
+            elif convert is _safe_float_cell:
+                if isinstance(raw_value, str):
+                    try:
+                        values[attr] = float(raw_value)
+                    except ValueError:
+                        values[attr] = raw_value
+                else:
+                    values[attr] = raw_value
+            else:
+                values[attr] = convert(raw_value)
 
     attributes = {attr: None for attr in attrs}
     attributes["__init__"] = __init__
@@ -341,54 +323,38 @@ def _row_class_factory(class_name, attrs, converters=None):
         converters = tuple(_convert_cell for _ in attrs)
     else:
         converters = tuple(converters)
+    bindings = tuple(enumerate(zip(attrs, converters)))
 
-    init_globals = {}
-    init_lines = [
-        "def __init__(self, row):",
-        "    values = self.__dict__",
-    ]
-    for idx, (attr, convert) in enumerate(zip(attrs, converters)):
-        source_expr = f"row[{idx}]"
-        if convert is _identity_cell:
-            init_lines.append(f"    values[{attr!r}] = {source_expr}")
-        elif convert is _safe_int_cell:
-            value_name = f"_value_{idx}"
-            init_lines.extend(
-                [
-                    f"    {value_name} = {source_expr}",
-                    f"    if isinstance({value_name}, str):",
-                    "        try:",
-                    f"            values[{attr!r}] = int({value_name})",
-                    "        except ValueError:",
-                    "            try:",
-                    f"                values[{attr!r}] = float({value_name})",
-                    "            except ValueError:",
-                    f"                values[{attr!r}] = {value_name}",
-                    "    else:",
-                    f"        values[{attr!r}] = {value_name}",
-                ]
-            )
-        elif convert is _safe_float_cell:
-            value_name = f"_value_{idx}"
-            init_lines.extend(
-                [
-                    f"    {value_name} = {source_expr}",
-                    f"    if isinstance({value_name}, str):",
-                    "        try:",
-                    f"            values[{attr!r}] = float({value_name})",
-                    "        except ValueError:",
-                    f"            values[{attr!r}] = {value_name}",
-                    "    else:",
-                    f"        values[{attr!r}] = {value_name}",
-                ]
-            )
-        else:
-            converter_name = f"_converter_{idx}"
-            init_globals[converter_name] = convert
-            init_lines.append(f"    values[{attr!r}] = {converter_name}({source_expr})")
-    exec("\n".join(init_lines), init_globals)
+    def __init__(self, row):
+        values = self.__dict__
+        for idx, (attr, convert) in bindings:
+            raw_value = row[idx]
+            if convert is _identity_cell:
+                values[attr] = raw_value
+            elif convert is _safe_int_cell:
+                if isinstance(raw_value, str):
+                    try:
+                        values[attr] = int(raw_value)
+                    except ValueError:
+                        try:
+                            values[attr] = float(raw_value)
+                        except ValueError:
+                            values[attr] = raw_value
+                else:
+                    values[attr] = raw_value
+            elif convert is _safe_float_cell:
+                if isinstance(raw_value, str):
+                    try:
+                        values[attr] = float(raw_value)
+                    except ValueError:
+                        values[attr] = raw_value
+                else:
+                    values[attr] = raw_value
+            else:
+                values[attr] = convert(raw_value)
+
     attributes = {attr: None for attr in attrs}
-    attributes["__init__"] = init_globals["__init__"]
+    attributes["__init__"] = __init__
     return type(class_name, (_Base,), attributes)
 
 

@@ -6,7 +6,7 @@ import json
 import math
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Dict, Mapping, Sequence, Tuple
+from typing import Any, Dict, Mapping, Sequence, Tuple
 
 
 NodeKey = Tuple[str, str]
@@ -242,22 +242,22 @@ class _AnchorObjective:
 
 def _model_blocks(snapshot: Mapping[str, object]) -> Mapping[str, object]:
     definitions = snapshot.get("definitions")
-    if not isinstance(definitions, Mapping):
+    if not (type(definitions) is dict or isinstance(definitions, Mapping)):
         return {}
     model = definitions.get("model")
-    return model if isinstance(model, Mapping) else {}
+    return model if (type(model) is dict or isinstance(model, Mapping)) else {}
 
 
 def _block_rows(
     model: Mapping[str, object], block_name: str
 ) -> Tuple[Mapping[str, object], ...]:
     block = model.get(block_name)
-    if not isinstance(block, Mapping):
+    if not (type(block) is dict or isinstance(block, Mapping)):
         return ()
     rows = block.get("rows")
     if not isinstance(rows, (list, tuple)):
         return ()
-    return tuple(row for row in rows if isinstance(row, Mapping))
+    return tuple(row for row in rows if (type(row) is dict or isinstance(row, Mapping)))
 
 
 def _node_id(value: object) -> str | None:
@@ -408,7 +408,7 @@ def _runtime_rows(
     rows = snapshot.get(field)
     if not isinstance(rows, (list, tuple)):
         return ()
-    return tuple(row for row in rows if isinstance(row, Mapping))
+    return tuple(row for row in rows if (type(row) is dict or isinstance(row, Mapping)))
 
 
 def _runtime_row_key(row: Mapping[str, object]) -> DeviceKey | None:
@@ -425,10 +425,21 @@ def _overlay_runtime_rows(
     *,
     include_status: bool,
 ) -> None:
-    for row in sorted(rows, key=lambda item: (_runtime_row_key(item) or ("", ""), _row_rank(item))):
+    # 绝大多数场景下每个 device_key 仅出现 1 次，仅在同 key 存在多条记录时才按 _row_rank 排序，避免每帧全表 repr 排序
+    grouped_single: Dict[DeviceKey, Mapping[str, object]] = {}
+    grouped_multi: Dict[DeviceKey, list[Mapping[str, object]]] = {}
+    for row in rows:
         device_key = _runtime_row_key(row)
         if device_key is None or device_key not in states:
             continue
+        if device_key in grouped_multi:
+            grouped_multi[device_key].append(row)
+        elif device_key in grouped_single:
+            grouped_multi[device_key] = [grouped_single.pop(device_key), row]
+        else:
+            grouped_single[device_key] = row
+
+    def _apply_row(device_key: DeviceKey, row: Mapping[str, object]) -> None:
         current = states[device_key]
         run_stat = current.run_stat
         status = current.status
@@ -439,18 +450,25 @@ def _overlay_runtime_rows(
             status = _finite_number(row.get("status"), status) or 0.0
         if "dead_island" in row:
             dead_island = _boolean(row.get("dead_island"), dead_island)
-        states[device_key] = _OperatingState(
-            run_stat=run_stat,
-            status=status,
-            dead_island=dead_island,
-        )
+        if run_stat != current.run_stat or status != current.status or dead_island != current.dead_island:
+            states[device_key] = _OperatingState(
+                run_stat=run_stat,
+                status=status,
+                dead_island=dead_island,
+            )
+
+    for device_key, row in grouped_single.items():
+        _apply_row(device_key, row)
+    for device_key, dup_rows in grouped_multi.items():
+        for row in sorted(dup_rows, key=_row_rank):
+            _apply_row(device_key, row)
 
 
 def _measurement_values(
     snapshot: Mapping[str, object],
 ) -> Mapping[Tuple[str, str, str], float]:
     measurements = snapshot.get("measurements")
-    if not isinstance(measurements, Mapping):
+    if not (type(measurements) is dict or isinstance(measurements, Mapping)):
         return {}
     values: Dict[Tuple[str, str, str], float] = {}
     for source in ("scada", "real"):
@@ -458,21 +476,30 @@ def _measurement_values(
         if not isinstance(rows, (list, tuple)):
             continue
         for row in rows:
-            if not isinstance(row, Mapping):
+            if not (type(row) is dict or isinstance(row, Mapping)):
                 continue
-            valid = _finite_number(row.get("valid"))
+            raw_meas_type = row.get("meas_type", "")
+            if raw_meas_type in ("RUN_STAT", "STATUS"):
+                meas_type = raw_meas_type
+            else:
+                if not raw_meas_type:
+                    continue
+                meas_type = str(raw_meas_type).upper()
+                if meas_type not in ("RUN_STAT", "STATUS"):
+                    continue
+            raw_valid = row.get("valid")
+            if raw_valid != 1 and raw_valid != 1.0 and raw_valid != "1":
+                if _finite_number(raw_valid) != 1.0:
+                    continue
             value = _finite_number(row.get("value"))
             dev_type = row.get("dev_type")
             dev_name = row.get("dev_name")
-            meas_type = str(row.get("meas_type", "")).upper()
             if (
-                valid != 1.0
-                or value is None
+                value is None
                 or not isinstance(dev_type, str)
                 or not dev_type
                 or not isinstance(dev_name, str)
                 or not dev_name
-                or meas_type not in {"RUN_STAT", "STATUS"}
             ):
                 continue
             values.setdefault((dev_type, dev_name, meas_type), value)
@@ -1548,10 +1575,54 @@ def _apply_active_topology(
     )
 
 
+_STATIC_CONTEXT_CACHE: Dict[Any, ResourceTopologyStaticContext] = {}
+_STATIC_CONTEXT_CACHE_MAX = 16
+_RESOLVED_TOPOLOGY_CACHE: Dict[Any, ResourceTopology] = {}
+_RESOLVED_TOPOLOGY_CACHE_MAX = 32
+
+
+def _topology_static_cache_key(snapshot: Mapping[str, object]) -> Optional[Tuple[Any, ...]]:
+    """根据静态模型定义签名生成缓存键，模型定义未变化时复用静态拓扑图与锚点索引。"""
+    model = snapshot.get("model")
+    static_meta = snapshot.get("static_meta")
+    device_params = snapshot.get("device_parameters")
+    definitions = snapshot.get("definitions")
+    model_id = model.get("id") if (type(model) is dict or isinstance(model, Mapping)) else None
+    def_rev = (
+        static_meta.get("definition_revision")
+        if (type(static_meta) is dict or isinstance(static_meta, Mapping))
+        else None
+    )
+    if def_rev is None and (type(definitions) is dict or isinstance(definitions, Mapping)):
+        def_rev = definitions.get("revision")
+    if model_id is None and def_rev is None:
+        return None
+    blocks = (
+        device_params.get("blocks")
+        if (type(device_params) is dict or isinstance(device_params, Mapping))
+        else None
+    )
+    if type(blocks) is dict:
+        block_sig = tuple(
+            (name, len(rows), id(rows))
+            for name, rows in sorted(blocks.items())
+            if isinstance(rows, (list, tuple))
+        )
+    else:
+        block_sig = ()
+    return (str(model_id or ""), def_rev, block_sig)
+
+
 def prepare_resource_topology_static_context(
     snapshot: Mapping[str, object],
 ) -> ResourceTopologyStaticContext:
     """Build topology data that changes only when model definitions change."""
+
+    cache_key = _topology_static_cache_key(snapshot)
+    if cache_key is not None:
+        cached = _STATIC_CONTEXT_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
 
     parsed = _parse_model(snapshot)
     graph = _build_structural_graph(parsed)
@@ -1564,7 +1635,7 @@ def prepare_resource_topology_static_context(
         graph,
         parsed.anchors,
     )
-    return ResourceTopologyStaticContext(
+    context = ResourceTopologyStaticContext(
         parsed=parsed,
         graph=graph,
         structural_anchor_indexes=MappingProxyType(
@@ -1575,6 +1646,11 @@ def prepare_resource_topology_static_context(
         ),
         invalid_converter_nodes=invalid_converter_nodes,
     )
+    if cache_key is not None:
+        if len(_STATIC_CONTEXT_CACHE) >= _STATIC_CONTEXT_CACHE_MAX and cache_key not in _STATIC_CONTEXT_CACHE:
+            _STATIC_CONTEXT_CACHE.pop(next(iter(_STATIC_CONTEXT_CACHE)))
+        _STATIC_CONTEXT_CACHE[cache_key] = context
+    return context
 
 
 def resolve_resource_topology(
@@ -1589,6 +1665,17 @@ def resolve_resource_topology(
     structural_anchor_indexes = context.structural_anchor_indexes
     invalid_converter_nodes = context.invalid_converter_nodes
     states = _operating_states(snapshot, parsed)
+    resources_tuple = tuple(resources)
+    # 开关与设备运行状态未变化时直接复用不可变 ResourceTopology，避免每帧重算整张拓扑图与锚点索引
+    state_sig = tuple(
+        (key, st.run_stat, st.status, st.dead_island)
+        for key, st in states.items()
+    )
+    resolved_cache_key = (id(context), state_sig, resources_tuple)
+    cached_topology = _RESOLVED_TOPOLOGY_CACHE.get(resolved_cache_key)
+    if cached_topology is not None:
+        return cached_topology
+
     active_graph = _build_active_graph(parsed, graph, states)
     active_anchor_indexes = _build_reverse_anchor_indexes(
         active_graph.adjacency,
@@ -1627,7 +1714,7 @@ def resolve_resource_topology(
         if component_id:
             device_component_ids[device_key] = component_id
     resolved: Dict[DeviceKey, ResourceConnection] = {}
-    for resource in resources:
+    for resource in resources_tuple:
         device_key = (resource.dev_type, resource.dev_name)
         structural_connection = _resolve_resource(
             resource,
@@ -1644,7 +1731,7 @@ def resolve_resource_topology(
             active_anchor_indexes,
             components,
         )
-    return ResourceTopology(
+    topology_result = ResourceTopology(
         resources=MappingProxyType(resolved),
         dc_transfer_groups=dc_transfer_groups,
         device_component_ids=MappingProxyType(device_component_ids),
@@ -1653,3 +1740,10 @@ def resolve_resource_topology(
         hydrogen_device_island_ids=hydrogen_device_island_ids,
         hydrogen_invalid_devices=hydrogen_invalid_devices,
     )
+    if (
+        len(_RESOLVED_TOPOLOGY_CACHE) >= _RESOLVED_TOPOLOGY_CACHE_MAX
+        and resolved_cache_key not in _RESOLVED_TOPOLOGY_CACHE
+    ):
+        _RESOLVED_TOPOLOGY_CACHE.pop(next(iter(_RESOLVED_TOPOLOGY_CACHE)))
+    _RESOLVED_TOPOLOGY_CACHE[resolved_cache_key] = topology_result
+    return topology_result

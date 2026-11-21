@@ -1,0 +1,256 @@
+"""针对 SimulatorClusterManager 与 SimulatorProxy 的并发、安全、容错与原子性回归测试。"""
+
+from __future__ import annotations
+
+import concurrent.futures
+import gzip
+import io
+import json
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+APP_ROOT = Path(__file__).resolve().parents[1]
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
+
+from simu.simulator_cluster import SimulatorClusterManager, _rotate_log_if_needed
+from simu.simulator_proxy import make_simulator_proxy_server
+
+
+class _FakeSocket:
+    """内存伪造 Socket，支持无真实端口连接的 HTTP Handler 单元验证。"""
+
+    def __init__(self, raw_request: bytes, *, abort_on_write: bool = False) -> None:
+        self._r = io.BytesIO(raw_request)
+        self._w = io.BytesIO()
+        self._abort = abort_on_write
+
+    def makefile(self, mode: str, bufsize: int = -1):
+        if "r" in mode:
+            return self._r
+        if self._abort:
+            class _AbortingWriter(io.BytesIO):
+                def write(self, b):
+                    raise ConnectionAbortedError(10053, "client aborted connection")
+            return _AbortingWriter()
+        return self._w
+
+    def sendall(self, data: bytes) -> None:
+        if self._abort:
+            raise ConnectionAbortedError(10053, "client aborted connection")
+        self._w.write(data)
+
+    def close(self) -> None:
+        pass
+
+    @property
+    def raw_response(self) -> bytes:
+        return self._w.getvalue()
+
+
+def _parse_http_response(raw: bytes) -> tuple[int, dict[str, str], bytes]:
+    head, _, body = raw.partition(b"\r\n\r\n")
+    lines = head.decode("iso-8859-1").splitlines()
+    status_code = int(lines[0].split()[1])
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if ":" in line:
+            k, v = line.split(":", 1)
+            headers[k.strip().lower()] = v.strip()
+    return status_code, headers, body
+
+
+class ClusterAndProxyTests(unittest.TestCase):
+    def _make_models(self, root: Path, names=("m1", "m2", "m3")):
+        models_root = root / "models"
+        runtime_root = root / "runtime"
+        for name in names:
+            (models_root / name).mkdir(parents=True)
+            (models_root / name / "model.e").write_text("dummy", encoding="utf-8")
+        return models_root, runtime_root
+
+    def test_catalog_concurrency_singleflight_and_cache(self):
+        with tempfile.TemporaryDirectory() as td:
+            models_root, runtime_root = self._make_models(Path(td))
+            probe_calls = []
+
+            def slow_health(host, port, model_id, timeout):
+                probe_calls.append(model_id)
+                if model_id == "m2":
+                    time.sleep(0.25)
+                return True, {
+                    "ok": True,
+                    "model_id": model_id,
+                    "process": {"pid": 22222},
+                    "snapshot": {"model": {"id": model_id}, "clock": {"state": "running"}},
+                }, ""
+
+            mgr = SimulatorClusterManager(
+                sim_dir=APP_ROOT,
+                models_root=models_root,
+                runtime_root=runtime_root,
+                health_checker=slow_health,
+                port_checker=lambda h, p: False,
+                health_cache_ttl_seconds=1.5,
+            )
+            with mgr.lock:
+                for entry in mgr._registry["services"].values():
+                    entry["pid"] = 22222
+
+            # 冷启动 6 并发：Singleflight 应合并为每模型 1 次（总计 3 次）而非 18 次，总耗时接近单次慢探测
+            t0 = time.perf_counter()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+                results = list(pool.map(lambda _: mgr.catalog(), range(6)))
+            cold_elapsed = time.perf_counter() - t0
+            self.assertEqual(len(results), 6)
+            self.assertEqual(len(probe_calls), 3)
+            self.assertLess(cold_elapsed, 0.9)
+
+            # 热缓存 6 并发：0 次探测且毫秒级返回
+            probe_calls.clear()
+            t1 = time.perf_counter()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+                list(pool.map(lambda _: mgr.catalog(), range(6)))
+            warm_elapsed = time.perf_counter() - t1
+            self.assertEqual(len(probe_calls), 0)
+            self.assertLess(warm_elapsed, 0.2)
+
+    def test_stop_waits_for_adopted_process_exit_and_does_not_block_catalog(self):
+        with tempfile.TemporaryDirectory() as td:
+            models_root, runtime_root = self._make_models(Path(td), names=("m1", "m2"))
+            m1_alive = [True]
+            killed_pids = []
+
+            def health(host, port, model_id, timeout):
+                if model_id == "m1" and not m1_alive[0]:
+                    return False, {}, "stopped"
+                return True, {
+                    "ok": True,
+                    "model_id": model_id,
+                    "process": {"pid": 33333 if model_id == "m1" else 44444},
+                    "snapshot": {"model": {"id": model_id}, "clock": {"state": "stopped"}},
+                }, ""
+
+            def fake_terminate(pid: int) -> None:
+                killed_pids.append(pid)
+                def _delayed_exit():
+                    time.sleep(0.25)
+                    m1_alive[0] = False
+                threading.Thread(target=_delayed_exit, daemon=True).start()
+
+            mgr = SimulatorClusterManager(
+                sim_dir=APP_ROOT,
+                models_root=models_root,
+                runtime_root=runtime_root,
+                health_checker=health,
+                port_checker=lambda h, p: False,
+                poll_interval_seconds=0.05,
+                shutdown_timeout_seconds=2.0,
+                health_cache_ttl_seconds=1.5,
+            )
+            with mgr.lock:
+                mgr._registry["services"]["m1"]["pid"] = 33333
+                mgr._registry["services"]["m2"]["pid"] = 44444
+            mgr.port_checker = lambda h, p: m1_alive[0] if p == 8711 else False
+            mgr.catalog()
+
+            catalog_latencies = []
+            with patch.object(SimulatorClusterManager, "_terminate_pid", side_effect=fake_terminate):
+                stop_thread = threading.Thread(target=mgr.stop, args=("m1",))
+                stop_thread.start()
+                time.sleep(0.05)
+                s = time.perf_counter()
+                mgr.model_info("m2")
+                catalog_latencies.append(time.perf_counter() - s)
+                stop_thread.join(timeout=3.0)
+
+            self.assertEqual(killed_pids, [33333])
+            self.assertFalse(m1_alive[0], "stop() 应等待已领养进程实际退出后再返回")
+            self.assertLess(catalog_latencies[0], 0.15, "停止 m1 不应阻塞 m2 查询")
+
+    def test_proxy_static_etag_gzip_disconnect_413_and_cors(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            models_root, runtime_root = self._make_models(root, names=("m1",))
+            static_dir = root / "web"
+            static_dir.mkdir()
+            (static_dir / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+            (static_dir / "bundle.js").write_text("const x = 'hello world';\n" * 200, encoding="utf-8")
+
+            mgr = SimulatorClusterManager(
+                sim_dir=APP_ROOT,
+                models_root=models_root,
+                runtime_root=runtime_root,
+                health_checker=lambda h, p, m, t: (False, {}, ""),
+                port_checker=lambda h, p: False,
+            )
+            srv = make_simulator_proxy_server(("127.0.0.1", 0), mgr, static_root=static_dir)
+            try:
+                Handler = srv.RequestHandlerClass
+
+                # 1. 静态资源 gzip + ETag
+                sock = _FakeSocket(
+                    b"GET /bundle.js HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    b"Accept-Encoding: gzip\r\nOrigin: http://127.0.0.1:18720\r\n\r\n"
+                )
+                Handler(sock, ("127.0.0.1", 50001), srv)
+                status, headers, body = _parse_http_response(sock.raw_response)
+                self.assertEqual(status, 200)
+                self.assertEqual(headers.get("content-encoding"), "gzip")
+                self.assertIn("etag", headers)
+                self.assertEqual(headers.get("access-control-allow-origin"), "http://127.0.0.1:18720")
+                self.assertIn("hello world", gzip.decompress(body).decode("utf-8"))
+
+                # 2. If-None-Match 命中 304
+                etag = headers["etag"]
+                sock_304 = _FakeSocket(
+                    f"GET /bundle.js HTTP/1.1\r\nHost: 127.0.0.1\r\nIf-None-Match: {etag}\r\n\r\n".encode("ascii")
+                )
+                Handler(sock_304, ("127.0.0.1", 50002), srv)
+                status_304, _h304, body_304 = _parse_http_response(sock_304.raw_response)
+                self.assertEqual(status_304, 304)
+                self.assertEqual(body_304, b"")
+
+                # 3. 第三方恶意 Origin 不应获得 CORS 放行头
+                sock_evil = _FakeSocket(
+                    b"GET /api/models HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://evil.example.com\r\n\r\n"
+                )
+                Handler(sock_evil, ("127.0.0.1", 50003), srv)
+                status_evil, headers_evil, _ = _parse_http_response(sock_evil.raw_response)
+                self.assertEqual(status_evil, 200)
+                self.assertNotIn("access-control-allow-origin", headers_evil)
+
+                # 4. 超大 Content-Length 返回 413
+                sock_413 = _FakeSocket(
+                    b"POST /api/simulator-services/stop HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    b"Content-Type: application/json\r\nContent-Length: 999999999\r\n\r\n"
+                )
+                Handler(sock_413, ("127.0.0.1", 50004), srv)
+                status_413, _h413, _b413 = _parse_http_response(sock_413.raw_response)
+                self.assertEqual(status_413, 413)
+
+                # 5. 客户端写响应中断连不抛出二次异常
+                sock_abort = _FakeSocket(
+                    b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+                    abort_on_write=True,
+                )
+                Handler(sock_abort, ("127.0.0.1", 50005), srv)
+            finally:
+                srv.server_close()
+
+    def test_child_log_rotation(self):
+        with tempfile.TemporaryDirectory() as td:
+            log_file = Path(td) / "model.log"
+            log_file.write_bytes(b"A" * 2048)
+            _rotate_log_if_needed(log_file, max_bytes=1024, backup_count=2)
+            self.assertFalse(log_file.exists())
+            self.assertTrue((Path(td) / "model.log.1").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

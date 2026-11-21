@@ -63,7 +63,7 @@ def _device_key(row: Mapping[str, Any]) -> Tuple[str, str]:
 
 
 def _ordered_rows(rows: Sequence[Mapping[str, Any]], label: str) -> list[Mapping[str, Any]]:
-    normalized = [row for row in rows if isinstance(row, Mapping)]
+    normalized = [row for row in rows if (type(row) is dict or isinstance(row, Mapping))]
     ordered = sorted(normalized, key=_device_key)
     keys = [_device_key(row) for row in ordered]
     if any(not dev_type or not dev_name for dev_type, dev_name in keys):
@@ -204,7 +204,7 @@ def compact_device_runtime_supplement_frame(
     measurement_keys = {
         _measurement_identity(row)
         for row in measurement_definitions
-        if isinstance(row, Mapping)
+        if (type(row) is dict or isinstance(row, Mapping))
     }
     device_run_indices, device_run_values = _residual_runtime_values(
         ordered_devices,
@@ -317,7 +317,7 @@ def _clear_measurement_backed_runtime_fields(
     measurement_keys = {
         _measurement_identity(row)
         for row in measurement_definitions
-        if isinstance(row, Mapping)
+        if (type(row) is dict or isinstance(row, Mapping))
     }
     for row in ordered_devices:
         identity = _device_key(row)
@@ -351,8 +351,8 @@ def apply_device_runtime_frame(
     }:
         raise DeviceRuntimeFrameMismatchError("unsupported device runtime frame encoding")
 
-    decoded_devices = [copy.deepcopy(dict(row)) for row in devices if isinstance(row, Mapping)]
-    decoded_states = [copy.deepcopy(dict(row)) for row in device_states if isinstance(row, Mapping)]
+    decoded_devices = [copy.deepcopy(dict(row)) for row in devices if (type(row) is dict or isinstance(row, Mapping))]
+    decoded_states = [copy.deepcopy(dict(row)) for row in device_states if (type(row) is dict or isinstance(row, Mapping))]
     ordered_devices = _ordered_rows(decoded_devices, "devices")
     ordered_states = _ordered_rows(decoded_states, "device_states")
 

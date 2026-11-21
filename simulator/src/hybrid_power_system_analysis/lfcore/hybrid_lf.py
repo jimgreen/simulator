@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path

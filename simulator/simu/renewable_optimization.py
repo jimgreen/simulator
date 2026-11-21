@@ -852,6 +852,52 @@ def _blocked_island_result(
     )
 
 
+_ISLAND_WARM_START_CACHE: Dict[Tuple[str, Tuple[DeviceKey, ...]], np.ndarray] = {}
+_ISLAND_WARM_START_CACHE_MAX = 32
+
+
+def _select_slsqp_initial_guess(
+    island_id: str,
+    variables: Sequence[_Variable],
+    fallback: np.ndarray,
+    active_lower: np.ndarray,
+    active_upper: np.ndarray,
+    secondary_matrix: np.ndarray,
+    secondary_rhs: np.ndarray,
+    base_objective: Any,
+    balance_tolerance_kw: float,
+) -> np.ndarray:
+    """复用上一周期同拓扑可行解作为 SLSQP 热启动初值，仅在严格可行且不劣于基准解时采用。"""
+    key = (str(island_id), tuple(v.key for v in variables))
+    cached = _ISLAND_WARM_START_CACHE.get(key)
+    if cached is None or cached.shape != fallback.shape:
+        return fallback
+    candidate = np.clip(cached, active_lower, active_upper)
+    if not np.all(np.isfinite(candidate)):
+        return fallback
+    if secondary_matrix.shape[0]:
+        residual = float(np.max(np.abs(secondary_matrix @ candidate - secondary_rhs)))
+        if residual > balance_tolerance_kw:
+            return fallback
+    try:
+        if float(base_objective(candidate)) <= float(base_objective(fallback)) + 1e-9:
+            return candidate
+    except Exception:
+        return fallback
+    return fallback
+
+
+def _record_slsqp_warm_start(
+    island_id: str,
+    variables: Sequence[_Variable],
+    solution: np.ndarray,
+) -> None:
+    key = (str(island_id), tuple(v.key for v in variables))
+    if len(_ISLAND_WARM_START_CACHE) >= _ISLAND_WARM_START_CACHE_MAX and key not in _ISLAND_WARM_START_CACHE:
+        _ISLAND_WARM_START_CACHE.pop(next(iter(_ISLAND_WARM_START_CACHE)))
+    _ISLAND_WARM_START_CACHE[key] = np.array(solution, dtype=float, copy=True)
+
+
 def _solve_island(
     component_ids: Tuple[str, ...],
     variables: Sequence[_Variable],
@@ -1013,6 +1059,34 @@ def _solve_island(
             and np.max(np.abs(residual)) <= EPSILON
         )
 
+    def box_proven_infeasible(
+        active_lower: np.ndarray,
+        active_upper: np.ndarray,
+    ) -> bool:
+        """基于区间算术的严格必要条件检查：若任意平衡行或总和行必然越界，则直接短路 HiGHS 求解。"""
+        if matrix.shape[0] == 0:
+            return False
+        tol = 1e-6
+        pos = np.maximum(matrix, 0.0)
+        neg = np.minimum(matrix, 0.0)
+        row_min = pos @ active_lower + neg @ active_upper
+        row_max = pos @ active_upper + neg @ active_lower
+        if bool(np.any(row_min > rhs + tol) or np.any(row_max < rhs - tol)):
+            return True
+        if matrix.shape[0] >= 2:
+            total_row = np.sum(matrix, axis=0)
+            total_rhs = float(np.sum(rhs))
+            t_pos = np.maximum(total_row, 0.0)
+            t_neg = np.minimum(total_row, 0.0)
+            total_min = float(t_pos @ active_lower + t_neg @ active_upper)
+            total_max = float(t_pos @ active_upper + t_neg @ active_lower)
+            if total_min > total_rhs + tol or total_max < total_rhs - tol:
+                return True
+        return False
+
+    warm_cache_key = (str(island_id), tuple(item.key for item in ordered))
+    warm_cached = _ISLAND_WARM_START_CACHE.get(warm_cache_key)
+
     feasibility_values: Optional[np.ndarray] = None
     feasibility_success = already_feasible(current, normal_lower, normal_upper)
     if feasibility_success:
@@ -1020,7 +1094,10 @@ def _solve_island(
         # topology-stable case that point is already inside all active bounds,
         # so a separate HiGHS feasibility solve would only rediscover it.
         feasibility_values = current.copy()
-    else:
+    elif warm_cached is not None and already_feasible(warm_cached, normal_lower, normal_upper):
+        feasibility_success = True
+        feasibility_values = warm_cached.copy()
+    elif not box_proven_infeasible(normal_lower, normal_upper):
         feasibility = exact_balance_feasibility(normal_lower, normal_upper)
         feasibility_success = bool(feasibility.success and feasibility.x is not None)
         if feasibility_success:
@@ -1041,14 +1118,19 @@ def _solve_island(
         for index, item in enumerate(ordered):
             if item.kind == "renewable" and item.safety_lower_kw is not None:
                 safety_lower[index] = item.safety_lower_kw
-        safety_feasibility = exact_balance_feasibility(
-            safety_lower,
-            normal_upper,
-        )
-        if safety_feasibility.success and safety_feasibility.x is not None:
+        if warm_cached is not None and already_feasible(warm_cached, safety_lower, normal_upper):
             feasibility_success = True
-            feasibility_values = np.asarray(safety_feasibility.x, dtype=float)
+            feasibility_values = warm_cached.copy()
             active_lower = safety_lower
+        elif not box_proven_infeasible(safety_lower, normal_upper):
+            safety_feasibility = exact_balance_feasibility(
+                safety_lower,
+                normal_upper,
+            )
+            if safety_feasibility.success and safety_feasibility.x is not None:
+                feasibility_success = True
+                feasibility_values = np.asarray(safety_feasibility.x, dtype=float)
+                active_lower = safety_lower
 
     renewable_indexes = [index for index, item in enumerate(ordered) if item.kind == "renewable"]
     diesel_indexes = [index for index, item in enumerate(ordered) if item.kind == "diesel"]
@@ -1321,9 +1403,20 @@ def _solve_island(
                 }
             )
         active_bounds = list(zip(active_lower.tolist(), active_upper.tolist()))
+        initial_guess = _select_slsqp_initial_guess(
+            island_id,
+            ordered,
+            minimum_delta_values,
+            active_lower,
+            active_upper,
+            secondary_matrix,
+            secondary_rhs,
+            base_objective,
+            balance_tolerance_kw,
+        )
         solved_result = minimize(
             base_objective,
-            minimum_delta_values,
+            initial_guess,
             jac=base_gradient,
             bounds=active_bounds,
             constraints=constraints,
@@ -1354,6 +1447,8 @@ def _solve_island(
         if not solved_result.success or delta_drift > balance_tolerance_kw:
             solved_device_values = minimum_delta_values
             solved_balance_delta = minimum_delta
+        else:
+            _record_slsqp_warm_start(island_id, ordered, solved_device_values)
         bounds_valid = bool(
             np.all(solved_device_values >= active_lower - bound_tolerance_kw)
             and np.all(solved_device_values <= active_upper + bound_tolerance_kw)

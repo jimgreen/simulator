@@ -76,7 +76,7 @@ def measurement_rows_by_definition_index(
     row_list = list(rows)
     positional_fallback = len(row_list) == len(definition_rows)
     for row_position, row in enumerate(row_list):
-        if not isinstance(row, Mapping):
+        if not (type(row) is dict or isinstance(row, Mapping)):
             continue
         index = measurement_row_index(row)
         if contiguous:
@@ -100,7 +100,7 @@ def compact_measurement_delta(
     items = [
         item
         for item in payload.get("items", []) or []
-        if isinstance(item, Mapping)
+        if (type(item) is dict or isinstance(item, Mapping))
     ]
     frame = bool(payload.get("frame", bool(items) or payload.get("reset")))
     compact = {
@@ -152,7 +152,7 @@ def measurement_delta_items(payload: Mapping[str, Any]) -> list[Dict[str, Any]]:
         return [
             copy.deepcopy(dict(item))
             for item in payload.get("items", []) or []
-            if isinstance(item, Mapping)
+            if (type(item) is dict or isinstance(item, Mapping))
         ]
     simu_time = payload.get("simu_time", payload.get("time", "--"))
     wall_time = payload.get("wall_time", "--")
@@ -209,7 +209,7 @@ def _apply_measurement_array_frame(
     expected_definition_signature: Optional[str] = None,
 ) -> Dict[str, Any]:
     definition_rows = list(definitions)
-    if any(not isinstance(row, Mapping) for row in definition_rows):
+    if any(not (type(row) is dict or isinstance(row, Mapping)) for row in definition_rows):
         raise MeasurementArrayMismatchError("实时量测定义不完整，整帧数据已拒绝")
     try:
         count = int(payload.get("count"))
@@ -333,13 +333,13 @@ def apply_measurement_delta(
 
     merged: Dict[str, Any] = copy.deepcopy(dict(measurements or {}))
     scada_only = _measurement_payload_is_scada_only(payload)
-    definition_rows = [copy.deepcopy(dict(row)) for row in definitions if isinstance(row, Mapping)]
+    definition_rows = [copy.deepcopy(dict(row)) for row in definitions if (type(row) is dict or isinstance(row, Mapping))]
     if not merged.get("definitions"):
         merged["definitions"] = definition_rows
     definitions_by_name = {
         str(row.get("name", "")): row
         for row in (merged.get("definitions") or definition_rows)
-        if isinstance(row, Mapping) and str(row.get("name", ""))
+        if (type(row) is dict or isinstance(row, Mapping)) and str(row.get("name", ""))
     }
     if payload.get("reset") or scada_only:
         real_by_name: MutableMapping[str, Dict[str, Any]] = {}
@@ -348,12 +348,12 @@ def apply_measurement_delta(
         real_by_name = {
             str(row.get("name", "")): copy.deepcopy(dict(row))
             for row in merged.get("real", []) or []
-            if isinstance(row, Mapping) and str(row.get("name", ""))
+            if (type(row) is dict or isinstance(row, Mapping)) and str(row.get("name", ""))
         }
         scada_by_name = {
             str(row.get("name", "")): copy.deepcopy(dict(row))
             for row in merged.get("scada", []) or []
-            if isinstance(row, Mapping) and str(row.get("name", ""))
+            if (type(row) is dict or isinstance(row, Mapping)) and str(row.get("name", ""))
         }
 
     for item in measurement_delta_items(payload):

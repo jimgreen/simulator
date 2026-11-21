@@ -4,39 +4,100 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>模拟台 · IEC104 联动</title>
-  <link rel="stylesheet" href="/scada104.css">
-  <script src="/scada104.js" defer></script>
+  <script>
+    try {
+      if (localStorage.getItem("polarUiTheme") === "dark") {
+        document.documentElement.dataset.theme = "dark";
+      }
+    } catch (_e) {}
+  </script>
+  <link rel="stylesheet" href="/scada104.css?v=20261122-precision-ui">
+  <script src="/scada104.js?v=20261122-precision-ui" defer></script>
 </head>
 <body>
-  <header>
-    <h1>IEC104 联动</h1>
-    <nav aria-label="SCADA 工作台">
-      <a href="/channels">通道参数</a>
-      <a href="/points">四遥点表</a>
-      <a href="/communication">通信监视</a>
-      <a href="/logs">通信日志</a>
-    </nav>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <h1>IEC104 联动</h1>
+      </div>
+      <nav aria-label="SCADA 工作台">
+        <a href="/channels">通道参数</a>
+        <a href="/points">四遥点表</a>
+        <a href="/communication">通信监视</a>
+        <a href="/logs">通信日志</a>
+      </nav>
+      <button id="themeToggleButton" class="theme-toggle" type="button" title="切换深色/浅色主题" aria-label="切换深色或浅色主题">
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32 1.41-1.41" /></svg>
+      </button>
+    </div>
   </header>
   <main>
     <p id="database" class="path"></p>
-    <section aria-label="模型服务">
-      <table>
-        <thead><tr><th>模型</th><th>RTU</th><th>IEC104</th><th>状态</th><th>YC / YX / YK / YT</th><th>点表</th></tr></thead>
-        <tbody id="modelRows"><tr><td colspan="6">正在读取模型</td></tr></tbody>
-      </table>
-      <p id="bridgeError" class="error" role="status"></p>
+    <section class="card" aria-label="模型服务">
+      <div class="card-head">
+        <h2>模型通道状态</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>模型</th>
+              <th class="num">RTU</th>
+              <th class="mono">IEC104 地址</th>
+              <th>状态</th>
+              <th class="num">YC / YX / YK / YT</th>
+              <th>点表</th>
+            </tr>
+          </thead>
+          <tbody id="modelRows"><tr><td colspan="6" class="empty">正在读取模型</td></tr></tbody>
+        </table>
+      </div>
+      <p id="bridgeError" class="status-banner is-error" role="status"></p>
     </section>
-    <section aria-labelledby="commandTitle">
-      <h2 id="commandTitle">下发仿真指令</h2>
+    <section class="card" aria-labelledby="commandTitle">
+      <div class="card-head">
+        <h2 id="commandTitle">下发仿真指令</h2>
+      </div>
       <form id="commandForm">
-        <label>模型<select id="rtu" required><option value="">选择模型</option></select></label>
-        <label>类型<select id="kind"><option value="yk">遥控 YK</option><option value="yt">遥调 YT</option></select></label>
-        <label>点号<input id="point" type="number" min="1" step="1" required></label>
-        <label>指令值<input id="value" type="number" step="any" required></label>
-        <button id="send" type="submit">核对并下发</button>
+        <label>模型
+          <select id="rtu" required><option value="">选择模型</option></select>
+        </label>
+        <label>类型
+          <select id="kind">
+            <option value="yk">遥控 YK</option>
+            <option value="yt">遥调 YT</option>
+          </select>
+        </label>
+        <label class="field-wide">控制点
+          <select id="point" required><option value="">请先选择模型</option></select>
+        </label>
+        <label>指令值
+          <select id="valueSelect" required>
+            <option value="1">1 · 合 / 投入</option>
+            <option value="0">0 · 分 / 退出</option>
+          </select>
+          <input id="value" type="number" step="any" hidden>
+        </label>
+        <button id="send" class="primary" type="submit">核对并下发</button>
       </form>
-      <p id="receipt" role="status"></p>
+      <p id="receipt" class="status-banner" role="status"></p>
     </section>
   </main>
+
+  <dialog id="scadaConfirmDialog" class="confirm-dialog" aria-labelledby="scadaConfirmTitle">
+    <div class="confirm-card">
+      <div class="confirm-head">
+        <span class="confirm-badge">指令核对</span>
+        <h2 id="scadaConfirmTitle">确认下发仿真指令？</h2>
+      </div>
+      <p id="scadaConfirmDetail" class="confirm-detail"></p>
+      <div class="confirm-actions">
+        <button id="scadaConfirmCancel" type="button">取消</button>
+        <button id="scadaConfirmOk" class="primary" type="button">确认下发</button>
+      </div>
+    </div>
+  </dialog>
 </body>
 </html>
