@@ -264,9 +264,13 @@ def _process_health_payload(
         "model_id": target.model_id,
     }
     if exchange is not None:
-        payload["trainee_exchange"] = exchange.diagnostics()
+        exchange_diag = getattr(exchange, "diagnostics", None)
+        if callable(exchange_diag):
+            payload["trainee_exchange"] = exchange_diag()
     if renewable_manager is not None:
-        payload["renewable_control"] = renewable_manager.diagnostics()
+        renewable_diag = getattr(renewable_manager, "diagnostics", None)
+        if callable(renewable_diag):
+            payload["renewable_control"] = renewable_diag()
     return payload
 
 
