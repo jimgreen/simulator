@@ -1165,7 +1165,12 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                     "model": {"id": target.model_id},
                     "clock": target.clock_state(),
                 },
-                "process": _process_health_payload(),
+                "process": _process_health_payload(
+                    role=self._ctx.role,
+                    target=target,
+                    exchange=self._ctx.exchange,
+                    renewable_manager=self._ctx.renewable_manager,
+                ),
                 "compute": dict(getattr(target, "latest_compute", {}) or {}),
             }
             runner = getattr(target, "kernel_runner", None)

@@ -374,11 +374,17 @@ class TraineeRouteCacheTests(unittest.TestCase):
                 calls["ui_frame"] += 1
                 return {"model": {"id": "m1"}, "clock": {"step_count": 10}, "call": calls["ui_frame"]}
 
+            def diagnostics(self):
+                return {"active": True}
+
         class _StubRenewableManager:
             def __init__(self) -> None:
                 self._states = {
                     "m1": types.SimpleNamespace(revision=5, plan_revision=2, settings_revision=1)
                 }
+
+            def diagnostics(self):
+                return {"ready": True}
 
             def state_for_service(self, target_service, **kwargs):
                 calls["renewable"] += 1
@@ -398,6 +404,7 @@ class TraineeRouteCacheTests(unittest.TestCase):
 
         class _StubService:
             model_id = "m1"
+            model_name = "测试模型"
             service_instance_id = "inst-1"
             clock = types.SimpleNamespace(
                 step_count=10,
@@ -409,6 +416,9 @@ class TraineeRouteCacheTests(unittest.TestCase):
             )
             definition_snapshot = types.SimpleNamespace(revision="def-rev-1")
             command_history: list = []
+
+            def clock_state(self):
+                return {"step_count": 10, "state": "running"}
 
             def service_for(self, model_id=None):
                 return self
@@ -447,6 +457,15 @@ class TraineeRouteCacheTests(unittest.TestCase):
             PolarMicrogridHandler(sock, ("127.0.0.1", 50000), srv)
             status, headers, body = _parse_http_response(sock.raw_response)
             return status, headers, json.loads(body.decode("utf-8"))
+
+        # 0. /api/health 应正常返回 200 且包含进程诊断字段
+        sh, _, dh = _dispatch(b"GET /api/health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        self.assertEqual(sh, 200)
+        self.assertTrue(dh.get("ok"))
+        self.assertEqual(dh.get("process", {}).get("role"), "trainee")
+        self.assertEqual(dh.get("process", {}).get("model_id"), "m1")
+        self.assertTrue(dh.get("process", {}).get("trainee_exchange", {}).get("active"))
+        self.assertTrue(dh.get("process", {}).get("renewable_control", {}).get("ready"))
 
         # 1. /api/trainee/ui-frame 连续两次 GET 命中帧缓存，仅计算 1 次
         s1, _, d1 = _dispatch(b"GET /api/trainee/ui-frame?page=overview HTTP/1.1\r\nHost: localhost\r\n\r\n")
