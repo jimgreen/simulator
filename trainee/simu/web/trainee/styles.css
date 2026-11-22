@@ -8502,3 +8502,225 @@ textarea[aria-invalid="true"] {
     flex: 0 0 auto;
   }
 }
+
+/* ==========================================================================
+   2026-11-23 统一外壳布局：共享顶边栏 + 共享可折叠左侧导航栏
+   ========================================================================== */
+.app-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+}
+
+.app-sidebar {
+  flex: 0 0 184px;
+  width: 184px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  overflow: hidden;
+  z-index: 20;
+  transition: width 180ms cubic-bezier(0.2, 0, 0, 1), flex-basis 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.app-sidebar .page-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  flex-wrap: nowrap !important;
+  align-items: stretch;
+  gap: 3px;
+  padding: 10px 8px;
+  background: transparent !important;
+  border-bottom: none !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+.app-sidebar .page-nav button,
+.app-sidebar .app-sidebar-toggle {
+  width: 100%;
+  max-width: none !important;
+  height: 36px;
+  padding: 0 10px;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  transition: background 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+
+.app-sidebar .page-nav button:hover,
+.app-sidebar .app-sidebar-toggle:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+  border-color: transparent;
+}
+
+.app-sidebar .page-nav button.is-active {
+  background: var(--teal-soft) !important;
+  color: var(--teal) !important;
+  border-color: transparent !important;
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--teal);
+}
+
+.app-sidebar .nav-icon {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  opacity: 0.84;
+  transition: transform 180ms ease, opacity 150ms ease;
+}
+
+.app-sidebar .page-nav button.is-active .nav-icon {
+  opacity: 1;
+  color: var(--teal);
+}
+
+.app-sidebar .nav-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-sidebar-footer {
+  flex: 0 0 auto;
+  padding: 8px;
+  border-top: 1px solid var(--line);
+}
+
+/* 左侧边栏收起为紧凑图标态 */
+:root[data-sidebar-collapsed="true"] .app-sidebar {
+  flex: 0 0 56px;
+  width: 56px;
+}
+
+:root[data-sidebar-collapsed="true"] .app-sidebar .page-nav {
+  padding: 10px 6px;
+}
+
+:root[data-sidebar-collapsed="true"] .app-sidebar .app-sidebar-footer {
+  padding: 8px 6px;
+}
+
+:root[data-sidebar-collapsed="true"] .app-sidebar .page-nav button,
+:root[data-sidebar-collapsed="true"] .app-sidebar .app-sidebar-toggle {
+  justify-content: center;
+  padding: 0;
+}
+
+:root[data-sidebar-collapsed="true"] .app-sidebar .nav-label {
+  display: none;
+}
+
+:root[data-sidebar-collapsed="true"] .app-sidebar .sidebar-collapse-icon {
+  transform: rotate(180deg);
+}
+
+/* 暗黑 / 科幻 / 毛玻璃主题侧栏防穿帮精调 */
+:root[data-color-scheme="dark"] .app-sidebar {
+  background: var(--surface);
+  border-right-color: var(--line-strong);
+}
+
+:root[data-color-scheme="dark"] .app-sidebar .page-nav button:not(.is-active),
+:root[data-color-scheme="dark"] .app-sidebar .app-sidebar-toggle {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+:root[data-color-scheme="dark"] .app-sidebar .page-nav button:not(.is-active):hover,
+:root[data-color-scheme="dark"] .app-sidebar .app-sidebar-toggle:hover {
+  background: var(--surface-hover);
+  border-color: transparent;
+  color: var(--ink);
+}
+
+:root[data-theme="glassmorphism"] .app-sidebar {
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+}
+
+:root[data-theme="bento-grid"] .app-sidebar .page-nav button,
+:root[data-theme="bento-grid"] .app-sidebar .app-sidebar-toggle {
+  border-radius: 12px;
+}
+
+/* 右侧主工作区 */
+.app-workspace {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-workspace > .page-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* 窄屏自动切换为顶部横向导航条 */
+@media (max-width: 960px) {
+  .app-body {
+    flex-direction: column;
+  }
+
+  .app-sidebar,
+  :root[data-sidebar-collapsed="true"] .app-sidebar {
+    flex: 0 0 auto;
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .app-sidebar .page-nav {
+    flex-direction: row !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    padding: 6px 10px !important;
+    scrollbar-width: none;
+  }
+
+  .app-sidebar .page-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .app-sidebar .page-nav button {
+    width: auto;
+    padding: 0 10px !important;
+    justify-content: flex-start !important;
+  }
+
+  :root[data-sidebar-collapsed="true"] .app-sidebar .nav-label {
+    display: inline;
+  }
+
+  .app-sidebar-footer {
+    display: none;
+  }
+}

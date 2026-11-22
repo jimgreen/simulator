@@ -5,6 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>模拟台 · IEC104 联动</title>
   <script>
+    // 浏览器直接访问 /simulator104 时，无缝跳转至模拟台统一外壳并自动展开 IEC104 联动页签
+    try {
+      const p = String(window.location && window.location.pathname || "");
+      const qs = new URLSearchParams(window.location && window.location.search || "");
+      if (
+        qs.get("standalone") !== "1"
+        && (p === "/simulator104" || p === "/simulator104/")
+        && typeof window.location.replace === "function"
+      ) {
+        window.location.replace("/scada104");
+      }
+    } catch (_e) {}
     try {
       const rawLang = localStorage.getItem("polarUiLang") || "zh-CN";
       const validLangs = new Set(["zh-CN", "en-US", "ru-RU"]);

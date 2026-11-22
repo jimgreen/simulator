@@ -397,9 +397,41 @@
   }
 
   /**
+   * 共享左侧导航边栏折叠/展开与持久化（双端通用）
+   */
+  function initSharedSidebarToggle() {
+    const toggleBtn = document.getElementById("appSidebarToggle");
+    if (!toggleBtn || toggleBtn.dataset.bound === "true") return;
+    toggleBtn.dataset.bound = "true";
+    const applyCollapsed = (collapsed, persist = true) => {
+      document.documentElement.dataset.sidebarCollapsed = collapsed ? "true" : "false";
+      toggleBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      const label = tr(collapsed ? "展开侧栏" : "收起侧栏");
+      toggleBtn.title = label;
+      const span = toggleBtn.querySelector(".nav-label");
+      if (span) span.textContent = label;
+      if (persist) {
+        try {
+          localStorage.setItem("polarSidebarCollapsed", collapsed ? "1" : "0");
+        } catch (_e) {}
+      }
+      setTimeout(() => {
+        try { window.dispatchEvent(new Event("resize")); } catch (_e) {}
+      }, 180);
+    };
+    const initial = document.documentElement.dataset.sidebarCollapsed === "true";
+    applyCollapsed(initial, false);
+    toggleBtn.addEventListener("click", () => {
+      const next = document.documentElement.dataset.sidebarCollapsed !== "true";
+      applyCollapsed(next, true);
+    });
+  }
+
+  /**
    * 顶栏注入轻量 Ctrl+K 快捷入口按钮、全局快捷键与导航进度条监听
    */
   function initGlobalShortcutsAndChrome() {
+    initSharedSidebarToggle();
     const utilityGroup = document.querySelector(".topbar-utility-group");
     if (utilityGroup && !document.getElementById("uxCommandPaletteButton")) {
       const btn = document.createElement("button");

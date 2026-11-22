@@ -256,6 +256,8 @@ const SIMULATOR_PAGE_ROUTES = {
   "/runtime": "runtime",
   "/measurements": "measurements",
   "/logs": "logs",
+  "/scada104": "scada104",
+  "/simulator104": "scada104",
 };
 
 function normalizePagePath(pathname) {
@@ -312,8 +314,14 @@ function showPage(page, updateHash = true) {
   const target = state.pageSections?.[page] ? page : "overview";
   const previousPage = state.activePage || currentPageName();
   if (previousPage === "curves" && target !== "curves") cancelCurveRequests();
+  if (previousPage === "scada104" && target !== "scada104") {
+    window.Scada104Module?.setActive(false);
+  }
   state.activePage = target;
   mountPageSection(target);
+  if (target === "scada104") {
+    window.Scada104Module?.setActive(true);
+  }
   document.querySelectorAll("[data-nav-page]").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.navPage === target);
   });

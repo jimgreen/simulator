@@ -38,8 +38,13 @@
         document.documentElement.dataset.theme = "minimalist-light";
         document.documentElement.dataset.colorScheme = "light";
       }
+      try {
+        if (localStorage.getItem("polarSidebarCollapsed") === "1") {
+          document.documentElement.dataset.sidebarCollapsed = "true";
+        }
+      } catch (_e) {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20261123-ux-v2" />
+    <link rel="stylesheet" href="/styles.css?v=20261123-shell-v1" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -155,35 +160,75 @@
         </div>
       </header>
 
-      <nav class="page-nav" aria-label="模拟台主题导航">
-        <button data-nav-page="overview" class="is-active">主页</button>
-        <button data-nav-page="model">电网模型</button>
-        <button data-nav-page="diagram">接线图</button>
-        <button data-nav-page="curves">曲线设置</button>
-        <button data-nav-page="parameters">参数配置</button>
-        <button data-nav-page="manual-changes">人工修改</button>
-        <button data-nav-page="runtime">控制指令</button>
-        <button data-nav-page="measurements">实时量测</button>
-        <button data-nav-page="logs">运行日志</button>
-        <a class="scada104-link" href="/simulator104" target="_blank" rel="noopener">IEC104 联动</a>
-      </nav>
+      <div class="app-body">
+        <aside id="appSidebar" class="app-sidebar" aria-label="模拟台侧边导航">
+          <nav class="page-nav" aria-label="模拟台主题导航">
+            <button data-nav-page="overview" class="is-active" title="主页">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+              <span class="nav-label">主页</span>
+            </button>
+            <button data-nav-page="model" title="电网模型">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>
+              <span class="nav-label">电网模型</span>
+            </button>
+            <button data-nav-page="diagram" title="接线图">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.5 6h9M6.5 8.2 10.7 15.8M17.5 8.2 13.3 15.8"/></svg>
+              <span class="nav-label">接线图</span>
+            </button>
+            <button data-nav-page="curves" title="曲线设置">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="m6 15 4-4 3 3 6-7"/></svg>
+              <span class="nav-label">曲线设置</span>
+            </button>
+            <button data-nav-page="parameters" title="参数配置">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+              <span class="nav-label">参数配置</span>
+            </button>
+            <button data-nav-page="manual-changes" title="人工修改">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>
+              <span class="nav-label">人工修改</span>
+            </button>
+            <button data-nav-page="runtime" title="控制指令">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h8l-1 8 10-12h-8Z"/></svg>
+              <span class="nav-label">控制指令</span>
+            </button>
+            <button data-nav-page="measurements" title="实时量测">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12h4l2.5-6 4 12 2.5-6H22"/></svg>
+              <span class="nav-label">实时量测</span>
+            </button>
+            <button data-nav-page="logs" title="运行日志">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h6"/></svg>
+              <span class="nav-label">运行日志</span>
+            </button>
+            <button data-nav-page="scada104" title="IEC104 联动">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01M12 10v4"/></svg>
+              <span class="nav-label">IEC104 联动</span>
+            </button>
+          </nav>
+          <div class="app-sidebar-footer">
+            <button id="appSidebarToggle" class="app-sidebar-toggle" type="button" aria-expanded="true" title="收起侧栏">
+              <svg class="nav-icon sidebar-collapse-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/><path d="M4 5v14"/></svg>
+              <span class="nav-label">收起侧栏</span>
+            </button>
+          </div>
+        </aside>
 
-      <section
-        id="powerFlowFailureAlert"
-        class="power-flow-failure-alert"
-        role="alert"
-        aria-live="assertive"
-        hidden
-      >
-        <span class="alert-pulse-dot" aria-hidden="true"></span>
-        <div class="power-flow-failure-body">
-          <strong id="powerFlowFailureTitle">潮流计算失败，仿真已暂停</strong>
-          <p id="powerFlowFailureDetail"></p>
-        </div>
-        <button id="powerFlowFailureDismiss" class="alert-dismiss-button" type="button">暂收起</button>
-      </section>
+        <div class="app-workspace">
+          <section
+            id="powerFlowFailureAlert"
+            class="power-flow-failure-alert"
+            role="alert"
+            aria-live="assertive"
+            hidden
+          >
+            <span class="alert-pulse-dot" aria-hidden="true"></span>
+            <div class="power-flow-failure-body">
+              <strong id="powerFlowFailureTitle">潮流计算失败，仿真已暂停</strong>
+              <p id="powerFlowFailureDetail"></p>
+            </div>
+            <button id="powerFlowFailureDismiss" class="alert-dismiss-button" type="button">暂收起</button>
+          </section>
 
-      <main class="page-main">
+          <main class="page-main">
         <section class="page-section is-active" data-page="overview">
           <div class="overview-dashboard">
             <section class="panel overview-status-panel">
@@ -1355,7 +1400,160 @@
             <div id="runtimeLogPager" class="runtime-log-pager" aria-label="运行日志分页"></div>
           </section>
         </section>
+
+        <section class="page-section" data-page="scada104">
+          <div class="scada104-page-layout">
+            <div class="scada104-page-toolbar">
+              <div class="sub-tabs" role="tablist" aria-label="IEC104 视图切换">
+                <button type="button" class="is-active" data-scada104-tab="channels" role="tab" aria-selected="true">通道与指令</button>
+                <button type="button" data-scada104-tab="points" role="tab" aria-selected="false">四遥点表</button>
+                <button type="button" data-scada104-tab="logs" role="tab" aria-selected="false">通信日志</button>
+              </div>
+              <div class="scada104-page-meta">
+                <span id="scada104Database" class="scada104-db-path"></span>
+                <a id="scada104ExternalLink" class="compact-action-btn" href="#" target="_blank" rel="noopener" hidden>SCADA 工作台</a>
+              </div>
+            </div>
+
+            <p id="scada104BridgeError" class="scada104-banner is-error" role="status"></p>
+
+            <div class="scada104-view-pane" data-scada104-pane="channels">
+              <section class="panel scada104-panel" aria-label="模型通道状态">
+                <div class="panel-head">
+                  <h2>模型通道状态</h2>
+                  <div class="panel-actions">
+                    <button id="scada104RefreshStatusBtn" type="button" title="立即刷新模型通道状态">刷新状态</button>
+                  </div>
+                </div>
+                <div class="scada104-table-wrap">
+                  <table class="runtime-device-table scada104-table">
+                    <thead>
+                      <tr>
+                        <th>模型</th>
+                        <th class="numeric-cell">RTU</th>
+                        <th class="mono-cell">IEC104 地址</th>
+                        <th>状态</th>
+                        <th class="numeric-cell">YC / YX / YK / YT</th>
+                        <th>通道与点表操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="scada104ModelRows">
+                      <tr><td colspan="6" class="empty-state">正在读取模型</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="panel scada104-panel" aria-labelledby="scada104CommandTitle">
+                <div class="panel-head">
+                  <h2 id="scada104CommandTitle">下发仿真指令</h2>
+                  <div class="panel-actions">
+                    <input id="scada104PointSearch" class="scada104-search" type="search" placeholder="筛选控制点名称或点号…" aria-label="筛选控制点" autocomplete="off" />
+                    <button id="scada104RefreshPointsBtn" type="button" title="重新读取当前模型控制点列表">刷新点表</button>
+                  </div>
+                </div>
+                <form id="scada104CommandForm" class="scada104-command-form">
+                  <label class="scada104-field">模型
+                    <select id="scada104Rtu" required><option value="">选择模型</option></select>
+                  </label>
+                  <label class="scada104-field">类型
+                    <select id="scada104Kind">
+                      <option value="yk">遥控 YK</option>
+                      <option value="yt">遥调 YT</option>
+                    </select>
+                  </label>
+                  <label class="scada104-field scada104-field-wide">控制点
+                    <select id="scada104Point" required><option value="">请先选择模型</option></select>
+                  </label>
+                  <label class="scada104-field">指令值
+                    <select id="scada104ValueSelect" required>
+                      <option value="1">1 · 合 / 投入</option>
+                      <option value="0">0 · 分 / 退出</option>
+                    </select>
+                    <input id="scada104ValueInput" type="number" step="any" placeholder="输入设定值" hidden />
+                  </label>
+                  <button id="scada104SendBtn" class="primary" type="submit">核对并下发</button>
+                </form>
+                <p id="scada104PointMeta" class="scada104-point-meta"></p>
+                <p id="scada104Receipt" class="scada104-banner" role="status"></p>
+                <ul id="scada104RecentReceipts" class="scada104-receipt-history" aria-label="最近指令记录"></ul>
+              </section>
+            </div>
+
+            <div class="scada104-view-pane" data-scada104-pane="points" hidden>
+              <section class="panel scada104-panel scada104-fill-panel" aria-label="四遥点表">
+                <div class="panel-head">
+                  <h2>四遥点表</h2>
+                  <div class="panel-actions">
+                    <select id="scada104PointsRtuSelect" aria-label="点表模型"></select>
+                    <select id="scada104PointsKindSelect" aria-label="四遥类型">
+                      <option value="yc">遥测 YC</option>
+                      <option value="yx">遥信 YX</option>
+                      <option value="yk">遥控 YK</option>
+                      <option value="yt">遥调 YT</option>
+                    </select>
+                    <input id="scada104PointsSearch" class="scada104-search" type="search" placeholder="筛选测点名称或点号…" aria-label="筛选四遥点表" autocomplete="off" />
+                    <label class="inline-check-filter"><input id="scada104PausePointsRefresh" type="checkbox" /><span>暂停自动刷新</span></label>
+                    <button id="scada104ReloadPointsBtn" type="button">刷新</button>
+                  </div>
+                </div>
+                <div class="scada104-table-wrap is-tall">
+                  <table class="runtime-device-table scada104-table">
+                    <thead>
+                      <tr>
+                        <th class="numeric-cell is-sortable" data-scada104-sort="pnt_no" aria-sort="none">点号</th>
+                        <th class="is-sortable" data-scada104-sort="name" aria-sort="none">测点名称</th>
+                        <th class="mono-cell">仿真源名</th>
+                        <th class="numeric-cell is-sortable" data-scada104-sort="value" aria-sort="none">当前值</th>
+                        <th>质量/状态</th>
+                        <th>操作控制</th>
+                      </tr>
+                    </thead>
+                    <tbody id="scada104PointsTableBody">
+                      <tr><td colspan="6" class="empty-state">请选择模型查看点表</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+
+            <div class="scada104-view-pane" data-scada104-pane="logs" hidden>
+              <section class="panel scada104-panel scada104-fill-panel" aria-label="IEC104 通信日志">
+                <div class="panel-head">
+                  <h2>IEC104 通信日志</h2>
+                  <div class="panel-actions">
+                    <select id="scada104LogsRtuSelect" aria-label="日志模型"></select>
+                    <select id="scada104LogsLevelSelect" aria-label="日志级别">
+                      <option value="all">全部级别</option>
+                      <option value="INFO">INFO</option>
+                      <option value="WARN">WARN</option>
+                      <option value="ERROR">ERROR</option>
+                    </select>
+                    <input id="scada104LogsSearch" class="scada104-search" type="search" placeholder="筛选日志内容…" aria-label="筛选日志内容" autocomplete="off" />
+                    <button id="scada104ReloadLogsBtn" type="button">刷新日志</button>
+                  </div>
+                </div>
+                <div class="scada104-table-wrap is-tall">
+                  <table class="runtime-device-table scada104-table">
+                    <thead>
+                      <tr>
+                        <th class="mono-cell">时间</th>
+                        <th>级别</th>
+                        <th>内容</th>
+                      </tr>
+                    </thead>
+                    <tbody id="scada104LogsTableBody">
+                      <tr><td colspan="3" class="empty-state">请选择模型查看通信日志</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
       </main>
+        </div>
+      </div>
 
       <dialog id="runtimeLogDetailDialog" class="runtime-log-detail-dialog" aria-labelledby="runtimeLogDetailTitle">
         <section class="runtime-log-detail-shell">
@@ -1698,14 +1896,15 @@
       </div>
     </dialog>
     <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
-    <script defer src="/js/00-i18n.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/01-state-core.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/02-api-models.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/03-diagram-core.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/04-diagram-editor.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/05-curves.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/06-overview-runtime.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/07-measurements-faults.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/08-ux-enhancements.js?v=20261123-ux-v2"></script>
+    <script defer src="/js/00-i18n.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/01-state-core.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/02-api-models.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/03-diagram-core.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/04-diagram-editor.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/05-curves.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/06-overview-runtime.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/07-measurements-faults.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/08-ux-enhancements.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/09-scada104.js?v=20261123-shell-v1"></script>
   </body>
 </html>

@@ -583,6 +583,9 @@ const PHRASE_TRANSLATIONS = {
   "暂无在线模型，请在教员端启动模型服务。": ["No online models. Start a model service in Simulator.", "Нет активных моделей. Запустите службу модели в симуляторе."],
   "已发送": ["Sent", "Отправлено"],
   "失败": ["Failed", "Ошибка"],
+  "收起侧栏": ["Collapse Sidebar", "Свернуть меню"],
+  "展开侧栏": ["Expand Sidebar", "Развернуть меню"],
+  "未在日志对象中匹配到设备": ["No matching device found in log entry", "Устройство не найдено в записи журнала"],
 
   // 主页、边界、曲线与参数配置补充词条（实现静态 HTML 100% 三语全覆盖）
   "输入边界": ["Input Boundaries", "Входные границы"],

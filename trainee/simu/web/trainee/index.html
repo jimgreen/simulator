@@ -34,8 +34,13 @@
         document.documentElement.dataset.theme = "minimalist-light";
         document.documentElement.dataset.colorScheme = "light";
       }
+      try {
+        if (localStorage.getItem("polarSidebarCollapsed") === "1") {
+          document.documentElement.dataset.sidebarCollapsed = "true";
+        }
+      } catch (_e) {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20261123-ux-v2" />
+    <link rel="stylesheet" href="/styles.css?v=20261123-shell-v1" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -96,35 +101,75 @@
         </div>
       </header>
 
-      <nav class="page-nav" aria-label="学员台主题导航">
-        <button data-nav-page="overview" class="is-active">主页</button>
-        <button data-nav-page="model">电网模型</button>
-        <button data-nav-page="diagram">接线图</button>
-        <button data-nav-page="curves">曲线显示</button>
-        <button data-nav-page="measurements">实时量测</button>
-        <button data-nav-page="commands">控制指令</button>
-        <button data-nav-page="renewable">新能源控制</button>
-        <button data-nav-page="manual-changes">人工修改</button>
-        <button data-nav-page="parameters">参数配置</button>
-        <button data-nav-page="history">运行日志</button>
-      </nav>
+      <div class="app-body">
+        <aside id="appSidebar" class="app-sidebar" aria-label="学员台侧边导航">
+          <nav class="page-nav" aria-label="学员台主题导航">
+            <button data-nav-page="overview" class="is-active" title="主页">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+              <span class="nav-label">主页</span>
+            </button>
+            <button data-nav-page="model" title="电网模型">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>
+              <span class="nav-label">电网模型</span>
+            </button>
+            <button data-nav-page="diagram" title="接线图">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.5 6h9M6.5 8.2 10.7 15.8M17.5 8.2 13.3 15.8"/></svg>
+              <span class="nav-label">接线图</span>
+            </button>
+            <button data-nav-page="curves" title="曲线显示">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="m6 15 4-4 3 3 6-7"/></svg>
+              <span class="nav-label">曲线显示</span>
+            </button>
+            <button data-nav-page="measurements" title="实时量测">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12h4l2.5-6 4 12 2.5-6H22"/></svg>
+              <span class="nav-label">实时量测</span>
+            </button>
+            <button data-nav-page="commands" title="控制指令">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h8l-1 8 10-12h-8Z"/></svg>
+              <span class="nav-label">控制指令</span>
+            </button>
+            <button data-nav-page="renewable" title="新能源控制">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M2 12h3M19 12h3M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12"/></svg>
+              <span class="nav-label">新能源控制</span>
+            </button>
+            <button data-nav-page="manual-changes" title="人工修改">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>
+              <span class="nav-label">人工修改</span>
+            </button>
+            <button data-nav-page="parameters" title="参数配置">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+              <span class="nav-label">参数配置</span>
+            </button>
+            <button data-nav-page="history" title="运行日志">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h6"/></svg>
+              <span class="nav-label">运行日志</span>
+            </button>
+          </nav>
+          <div class="app-sidebar-footer">
+            <button id="appSidebarToggle" class="app-sidebar-toggle" type="button" aria-expanded="true" title="收起侧栏">
+              <svg class="nav-icon sidebar-collapse-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/><path d="M4 5v14"/></svg>
+              <span class="nav-label">收起侧栏</span>
+            </button>
+          </div>
+        </aside>
 
-      <section
-        id="powerFlowFailureAlert"
-        class="power-flow-failure-alert"
-        role="alert"
-        aria-live="assertive"
-        hidden
-      >
-        <span class="alert-pulse-dot" aria-hidden="true"></span>
-        <div class="power-flow-failure-body">
-          <strong id="powerFlowFailureTitle">模拟台潮流计算失败，仿真已暂停</strong>
-          <p id="powerFlowFailureDetail"></p>
-        </div>
-        <button id="powerFlowFailureDismiss" class="alert-dismiss-button" type="button">暂收起</button>
-      </section>
+        <div class="app-workspace">
+          <section
+            id="powerFlowFailureAlert"
+            class="power-flow-failure-alert"
+            role="alert"
+            aria-live="assertive"
+            hidden
+          >
+            <span class="alert-pulse-dot" aria-hidden="true"></span>
+            <div class="power-flow-failure-body">
+              <strong id="powerFlowFailureTitle">模拟台潮流计算失败，仿真已暂停</strong>
+              <p id="powerFlowFailureDetail"></p>
+            </div>
+            <button id="powerFlowFailureDismiss" class="alert-dismiss-button" type="button">暂收起</button>
+          </section>
 
-      <main class="page-main">
+          <main class="page-main">
         <section class="page-section is-active" data-page="overview">
           <div class="overview-dashboard trainee-overview-dashboard">
             <section class="panel overview-status-panel">
@@ -1219,6 +1264,8 @@
           </section>
         </section>
       </main>
+        </div>
+      </div>
     </div>
 
     <dialog id="modelManagementDialog" class="remote-control-dialog model-management-dialog" aria-labelledby="modelManagementTitle">
@@ -1707,15 +1754,15 @@
       </div>
     </dialog>
     <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
-    <script defer src="/js/00-i18n.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/01-state-core.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/02-diagram-core.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/03-diagram-editor.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/04-receive-models.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/05-curves.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/06-renewable-control.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/07-measurements-commands.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/08-bootstrap.js?v=20261123-ux-v2"></script>
-    <script defer src="/js/09-ux-enhancements.js?v=20261123-ux-v2"></script>
+    <script defer src="/js/00-i18n.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/01-state-core.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/02-diagram-core.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/03-diagram-editor.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/04-receive-models.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/05-curves.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/06-renewable-control.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/07-measurements-commands.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/08-bootstrap.js?v=20261123-shell-v1"></script>
+    <script defer src="/js/09-ux-enhancements.js?v=20261123-shell-v1"></script>
   </body>
 </html>
