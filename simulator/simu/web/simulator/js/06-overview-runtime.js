@@ -467,20 +467,6 @@ function initOverviewBottomColumnSplitter() {
   window.addEventListener("resize", () => applyOverviewBottomColumnRatio(overviewInitialBottomColumnRatio()));
 }
 
-function initialVerticalSplitRatios() {
-  const ratios = { ...VERTICAL_SPLIT_DEFAULTS };
-  try {
-    const stored = JSON.parse(localStorage.getItem(VERTICAL_SPLIT_STORAGE_KEY) || "{}");
-    Object.entries(stored || {}).forEach(([splitId, ratio]) => {
-      const numericRatio = Number(ratio);
-      if (Number.isFinite(numericRatio)) ratios[splitId] = numericRatio;
-    });
-  } catch (error) {
-    localStorage.removeItem(VERTICAL_SPLIT_STORAGE_KEY);
-  }
-  return ratios;
-}
-
 function verticalSplitDefaultRatio(splitId) {
   return VERTICAL_SPLIT_DEFAULTS[splitId] || VERTICAL_SPLIT_DEFAULT_RATIO;
 }
@@ -975,21 +961,6 @@ function normalizeRuntimeLog(item, fallbackSeq = 0) {
     detail,
     level: item.level || (item.missing ? "warn" : "info"),
   };
-}
-
-function readStoredRuntimeLogColumnWidths() {
-  try {
-    const stored = JSON.parse(localStorage.getItem(RUNTIME_LOG_COLUMN_WIDTHS_KEY) || "[]");
-    if (Array.isArray(stored) && stored.length === RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS.length) {
-      return stored.map((value, index) => Math.max(
-        RUNTIME_LOG_COLUMN_MIN_WIDTHS[index],
-        Number(value) || RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS[index],
-      ));
-    }
-  } catch (_error) {
-    // Invalid local UI state falls back to the default widths.
-  }
-  return [...RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS];
 }
 
 function runtimeLogColgroupHtml() {

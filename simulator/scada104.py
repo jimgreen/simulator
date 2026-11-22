@@ -235,12 +235,14 @@ class Bridge:
         *,
         bridge_db_path=None,
         offline_failure_threshold=DEFAULT_OFFLINE_FAILURE_THRESHOLD,
+        catalog_provider=None,
     ):
         self.server = server
         self.simulator_url = simulator_url
         self.first_port = first_port
         self.interval = interval
         self.offline_failure_threshold = max(1, int(offline_failure_threshold))
+        self.catalog_provider = catalog_provider
         self.stop = threading.Event()
         self.lock = threading.RLock()
         self.online = {}
@@ -533,10 +535,10 @@ class Bridge:
         return {"simulator_url": self.simulator_url, "database": self.server.database_info()["database"],
                 "models": models, "errors": errors}
 
-    def list_control_points(self, rtu, kind):
-        """查询指定 RTU 已绑定且活跃的遥控/遥调测点列表，供前端下拉选择。"""
-        if kind not in {"yk", "yt"}:
-            raise ValueError("控制点类型仅支持 yk 或 yt")
+    def list_points(self, rtu, kind):
+        """查询指定 RTU 的四遥点表（yc/yx/yk/yt），供前端点表预览与指令选择使用。"""
+        if kind not in KINDS:
+            raise ValueError("测点类型仅支持 yc、yx、yk 或 yt")
         with closing(self._bridge_con()) as bdb:
             bound = bdb.execute(
                 "SELECT pnt_no, source_name FROM simulator104_points "
@@ -546,29 +548,63 @@ class Bridge:
         if not bound:
             return []
         with self.server.store.connection() as db:
-            defs = {
-                int(pnt_no): (name, man_disable, auto_disable, value)
-                for pnt_no, name, man_disable, auto_disable, value in db.execute(
-                    f"SELECT pnt_no, name, man_disable, auto_disable, value FROM fes_{kind}_define WHERE rtu_id=?",
-                    (int(rtu),),
-                )
-            }
+            if kind in {"yk", "yt"}:
+                defs = {
+                    int(pnt_no): (name, man_disable, auto_disable, value, status, refresh_time)
+                    for pnt_no, name, man_disable, auto_disable, value, status, refresh_time in db.execute(
+                        f"SELECT pnt_no, name, man_disable, auto_disable, value, status, refresh_time "
+                        f"FROM fes_{kind}_define WHERE rtu_id=?",
+                        (int(rtu),),
+                    )
+                }
+            else:
+                defs = {
+                    int(pnt_no): (name, 0, 0, value, status, refresh_time)
+                    for pnt_no, name, value, status, refresh_time in db.execute(
+                        f"SELECT pnt_no, name, value, status, refresh_time "
+                        f"FROM fes_{kind}_define WHERE rtu_id=?",
+                        (int(rtu),),
+                    )
+                }
         items = []
         for pnt_no, source_name in bound:
             info = defs.get(int(pnt_no))
             if info is None:
                 continue
-            name, man_disable, auto_disable, value = info
+            name, man_disable, auto_disable, value, status, refresh_time = info
             items.append(
                 {
                     "pnt_no": int(pnt_no),
                     "name": str(name or source_name or ""),
                     "source_name": str(source_name or ""),
                     "disabled": bool(man_disable or auto_disable),
+                    "man_disable": bool(man_disable),
                     "value": value,
+                    "status": int(status) if status is not None else 128,
+                    "refresh_time": int(refresh_time) if refresh_time is not None else 0,
                 }
             )
         return items
+
+    def set_point_disabled(self, rtu, kind, pnt_no, disabled):
+        """切换遥控/遥调测点的人工禁操标志（man_disable），直接持久化至 SCADA SQLite 点库。"""
+        if kind not in {"yk", "yt"}:
+            raise ValueError("仅支持切换遥控(yk)或遥调(yt)测点的禁操状态")
+        flag = 1 if disabled else 0
+        with self.server.store.connection() as db, db:
+            cur = db.execute(
+                f"UPDATE fes_{kind}_define SET man_disable=? WHERE rtu_id=? AND pnt_no=?",
+                (flag, int(rtu), int(pnt_no)),
+            )
+            if cur.rowcount == 0:
+                raise ValueError(f"未找到测点 RTU {rtu} {kind.upper()}/{pnt_no}")
+        return {"rtu_id": int(rtu), "kind": kind, "pnt_no": int(pnt_no), "disabled": bool(flag)}
+
+    def list_control_points(self, rtu, kind):
+        """查询指定 RTU 已绑定且活跃的遥控/遥调测点列表，供前端下拉选择。"""
+        if kind not in {"yk", "yt"}:
+            raise ValueError("控制点类型仅支持 yk 或 yt")
+        return self.list_points(rtu, kind)
 
     def _read_points_for_model(self, base, name):
         """优先使用增量 /api/measurements/delta（稳态单次轻量请求），首次或定义变更自动回退全量同步。"""
@@ -666,7 +702,10 @@ class Bridge:
         catalog_ok = False
         catalog_models = None
         try:
-            catalog_models = request(self.simulator_url, "/api/models")["models"]
+            if callable(self.catalog_provider):
+                catalog_models = self.catalog_provider()
+            else:
+                catalog_models = request(self.simulator_url, "/api/models")["models"]
             catalog_ok = True
             with self.lock:
                 self.last_errors.pop("catalog", None)
@@ -980,6 +1019,322 @@ def main(argv=None):
             bridge.stop.set()
             worker.join(timeout=3.0)
             _HTTP_POOL.close()
+
+
+class _UnavailableScada104Host:
+    """当环境未安装 SCADA 协议库或手动禁用 IEC104 时使用的降级占位托管器。"""
+
+    available = False
+
+    def __init__(self, reason: str, *, scada_web_url: str = "") -> None:
+        self.reason = str(reason or "IEC104 联动服务未启用")
+        self.scada_web_url = str(scada_web_url or "").strip().rstrip("/")
+
+    def status(self) -> dict:
+        return {
+            "available": False,
+            "hosted_by": "simulator",
+            "database": "",
+            "scada_web_url": self.scada_web_url,
+            "models": [],
+            "errors": {"iec104": self.reason},
+        }
+
+    def list_points(self, rtu: int, kind: str) -> list:
+        raise RuntimeError(self.reason)
+
+    def set_point_disabled(self, rtu: int, kind: str, pnt_no: int, disabled: bool) -> dict:
+        raise RuntimeError(self.reason)
+
+    def execute_command(self, rtu: int, kind: str, point_no: int, value) -> dict:
+        raise RuntimeError(self.reason)
+
+    def control_channel(self, rtu: int, action: str) -> dict:
+        raise RuntimeError(self.reason)
+
+    def channel_logs(self, rtu: int, limit: int = 120) -> list:
+        return []
+
+    def close(self) -> None:
+        return
+
+
+class EmbeddedScada104Host:
+    """内嵌于 simulator Web 进程内的 IEC104 联动托管器（不启动 scdfe_s Web 端口）。"""
+
+    available = True
+
+    def __init__(
+        self,
+        *,
+        db_path: Path,
+        scada_root: Path,
+        simulator_url: str,
+        first_iec104_port: int = 2405,
+        interval: float = 0.5,
+        catalog_provider=None,
+        scada_web_url: str = "",
+    ) -> None:
+        scada_root_resolved = Path(scada_root).resolve()
+        if not scada_root_resolved.is_dir():
+            raise FileNotFoundError(f"SCADA 目录不存在: {scada_root_resolved}")
+        if str(scada_root_resolved) not in sys.path:
+            sys.path.insert(0, str(scada_root_resolved))
+        from scdfe_s.database import SimulatorStore
+        from scdfe_s.web.iec104_service import IEC104Service, IEC104ServiceError
+
+        self._iec104_service_cls = IEC104Service
+        self._iec104_error_cls = IEC104ServiceError
+        self.db_path = Path(db_path).resolve()
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.bridge_db_path = self.db_path.with_name(self.db_path.stem + "_bridge.sqlite3")
+        self.scada_web_url = str(scada_web_url or "").strip().rstrip("/")
+        migrate_bridge_tables_out(self.db_path, self.bridge_db_path)
+
+        self.store = SimulatorStore(self.db_path)
+        self._channel_lock = threading.RLock()
+        self._channel_cache = {}
+        self._startup_catalog = {}
+        self._closed = False
+
+        host_ref = self
+
+        class EmbeddedModelIEC104Service(IEC104Service):
+            def _on_command(self, event, rtu_id=None):
+                cause = str(getattr(event.cause, "name", event.cause)).upper()
+                if cause.endswith("ACTIVATION") and not cause.endswith("DEACTIVATION"):
+                    try:
+                        operation = (
+                            host_ref.bridge.command_target
+                            if event.selected
+                            else host_ref.bridge.execute
+                        )
+                        operation(rtu_id, event.kind, event.point_no, event.value)
+                    except Exception as exc:
+                        self._record("ERROR", f"仿真指令执行失败: {exc}", alert=True)
+                        return False
+                return super()._on_command(event, rtu_id)
+
+            def simulate_command(self, kind, point_no, value):
+                with self._lock:
+                    if self._server is None or kind not in {"yk", "yt"}:
+                        raise IEC104ServiceError("请启动模型 IEC104 通道并选择遥控或遥调点")
+                    try:
+                        rtu_id = self._server.rtu_id
+                        actual = self._server.prepare_value(kind, int(point_no), value)
+                    except Exception as exc:
+                        raise IEC104ServiceError(str(exc)) from exc
+                try:
+                    host_ref.bridge.execute(rtu_id, kind, int(point_no), actual)
+                except Exception as exc:
+                    raise IEC104ServiceError(str(exc)) from exc
+                with self._lock:
+                    if self._server is None:
+                        raise IEC104ServiceError("指令发送期间模型 IEC104 通道已停止")
+                    try:
+                        table, key, fields = self._point_update(kind, int(point_no), actual, rtu_id)
+                        fields["cmd_handle_time"] = fields["refresh_time"]
+                        item = self.store.update_row(table, key, fields)
+                        self._server.set_value(kind, int(point_no), value)
+                    except Exception as exc:
+                        raise IEC104ServiceError(str(exc)) from exc
+                    self._record("INFO", f"Web 指令已由仿真模型接受：{kind.upper()}/{point_no}={actual}")
+                    return {
+                        "kind": kind,
+                        "pnt_no": int(point_no),
+                        "value": actual,
+                        "item": item,
+                        "applied_to_simulator": True,
+                    }
+
+        self._model_iec104_cls = EmbeddedModelIEC104Service
+        self.bridge = Bridge(
+            self,
+            simulator_url,
+            first_iec104_port,
+            interval,
+            bridge_db_path=self.bridge_db_path,
+            catalog_provider=catalog_provider,
+        )
+        self._worker = threading.Thread(
+            target=self.bridge.poll,
+            name="simulator-embedded-iec104",
+            daemon=True,
+        )
+        self._worker.start()
+
+    def database_info(self) -> dict:
+        try:
+            display = str(self.db_path.relative_to(WORKSPACE_ROOT)).replace("\\", "/")
+        except ValueError:
+            display = str(self.db_path)
+        return {"database": display, "path": str(self.db_path)}
+
+    def channel_services(self, *, rtu_id=None) -> dict:
+        with self._channel_lock:
+            with self.store.connection() as con:
+                where = " WHERE r.channel_type='iec104'"
+                params = ()
+                if rtu_id is not None:
+                    where += " AND r.rtu_id=?"
+                    params = (int(rtu_id),)
+                rows = con.execute(
+                    "SELECT r.rtu_id, p.remote_port "
+                    "FROM fes_rtu_define r LEFT JOIN fes_channel_iec104_define p "
+                    "ON p.channel_id=r.channel_id" + where + " ORDER BY r.rtu_id",
+                    params,
+                ).fetchall()
+            result = {}
+            for row in rows:
+                rid = int(row[0])
+                slug = f"iec104-rtu-{rid}"
+                service = self._channel_cache.get(slug)
+                if service is None:
+                    config_path = self.store.db_path.with_name(f".scdfe_s_iec104_rtu_{rid}.json")
+                    service = self._model_iec104_cls(
+                        self.store,
+                        config_path=config_path,
+                        startup_catalog=self._startup_catalog,
+                    )
+                    service._config["rtu_id"] = rid
+                    if hasattr(service, "_configured_fields"):
+                        service._configured_fields.add("rtu_id")
+                    if row[1]:
+                        try:
+                            service._config["port"] = int(row[1])
+                        except (TypeError, ValueError):
+                            pass
+                    self._channel_cache[slug] = service
+                result[slug] = service
+            return result
+
+    def status(self) -> dict:
+        payload = self.bridge.status()
+        payload["available"] = True
+        payload["hosted_by"] = "simulator"
+        payload["scada_web_url"] = self.scada_web_url
+        return payload
+
+    def list_points(self, rtu: int, kind: str) -> list:
+        return self.bridge.list_points(int(rtu), kind)
+
+    def set_point_disabled(self, rtu: int, kind: str, pnt_no: int, disabled: bool) -> dict:
+        return self.bridge.set_point_disabled(int(rtu), kind, int(pnt_no), bool(disabled))
+
+    def execute_command(self, rtu: int, kind: str, point_no: int, value) -> dict:
+        if not self.bridge.is_bound_rtu(int(rtu)):
+            raise ValueError(f"RTU {rtu} 未绑定到仿真模型")
+        if kind not in {"yk", "yt"}:
+            raise ValueError("控制点类型仅支持 yk 或 yt")
+        channels = self.channel_services(rtu_id=int(rtu))
+        channel = channels.get(f"iec104-rtu-{int(rtu)}")
+        if channel is None:
+            raise ValueError(f"未找到 RTU {rtu} 的 IEC104 通道")
+        return channel.simulate_command(kind, int(point_no), value)
+
+    def control_channel(self, rtu: int, action: str) -> dict:
+        rid = int(rtu)
+        act = str(action or "").strip().lower()
+        if act not in {"start", "stop", "restart"}:
+            raise ValueError("通道操作仅支持 start、stop 或 restart")
+        channels = self.channel_services(rtu_id=rid)
+        channel = channels.get(f"iec104-rtu-{rid}")
+        if channel is None:
+            raise ValueError(f"未找到 RTU {rid} 的 IEC104 通道")
+        if act == "start":
+            ch_status = channel.start()
+        elif act == "stop":
+            ch_status = channel.stop()
+        else:
+            if channel.status().get("running"):
+                channel.stop()
+            ch_status = channel.start()
+        with self.bridge.lock:
+            if rid in self.bridge.models:
+                self.bridge.models[rid]["running"] = bool(ch_status.get("running"))
+                self.bridge.models[rid]["endpoint"] = ch_status.get("endpoint")
+        return {
+            "rtu_id": rid,
+            "action": act,
+            "running": bool(ch_status.get("running")),
+            "endpoint": ch_status.get("endpoint"),
+        }
+
+    def channel_logs(self, rtu: int, limit: int = 120) -> list:
+        rid = int(rtu)
+        channels = self.channel_services(rtu_id=rid)
+        channel = channels.get(f"iec104-rtu-{rid}")
+        if channel is None:
+            return []
+        max_items = max(1, min(500, int(limit or 120)))
+        with channel._log_lock:
+            rows = list(channel._logs)[-max_items:]
+        rows.reverse()
+        return rows
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.bridge.stop.set()
+        if self._worker.is_alive():
+            self._worker.join(timeout=3.0)
+        with self._channel_lock:
+            services = list(self._channel_cache.values())
+            self._channel_cache.clear()
+        for svc in services:
+            try:
+                svc.close()
+            except Exception:
+                pass
+        _HTTP_POOL.close()
+
+
+def create_embedded_scada104_host(
+    *,
+    simulator_url: str,
+    catalog_provider=None,
+    data_dir: Path | None = None,
+    db_path: Path | None = None,
+    scada_root: Path | None = None,
+    first_iec104_port: int = 2405,
+    interval: float = 0.5,
+    scada_web_url: str = "",
+):
+    """为 simulator Web 进程创建内嵌 IEC104 托管器；缺少外部 SCADA 库时优雅降级不阻塞主服务。"""
+    settings = {}
+    startup_file = APP_ROOT / "startup.json"
+    if startup_file.is_file():
+        try:
+            settings = json.loads(startup_file.read_text(encoding="utf-8"))
+        except Exception:
+            settings = {}
+    resolved_scada_root = Path(scada_root).resolve() if scada_root else default_scada_root(settings)
+    resolved_data_dir = (
+        Path(data_dir).resolve()
+        if data_dir is not None
+        else (APP_ROOT / settings.get("data_dir", "data")).resolve()
+    )
+    resolved_db = Path(db_path).resolve() if db_path else (resolved_data_dir / "scdfe_s.sqlite3")
+    resolved_web_url = str(scada_web_url or settings.get("scada_web_url") or "").strip().rstrip("/")
+    if not resolved_scada_root.is_dir():
+        return _UnavailableScada104Host(
+            f"未找到 SCADA 协议库目录（{resolved_scada_root}），请通过 SCADA_ROOT 或 startup.json(scada_root) 配置",
+            scada_web_url=resolved_web_url,
+        )
+    try:
+        return EmbeddedScada104Host(
+            db_path=resolved_db,
+            scada_root=resolved_scada_root,
+            simulator_url=simulator_url,
+            first_iec104_port=first_iec104_port,
+            interval=interval,
+            catalog_provider=catalog_provider,
+            scada_web_url=resolved_web_url,
+        )
+    except Exception as exc:
+        LOG.warning("内嵌 IEC104 联动服务初始化失败，已降级：%s", exc)
+        return _UnavailableScada104Host(f"IEC104 联动初始化失败：{exc}", scada_web_url=resolved_web_url)
 
 
 if __name__ == "__main__":

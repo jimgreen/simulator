@@ -52,6 +52,45 @@ const WEB_RUNTIME_CURRENT_IDS = {
   diagram_flow_electric_threshold_kw: "currentWebRuntimeDiagramElectricFlowThreshold",
   diagram_flow_hydrogen_threshold_nm3_h: "currentWebRuntimeDiagramHydrogenFlowThreshold",
 };
+function readStoredRuntimeLogColumnWidths() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(RUNTIME_LOG_COLUMN_WIDTHS_KEY) || "[]");
+    if (Array.isArray(stored) && stored.length === RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS.length) {
+      return stored.map((value, index) => Math.max(
+        RUNTIME_LOG_COLUMN_MIN_WIDTHS[index],
+        Number(value) || RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS[index],
+      ));
+    }
+  } catch (_error) {
+    // Invalid local UI state falls back to the default widths.
+  }
+  return [...RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS];
+}
+
+function readStoredCurveTreeCollapsedGroups() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CURVE_TREE_COLLAPSE_KEY) || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch (_error) {
+    // Invalid local UI state falls back to the default expanded tree.
+  }
+  return {};
+}
+
+function initialVerticalSplitRatios() {
+  const ratios = { ...VERTICAL_SPLIT_DEFAULTS };
+  try {
+    const stored = JSON.parse(localStorage.getItem(VERTICAL_SPLIT_STORAGE_KEY) || "{}");
+    Object.entries(stored || {}).forEach(([splitId, ratio]) => {
+      const numericRatio = Number(ratio);
+      if (Number.isFinite(numericRatio)) ratios[splitId] = numericRatio;
+    });
+  } catch (error) {
+    localStorage.removeItem(VERTICAL_SPLIT_STORAGE_KEY);
+  }
+  return ratios;
+}
+
 const state = {
   snapshot: null,
   activePage: "",
@@ -1304,11 +1343,7 @@ function redrawActiveSimulatorCharts() {
 }
 
 function initPrecisionUiChrome() {
-  // 动态修正 IEC104 联动导航主机名，支持局域网跨机访问。
-  const scadaLink = document.querySelector(".scada104-link");
-  if (scadaLink && window.location.hostname) {
-    scadaLink.href = `${window.location.protocol}//${window.location.hostname}:8878/simulator104`;
-  }
+  // IEC104 联动已迁入教员端同源 Web 后台（/simulator104），不再拼装外部 8878 端口。
   const themeBtn = $("themeToggleButton");
   if (themeBtn) {
     themeBtn.addEventListener("click", () => {

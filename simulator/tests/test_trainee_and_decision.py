@@ -559,6 +559,81 @@ class TraineeFrontendStructureTests(unittest.TestCase):
             self.assertTrue((web_dir / "js" / mod).is_file(), f"缺少模块文件：{mod}")
             self.assertIn(f"/js/{mod}", index_html, f"index.html 未引用：{mod}")
 
+    def test_all_frontend_bundles_load_in_script_order_without_reference_error(self) -> None:
+        """用 Node.js vm 模拟浏览器按 index.html 顺序执行全部三套前端脚本，杜绝跨文件顶层未定义引用。"""
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not available")
+        harness = r"""
+const fs = require("fs");
+const path = require("path");
+const vm = require("vm");
+function makeEl(id = "", tag = "DIV") {
+  const el = {
+    id, tagName: tag, dataset: {}, style: { setProperty(){}, removeProperty(){} },
+    hidden: false, open: false, disabled: false, checked: false, value: "", textContent: "", innerHTML: "", className: "",
+    width: 900, height: 260, clientWidth: 900, clientHeight: 260, offsetWidth: 900, offsetHeight: 260,
+    scrollTop: 0, scrollLeft: 0, children: [], childNodes: [], options: [],
+    classList: { add(){}, remove(){}, toggle(){ return false; }, contains(){ return false; } },
+    addEventListener(){}, removeEventListener(){}, dispatchEvent(){}, setAttribute(){}, getAttribute(){ return null; }, removeAttribute(){},
+    matches(){ return false; }, querySelector(){ return null; }, querySelectorAll(){ return []; }, closest(){ return null; }, contains(){ return false; },
+    append(){}, appendChild(c){ return c; }, replaceChildren(){}, remove(){}, focus(){}, select(){}, blur(){},
+    showModal(){ el.open = true; }, close(){ el.open = false; }, setCustomValidity(){}, reportValidity(){ return true; },
+    getBoundingClientRect(){ return { left:0, top:0, width:900, height:260, right:900, bottom:260 }; },
+    getContext(){ return { clearRect(){}, fillRect(){}, strokeRect(){}, beginPath(){}, moveTo(){}, lineTo(){}, stroke(){}, fill(){}, arc(){}, roundRect(){}, fillText(){}, measureText(){ return { width: 40 }; }, save(){}, restore(){}, setLineDash(){}, scale(){}, setTransform(){} }; },
+  };
+  return el;
+}
+function runBundle(htmlPath) {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const rootDir = path.dirname(htmlPath);
+  const scripts = [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((m) => m[1].split("?")[0]);
+  const ids = new Map();
+  for (const m of html.matchAll(/\bid="([^"]+)"/g)) ids.set(m[1], makeEl(m[1]));
+  const store = new Map();
+  const ctx = {
+    console, Math, Date, JSON, Number, String, Boolean, Array, Object, Set, Map, WeakMap, WeakSet, Promise, RegExp, Error, TypeError, URL, URLSearchParams, Blob,
+    setTimeout: () => 1, clearTimeout: () => {}, setInterval: () => 1, clearInterval: () => {},
+    requestAnimationFrame: () => 1, cancelAnimationFrame: () => {}, AbortController,
+    Element: function(){}, HTMLElement: function(){}, HTMLInputElement: function(){}, HTMLSelectElement: function(){},
+    Event: function(t){ this.type = t; }, CustomEvent: function(t, o){ this.type = t; this.detail = o?.detail; },
+    Option: function(){ return makeEl("", "OPTION"); }, ResizeObserver: function(){ return { observe(){}, disconnect(){} }; },
+    localStorage: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) },
+    sessionStorage: { getItem: () => null, setItem(){}, removeItem(){} },
+    navigator: { clipboard: { writeText: async () => {} } },
+    location: { protocol: "http:", hostname: "127.0.0.1", host: "127.0.0.1:18720", origin: "http://127.0.0.1:18720", search: "", hash: "", href: "http://127.0.0.1:18720/" },
+    fetch: async () => ({ ok: true, status: 200, text: async () => "{}", json: async () => ({}), headers: { get: () => null } }),
+    getComputedStyle: () => ({ getPropertyValue: () => "" }), devicePixelRatio: 1,
+    document: { documentElement: makeEl("html", "HTML"), body: makeEl("body", "BODY"), visibilityState: "visible", hidden: false, activeElement: null,
+      getElementById: (id) => ids.get(id) || null, querySelector: () => null, querySelectorAll: () => [],
+      createElement: (t) => makeEl("", String(t).toUpperCase()), addEventListener(){}, removeEventListener(){} },
+    addEventListener(){}, removeEventListener(){},
+  };
+  ctx.window = ctx; ctx.globalThis = ctx;
+  vm.createContext(ctx);
+  for (const rel of scripts) {
+    const fp = path.join(rootDir, rel.replace(/^\//, ""));
+    vm.runInContext(fs.readFileSync(fp, "utf8"), ctx, { filename: rel });
+  }
+}
+for (const p of process.argv.slice(1)) runBundle(p);
+"""
+        bundles = [
+            str(REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "index.html"),
+            str(REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "index.html"),
+            str(REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "scada104.html"),
+        ]
+        proc = subprocess.run(
+            [node, "-e", harness, *bundles],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(proc.returncode, 0, f"前端模块顺序加载失败：\n{proc.stderr}")
+
 
 if __name__ == "__main__":
     unittest.main()

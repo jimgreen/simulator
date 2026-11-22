@@ -2088,20 +2088,6 @@ function initOverviewBottomColumnSplitter() {
   window.addEventListener("resize", () => applyOverviewBottomColumnRatio(overviewInitialBottomColumnRatio()));
 }
 
-function initialVerticalSplitRatios() {
-  const ratios = { ...VERTICAL_SPLIT_DEFAULTS };
-  try {
-    const stored = JSON.parse(localStorage.getItem(VERTICAL_SPLIT_STORAGE_KEY) || "{}");
-    Object.entries(stored || {}).forEach(([splitId, ratio]) => {
-      const numericRatio = Number(ratio);
-      if (Number.isFinite(numericRatio)) ratios[splitId] = numericRatio;
-    });
-  } catch (error) {
-    localStorage.removeItem(VERTICAL_SPLIT_STORAGE_KEY);
-  }
-  return ratios;
-}
-
 function verticalSplitDefaultRatio(splitId) {
   return VERTICAL_SPLIT_DEFAULTS[splitId] || VERTICAL_SPLIT_DEFAULT_RATIO;
 }

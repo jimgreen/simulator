@@ -307,6 +307,20 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=30.0,
         help="Deprecated compatibility option retained for existing launch scripts.",
     )
+    parser.add_argument(
+        "--disable-iec104",
+        action="store_true",
+        help="Disable the embedded IEC104 bridge inside the simulator proxy process.",
+    )
+    parser.add_argument(
+        "--first-iec104-port",
+        type=int,
+        default=2405,
+        help="First TCP port assigned to embedded IEC104 slave channels.",
+    )
+    parser.add_argument("--scada-root", default=None, help="Optional SCADA protocol library root directory.")
+    parser.add_argument("--iec104-db", default=None, help="Optional SQLite database path for embedded IEC104 points.")
+    parser.add_argument("--scada-web-url", default="", help="Optional external scdfe_s workbench URL.")
     return parser.parse_args(argv)
 
 
@@ -339,12 +353,33 @@ def main(argv: Optional[list[str]] = None) -> int:
             startup_timeout_seconds=args.service_startup_timeout_seconds,
             log_dir=simu_loop.ROOT_DIR / "log" / "models",
         )
+        iec104_host = None
+        if not args.disable_iec104:
+            try:
+                import scada104 as _scada104_mod
+
+                iec104_host = _scada104_mod.create_embedded_scada104_host(
+                    simulator_url=f"http://{args.host}:{port}",
+                    catalog_provider=manager.models,
+                    data_dir=runtime_dir.parent,
+                    db_path=Path(args.iec104_db) if args.iec104_db else None,
+                    scada_root=Path(args.scada_root) if args.scada_root else None,
+                    first_iec104_port=args.first_iec104_port,
+                    scada_web_url=args.scada_web_url,
+                )
+            except ImportError:
+                iec104_host = None
+            except Exception as exc:
+                logging.getLogger("simu.web").warning("Embedded IEC104 startup skipped: %s", exc)
+                iec104_host = None
         server = make_simulator_proxy_server(
             (args.host, port),
             manager,
             static_root=static_root,
+            iec104_host=iec104_host,
         )
         print(f"simulator proxy: http://{args.host}:{port}/")
+        print(f"iec104 console: http://{args.host}:{port}/simulator104")
         print(f"runtime dir: {runtime_dir}")
         print(f"models dir: {manager.models_root}")
         print(f"models: {', '.join(item['id'] for item in manager.models())}")

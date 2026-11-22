@@ -9,6 +9,7 @@ const text = (tag, value, className = "") => {
 const REFRESH_INTERVAL_MS = 1800;
 const MAX_RECENT_RECEIPTS = 5;
 
+let activeViewTab = "channels";
 let loadedPointScope = "";
 let allLoadedPoints = [];
 let pointItemsByNo = new Map();
@@ -19,6 +20,9 @@ let refreshTimerId = null;
 let refreshInFlight = false;
 let lastModelsRenderKey = "";
 let lastRtuOptionsKey = "";
+let lastAllRtuOptionsKey = "";
+let latestModels = [];
+let loadedPointsTableItems = [];
 const recentReceipts = [];
 
 function initThemeToggle() {
@@ -34,16 +38,33 @@ function initThemeToggle() {
   });
 }
 
-function confirmScadaCommand(detailText, { danger = false, confirmLabel = "确认下发" } = {}) {
+function setActiveViewTab(tab) {
+  if (!["channels", "points", "logs"].includes(tab)) return;
+  activeViewTab = tab;
+  document.querySelectorAll("[data-view-tab]").forEach((btn) => {
+    const active = btn.dataset.viewTab === tab;
+    btn.classList.toggle("is-active", active);
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  document.querySelectorAll("[data-view-pane]").forEach((pane) => {
+    pane.hidden = pane.dataset.viewPane !== tab;
+  });
+  if (tab === "points") loadPointsTable();
+  else if (tab === "logs") loadChannelLogs();
+}
+
+function confirmScadaCommand(detailText, { title = "确认执行操作？", danger = false, confirmLabel = "确认执行" } = {}) {
   const dialog = get("scadaConfirmDialog");
+  const titleNode = get("scadaConfirmTitle");
   const detailNode = get("scadaConfirmDetail");
   const cancelBtn = get("scadaConfirmCancel");
   const okBtn = get("scadaConfirmOk");
   if (!dialog || !cancelBtn || !okBtn || typeof dialog.showModal !== "function") {
-    return Promise.resolve(window.confirm(detailText));
+    return Promise.resolve(window.confirm(`${title}\n${detailText}`));
   }
   if (dialog.open) return Promise.resolve(false);
   dialog.classList.toggle("is-danger", Boolean(danger));
+  if (titleNode) titleNode.textContent = title;
   okBtn.className = danger ? "danger" : "primary";
   okBtn.textContent = confirmLabel;
   if (detailNode) detailNode.textContent = detailText;
@@ -209,6 +230,154 @@ async function loadControlPoints(force = false) {
   }
 }
 
+function renderPointsTableRows() {
+  const tbody = get("pointsTableBody");
+  if (!tbody) return;
+  const kind = get("pointsKindSelect")?.value || "yc";
+  const rtu = Number(get("pointsRtuSelect")?.value || 0);
+  const keyword = String(get("pointsTableSearch")?.value || "").trim().toLowerCase();
+  const filtered = keyword
+    ? loadedPointsTableItems.filter((item) => (
+      `${item.pnt_no} ${item.name || ""} ${item.source_name || ""}`.toLowerCase().includes(keyword)
+    ))
+    : loadedPointsTableItems;
+  if (!filtered.length) {
+    const cell = text("td", loadedPointsTableItems.length ? "无匹配测点" : "暂无测点数据", "empty");
+    cell.colSpan = 6;
+    const tr = document.createElement("tr");
+    tr.append(cell);
+    tbody.replaceChildren(tr);
+    return;
+  }
+  const rows = filtered.map((item) => {
+    const tr = document.createElement("tr");
+    tr.append(text("td", String(item.pnt_no), "num"));
+    tr.append(text("td", item.name || item.source_name || ""));
+    tr.append(text("td", item.source_name || "", "mono"));
+    const valStr = item.value === null || item.value === undefined ? "—" : String(item.value);
+    tr.append(text("td", valStr, "num"));
+
+    const statusTd = document.createElement("td");
+    const isValid = Number(item.status) === 0;
+    const pill = text("span", isValid ? "有效" : `无效(${item.status ?? 128})`, isValid ? "pill is-ok" : "pill is-off");
+    statusTd.append(pill);
+    tr.append(statusTd);
+
+    const opTd = document.createElement("td");
+    if (kind === "yk" || kind === "yt") {
+      const btn = text("button", item.disabled ? "恢复操作" : "禁止操作", item.disabled ? "row-btn" : "row-btn is-danger");
+      btn.type = "button";
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await api("/api/simulator104/points/disable", {
+            rtu_id: rtu,
+            kind,
+            pnt_no: item.pnt_no,
+            disabled: !item.disabled,
+          });
+          await loadPointsTable();
+          await loadControlPoints(true);
+        } catch (err) {
+          get("bridgeError").textContent = err.message;
+        } finally {
+          btn.disabled = false;
+        }
+      });
+      opTd.append(btn);
+    } else {
+      opTd.append(text("span", "只读", "pill is-off"));
+    }
+    tr.append(opTd);
+    return tr;
+  });
+  tbody.replaceChildren(...rows);
+}
+
+async function loadPointsTable() {
+  const rtu = get("pointsRtuSelect")?.value || "";
+  const kind = get("pointsKindSelect")?.value || "yc";
+  const tbody = get("pointsTableBody");
+  if (!tbody) return;
+  if (!rtu) {
+    loadedPointsTableItems = [];
+    renderPointsTableRows();
+    return;
+  }
+  try {
+    const data = await api(`/api/simulator104/points?rtu_id=${encodeURIComponent(rtu)}&kind=${encodeURIComponent(kind)}`);
+    loadedPointsTableItems = Array.isArray(data.items) ? data.items : [];
+    renderPointsTableRows();
+  } catch (err) {
+    loadedPointsTableItems = [];
+    const cell = text("td", `加载点表失败：${err.message}`, "empty");
+    cell.colSpan = 6;
+    const tr = document.createElement("tr");
+    tr.append(cell);
+    tbody.replaceChildren(tr);
+  }
+}
+
+async function loadChannelLogs() {
+  const rtu = get("logsRtuSelect")?.value || "";
+  const tbody = get("logsTableBody");
+  if (!tbody) return;
+  if (!rtu) {
+    const cell = text("td", "请选择模型查看通信日志", "empty");
+    cell.colSpan = 3;
+    const tr = document.createElement("tr");
+    tr.append(cell);
+    tbody.replaceChildren(tr);
+    return;
+  }
+  try {
+    const data = await api(`/api/simulator104/logs?rtu_id=${encodeURIComponent(rtu)}&limit=120`);
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (!items.length) {
+      const cell = text("td", "暂无通道通信日志", "empty");
+      cell.colSpan = 3;
+      const tr = document.createElement("tr");
+      tr.append(cell);
+      tbody.replaceChildren(tr);
+      return;
+    }
+    const rows = items.map((item) => {
+      const tr = document.createElement("tr");
+      tr.append(text("td", String(item.time || ""), "mono"));
+      const lvl = String(item.level || "INFO").toUpperCase();
+      const lvlTd = document.createElement("td");
+      const cls = lvl === "ERROR" ? "pill is-warn" : (lvl === "INFO" ? "pill is-ok" : "pill is-off");
+      lvlTd.append(text("span", lvl, cls));
+      tr.append(lvlTd);
+      tr.append(text("td", String(item.message || ""), "log-msg"));
+      return tr;
+    });
+    tbody.replaceChildren(...rows);
+  } catch (err) {
+    const cell = text("td", `加载通信日志失败：${err.message}`, "empty");
+    cell.colSpan = 3;
+    const tr = document.createElement("tr");
+    tr.append(cell);
+    tbody.replaceChildren(tr);
+  }
+}
+
+async function controlChannel(model, action) {
+  if (action === "stop") {
+    const ok = await confirmScadaCommand(
+      `目标：${model.model} · RTU ${model.rtu_id}（${model.endpoint?.host || ""}:${model.endpoint?.port || ""}）`,
+      { title: "确认停止 IEC104 通道？", danger: true, confirmLabel: "确认停止" },
+    );
+    if (!ok) return;
+  }
+  try {
+    await api("/api/simulator104/channel", { rtu_id: Number(model.rtu_id), action });
+    await refresh(true);
+  } catch (err) {
+    get("bridgeError").textContent = `通道控制失败：${err.message}`;
+  }
+}
+
 function pushReceiptHistory(message, isError = false) {
   const now = new Date();
   const stamp = [now.getHours(), now.getMinutes(), now.getSeconds()]
@@ -248,6 +417,23 @@ function syncSelectedModelRowHighlight() {
   });
 }
 
+function syncAuxiliaryRtuSelects(models) {
+  const key = models.map((m) => `${m.rtu_id}:${m.model}`).join("|");
+  if (key === lastAllRtuOptionsKey) return;
+  lastAllRtuOptionsKey = key;
+  for (const id of ["pointsRtuSelect", "logsRtuSelect"]) {
+    const sel = get(id);
+    if (!sel) continue;
+    const prev = sel.value;
+    const opts = models.length
+      ? models.map((m) => new Option(`${m.model} · RTU ${m.rtu_id}`, String(m.rtu_id)))
+      : [new Option("暂无模型", "")];
+    sel.replaceChildren(...opts);
+    if (opts.some((opt) => opt.value === prev)) sel.value = prev;
+    else if (opts.length) sel.value = opts[0].value;
+  }
+}
+
 async function refresh(manual = false) {
   if (document.hidden && !manual) return;
   if (refreshInFlight) return;
@@ -259,11 +445,25 @@ async function refresh(manual = false) {
       signal: statusAbortController.signal,
     });
     const models = Array.isArray(state?.models) ? state.models : [];
+    latestModels = models;
     const errors = state?.errors && typeof state.errors === "object" ? state.errors : {};
-    get("database").textContent = String(state?.database || "");
+    get("database").textContent = state?.database ? `点库：${state.database}（托管于模拟台 Web）` : "";
     get("bridgeError").textContent = Object.entries(errors)
       .map(([key, value]) => `${key}：${value}`)
       .join(" · ");
+
+    const extLink = get("externalScadaLink");
+    if (extLink) {
+      const extUrl = String(state?.scada_web_url || "").trim();
+      if (extUrl) {
+        extLink.href = extUrl;
+        extLink.hidden = false;
+      } else {
+        extLink.hidden = true;
+      }
+    }
+
+    syncAuxiliaryRtuSelects(models);
 
     const selectedRtu = get("rtu").value;
     const onlineModels = models.filter((model) => model?.online && model?.running);
@@ -323,15 +523,43 @@ async function refresh(manual = false) {
 
         const pts = model.points || {};
         row.append(text("td", ["yc", "yx", "yk", "yt"].map((kind) => pts[kind] ?? 0).join(" / "), "num"));
-        const cell = document.createElement("td");
-        const link = text("a", "编辑点表");
-        link.href = `/points?rtu_id=${encodeURIComponent(model.rtu_id)}`;
-        cell.append(link);
-        row.append(cell);
+
+        const actionCell = document.createElement("td");
+        const box = document.createElement("div");
+        box.className = "row-actions";
+        const toggleBtn = text(
+          "button",
+          model.running ? "停止" : "启动",
+          model.running ? "row-btn is-danger" : "row-btn",
+        );
+        toggleBtn.type = "button";
+        toggleBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          controlChannel(model, model.running ? "stop" : "start");
+        });
+        const pointsBtn = text("button", "点表", "row-btn");
+        pointsBtn.type = "button";
+        pointsBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const sel = get("pointsRtuSelect");
+          if (sel) sel.value = String(model.rtu_id);
+          setActiveViewTab("points");
+        });
+        const logsBtn = text("button", "日志", "row-btn");
+        logsBtn.type = "button";
+        logsBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const sel = get("logsRtuSelect");
+          if (sel) sel.value = String(model.rtu_id);
+          setActiveViewTab("logs");
+        });
+        box.append(toggleBtn, pointsBtn, logsBtn);
+        actionCell.append(box);
+        row.append(actionCell);
         return row;
       });
       if (!rows.length) {
-        const cell = text("td", "暂无在线模型，请在教员端启动模型服务。", "empty");
+        const cell = text("td", "暂无在线模型，请在模拟台启动模型服务。", "empty");
         cell.colSpan = 6;
         const row = document.createElement("tr");
         row.append(cell);
@@ -342,6 +570,8 @@ async function refresh(manual = false) {
       syncSelectedModelRowHighlight();
     }
     await loadControlPoints(false);
+    if (activeViewTab === "points" && manual) await loadPointsTable();
+    else if (activeViewTab === "logs" && manual) await loadChannelLogs();
   } catch (error) {
     if (error?.name !== "AbortError") {
       get("bridgeError").textContent = error.message;
@@ -352,8 +582,12 @@ async function refresh(manual = false) {
   }
 }
 
+document.querySelectorAll("[data-view-tab]").forEach((btn) => {
+  btn.addEventListener("click", () => setActiveViewTab(btn.dataset.viewTab));
+});
+
 get("modelRows").addEventListener("click", (event) => {
-  if (event.target instanceof Element && event.target.closest("a")) return;
+  if (event.target instanceof Element && event.target.closest("a, button")) return;
   const row = event.target instanceof Element ? event.target.closest("tr.is-selectable[data-rtu-id]") : null;
   if (!row) return;
   const rtuSelect = get("rtu");
@@ -391,6 +625,13 @@ get("refreshPointsBtn")?.addEventListener("click", () => {
   loadControlPoints(true);
 });
 
+get("pointsRtuSelect")?.addEventListener("change", () => loadPointsTable());
+get("pointsKindSelect")?.addEventListener("change", () => loadPointsTable());
+get("pointsTableSearch")?.addEventListener("input", () => renderPointsTableRows());
+get("reloadPointsTableBtn")?.addEventListener("click", () => loadPointsTable());
+get("logsRtuSelect")?.addEventListener("change", () => loadChannelLogs());
+get("reloadLogsBtn")?.addEventListener("click", () => loadChannelLogs());
+
 get("commandForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const rtu = Number(get("rtu").value);
@@ -422,12 +663,18 @@ get("commandForm").addEventListener("submit", async (event) => {
     const confirmed = await confirmScadaCommand(
       `目标：RTU ${rtu} · ${displayName} → ${valueLabel}`,
       {
+        title: "确认下发仿真指令？",
         danger: isHighRisk,
         confirmLabel: isHighRisk ? "确认分闸/退出" : "确认下发",
       },
     );
     if (!confirmed) return;
-    const result = await api(`/api/rtus/${rtu}/commands/${kind}/${point}`, { value });
+    const result = await api("/api/simulator104/commands", {
+      rtu_id: rtu,
+      kind,
+      pnt_no: point,
+      value,
+    });
     if (result.item?.applied_to_simulator !== true) throw new Error("尚未收到模型接受回执。");
     const msg = `模型已接受 ${displayName} = ${valueLabel}`;
     receipt.textContent = msg;

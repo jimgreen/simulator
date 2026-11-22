@@ -493,3 +493,95 @@ button.danger {
 button.danger:hover {
   filter: brightness(0.92);
 }
+
+.topbar-right {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-right .theme-toggle {
+  margin-left: 0;
+}
+
+.tab-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab-btn {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tab-btn:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+.tab-btn.is-active {
+  background: rgba(13, 148, 136, 0.12);
+  border-color: rgba(13, 148, 136, 0.28);
+  color: var(--teal);
+  font-weight: 600;
+}
+
+.nav-link {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-subtle);
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.nav-link:hover {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.row-btn {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-radius: 5px;
+  background: var(--surface-subtle);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.row-btn:hover {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+.row-btn.is-danger:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+td.log-msg {
+  white-space: normal;
+  word-break: break-word;
+  max-width: 680px;
+}

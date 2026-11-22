@@ -14,7 +14,7 @@
         if (savedTheme === "dark") document.documentElement.dataset.theme = "dark";
       } catch (_e) {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20261123-opt" />
+    <link rel="stylesheet" href="/styles.css?v=20261123-fix-init" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -103,7 +103,7 @@
         <button data-nav-page="runtime">控制指令</button>
         <button data-nav-page="measurements">实时量测</button>
         <button data-nav-page="logs">运行日志</button>
-        <a class="scada104-link" href="http://127.0.0.1:8878/simulator104" target="_blank" rel="noopener">IEC104 联动</a>
+        <a class="scada104-link" href="/simulator104" target="_blank" rel="noopener">IEC104 联动</a>
       </nav>
 
       <section
@@ -1636,12 +1636,12 @@
       </div>
     </dialog>
     <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
-    <script defer src="/js/01-state-core.js?v=20261123-opt"></script>
-    <script defer src="/js/02-api-models.js?v=20261123-opt"></script>
-    <script defer src="/js/03-diagram-core.js?v=20261123-opt"></script>
-    <script defer src="/js/04-diagram-editor.js?v=20261123-opt"></script>
-    <script defer src="/js/05-curves.js?v=20261123-opt"></script>
-    <script defer src="/js/06-overview-runtime.js?v=20261123-opt"></script>
-    <script defer src="/js/07-measurements-faults.js?v=20261123-opt"></script>
+    <script defer src="/js/01-state-core.js?v=20261123-fix-init"></script>
+    <script defer src="/js/02-api-models.js?v=20261123-fix-init"></script>
+    <script defer src="/js/03-diagram-core.js?v=20261123-fix-init"></script>
+    <script defer src="/js/04-diagram-editor.js?v=20261123-fix-init"></script>
+    <script defer src="/js/05-curves.js?v=20261123-fix-init"></script>
+    <script defer src="/js/06-overview-runtime.js?v=20261123-fix-init"></script>
+    <script defer src="/js/07-measurements-faults.js?v=20261123-fix-init"></script>
   </body>
 </html>

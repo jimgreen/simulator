@@ -60,9 +60,16 @@ def make_simulator_proxy_server(
     manager: SimulatorClusterManager,
     *,
     static_root: str | Path,
+    iec104_host: Any = None,
 ) -> ThreadingHTTPServer:
     root = Path(static_root).resolve()
     static_cache = StaticAssetCache()
+
+    def _require_iec104_host() -> Any:
+        if iec104_host is None or not getattr(iec104_host, "available", False):
+            reason = getattr(iec104_host, "reason", "") or "IEC104 联动后台服务未启用"
+            raise RuntimeError(reason)
+        return iec104_host
 
     class SimulatorProxyHandler(BaseHTTPRequestHandler):
         server_version = "PolarMicrogridProxy/0.2"
@@ -75,6 +82,9 @@ def make_simulator_proxy_server(
             "/api/models/clone",
             "/api/models/delete",
             "/api/models/import-definitions",
+            "/api/simulator104/commands",
+            "/api/simulator104/channel",
+            "/api/simulator104/points/disable",
         }
 
         def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
@@ -110,6 +120,49 @@ def make_simulator_proxy_server(
                     self._send_json({"service_suggestion": manager.suggest_service_address()})
                 elif path == "/api/trainee-link":
                     self._send_trainee_link()
+                elif path == "/api/simulator104/status":
+                    if iec104_host is None:
+                        self._send_json(
+                            {
+                                "available": False,
+                                "hosted_by": "simulator",
+                                "database": "",
+                                "scada_web_url": "",
+                                "models": [],
+                                "errors": {"iec104": "IEC104 联动后台服务未启用"},
+                            }
+                        )
+                    else:
+                        self._send_json(iec104_host.status())
+                elif path == "/api/simulator104/points":
+                    host = _require_iec104_host()
+                    query = parse_qs(urlparse(self.path).query)
+                    raw_rtu = str((query.get("rtu_id") or [""])[0]).strip()
+                    raw_kind = str((query.get("kind") or ["yk"])[0]).strip().lower()
+                    if not raw_rtu.isdigit():
+                        raise ValueError("请指定有效的 rtu_id")
+                    items = host.list_points(int(raw_rtu), raw_kind)
+                    self._send_json({"rtu_id": int(raw_rtu), "kind": raw_kind, "items": items})
+                elif path == "/api/simulator104/logs":
+                    host = _require_iec104_host()
+                    query = parse_qs(urlparse(self.path).query)
+                    raw_rtu = str((query.get("rtu_id") or [""])[0]).strip()
+                    raw_limit = str((query.get("limit") or ["120"])[0]).strip()
+                    if not raw_rtu.isdigit():
+                        raise ValueError("请指定有效的 rtu_id")
+                    limit = int(raw_limit) if raw_limit.isdigit() else 120
+                    items = host.channel_logs(int(raw_rtu), limit=limit)
+                    self._send_json({"rtu_id": int(raw_rtu), "items": items})
+                elif path in {"/simulator104", "/simulator104/"}:
+                    served = static_cache.serve(
+                        self,
+                        root,
+                        "/scada104.html",
+                        cors_fn=lambda cc: self._cors(cache_control=cc),
+                        cache_control="no-cache",
+                    )
+                    if not served:
+                        self._send_json({"error": "Static file not found: scada104.html"}, status=404)
                 elif path in self.control_plane_post_routes:
                     self._send_json(
                         {"error": f"Control-plane API {path} only accepts POST requests."},
@@ -199,6 +252,56 @@ def make_simulator_proxy_server(
                     return
                 elif path == "/api/models/import-definitions":
                     self._import_definitions(payload)
+                    return
+                elif path == "/api/simulator104/commands":
+                    host = _require_iec104_host()
+                    rtu_raw = payload.get("rtu_id")
+                    kind = str(payload.get("kind") or "").strip().lower()
+                    pnt_raw = payload.get("pnt_no", payload.get("point_no"))
+                    if rtu_raw is None or pnt_raw is None or "value" not in payload:
+                        raise ValueError("请提供 rtu_id、kind、pnt_no 与 value")
+                    result = host.execute_command(int(rtu_raw), kind, int(pnt_raw), payload["value"])
+                    self._send_json({"item": result, "command_status": "applied"})
+                    return
+                elif path == "/api/simulator104/channel":
+                    host = _require_iec104_host()
+                    rtu_raw = payload.get("rtu_id")
+                    action = str(payload.get("action") or "").strip().lower()
+                    if rtu_raw is None or not action:
+                        raise ValueError("请提供 rtu_id 与 action（start/stop/restart）")
+                    result = host.control_channel(int(rtu_raw), action)
+                    self._send_json({"channel": result})
+                    return
+                elif path == "/api/simulator104/points/disable":
+                    host = _require_iec104_host()
+                    rtu_raw = payload.get("rtu_id")
+                    kind = str(payload.get("kind") or "").strip().lower()
+                    pnt_raw = payload.get("pnt_no", payload.get("point_no"))
+                    if rtu_raw is None or pnt_raw is None or "disabled" not in payload:
+                        raise ValueError("请提供 rtu_id、kind、pnt_no 与 disabled")
+                    result = host.set_point_disabled(
+                        int(rtu_raw), kind, int(pnt_raw), bool(payload["disabled"])
+                    )
+                    self._send_json({"point": result})
+                    return
+                elif path.startswith("/api/rtus/"):
+                    parts = [seg for seg in path.split("/") if seg]
+                    if (
+                        len(parts) == 6
+                        and parts[:2] == ["api", "rtus"]
+                        and parts[3] == "commands"
+                        and parts[2].isdigit()
+                        and parts[5].isdigit()
+                    ):
+                        host = _require_iec104_host()
+                        if "value" not in payload:
+                            raise ValueError("请填写指令值 value")
+                        result = host.execute_command(
+                            int(parts[2]), str(parts[4]).lower(), int(parts[5]), payload["value"]
+                        )
+                        self._send_json({"item": result, "command_status": "applied"})
+                        return
+                    self._send_json({"error": f"Unknown proxy API route: {path}"}, status=404)
                     return
                 else:
                     self._send_json({"error": f"Unknown proxy API route: {path}"}, status=404)
@@ -577,8 +680,17 @@ def make_simulator_proxy_server(
     class ManagedSimulatorProxyServer(ThreadingHTTPServer):
         daemon_threads = True
         _manager_closed = False
+        _iec104_closed = False
 
         def server_close(self) -> None:
+            if iec104_host is not None and not self._iec104_closed:
+                self._iec104_closed = True
+                close_fn = getattr(iec104_host, "close", None)
+                if callable(close_fn):
+                    try:
+                        close_fn()
+                    except Exception:
+                        logging.getLogger("simu.web").exception("Failed to close embedded IEC104 host")
             if not self._manager_closed:
                 self._manager_closed = True
                 manager.close()
@@ -586,4 +698,5 @@ def make_simulator_proxy_server(
 
     server = ManagedSimulatorProxyServer(server_address, SimulatorProxyHandler)
     server.cluster_manager = manager  # type: ignore[attr-defined]
+    server.iec104_host = iec104_host  # type: ignore[attr-defined]
     return server

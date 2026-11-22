@@ -849,16 +849,6 @@ function cancelCurveEditSelection() {
   drawCurves();
 }
 
-function readStoredCurveTreeCollapsedGroups() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CURVE_TREE_COLLAPSE_KEY) || "{}");
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-  } catch (_error) {
-    // Invalid local UI state falls back to the default expanded tree.
-  }
-  return {};
-}
-
 function curveTreeGroupCollapsed(groupKey) {
   return Boolean(state.curveTreeGroupCollapsed?.[groupKey]);
 }

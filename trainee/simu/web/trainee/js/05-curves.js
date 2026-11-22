@@ -373,16 +373,6 @@ function curveDisplaySelectedLabel(snapshot = state.snapshot || {}) {
   return selected.length <= 1 ? curveDisplayMetaForKey(selected[0], snapshot).label : `已选${selected.length}条`;
 }
 
-function readStoredCurveDisplayTreeCollapsedGroups() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CURVE_DISPLAY_TREE_COLLAPSE_KEY) || "{}");
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-  } catch (_error) {
-    // Invalid local UI state falls back to the default expanded tree.
-  }
-  return {};
-}
-
 function curveDisplayTreeGroupCollapsed(groupKey) {
   return Boolean(state.curveDisplayTreeGroupCollapsed?.[groupKey]);
 }

@@ -2786,21 +2786,6 @@ function syncCommandHistoryLogs(history = []) {
   });
 }
 
-function readStoredRuntimeLogColumnWidths() {
-  try {
-    const stored = JSON.parse(localStorage.getItem(RUNTIME_LOG_COLUMN_WIDTHS_KEY) || "[]");
-    if (Array.isArray(stored) && stored.length === RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS.length) {
-      return stored.map((value, index) => Math.max(
-        RUNTIME_LOG_COLUMN_MIN_WIDTHS[index],
-        Number(value) || RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS[index],
-      ));
-    }
-  } catch (_error) {
-    // Invalid local UI state falls back to the default widths.
-  }
-  return [...RUNTIME_LOG_COLUMN_DEFAULT_WIDTHS];
-}
-
 function runtimeLogColgroupHtml() {
   return `<colgroup>${state.runtimeLogColumnWidths.map((width) => `<col style="width:${Math.round(width)}px">`).join("")}</colgroup>`;
 }

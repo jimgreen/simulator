@@ -251,6 +251,115 @@ class ClusterAndProxyTests(unittest.TestCase):
             self.assertFalse(log_file.exists())
             self.assertTrue((Path(td) / "model.log.1").exists())
 
+    def test_proxy_hosts_simulator104_page_and_apis(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            models_root, runtime_root = self._make_models(root, names=("m1",))
+            static_dir = root / "web"
+            static_dir.mkdir()
+            (static_dir / "index.html").write_text("<html>sim</html>", encoding="utf-8")
+            (static_dir / "scada104.html").write_text("<html>iec104-ui</html>", encoding="utf-8")
+
+            calls = []
+
+            class _FakeIec104Host:
+                available = True
+                closed = False
+
+                def status(self):
+                    return {
+                        "available": True,
+                        "hosted_by": "simulator",
+                        "database": "test.sqlite3",
+                        "scada_web_url": "",
+                        "models": [{"model": "m1", "rtu_id": 1, "online": True, "running": True}],
+                        "errors": {},
+                    }
+
+                def list_points(self, rtu, kind):
+                    return [{"pnt_no": 1, "name": "SW1", "source_name": "CB.1.status", "disabled": False, "value": 1, "status": 0}]
+
+                def set_point_disabled(self, rtu, kind, pnt_no, disabled):
+                    calls.append(("disable", rtu, kind, pnt_no, disabled))
+                    return {"rtu_id": rtu, "kind": kind, "pnt_no": pnt_no, "disabled": disabled}
+
+                def execute_command(self, rtu, kind, point_no, value):
+                    calls.append(("cmd", rtu, kind, point_no, value))
+                    return {"kind": kind, "pnt_no": point_no, "value": value, "applied_to_simulator": True}
+
+                def control_channel(self, rtu, action):
+                    calls.append(("channel", rtu, action))
+                    return {"rtu_id": rtu, "action": action, "running": action != "stop"}
+
+                def channel_logs(self, rtu, limit=120):
+                    return [{"time": "2026-11-23T00:00:00", "level": "INFO", "message": "ready"}]
+
+                def close(self):
+                    self.closed = True
+
+            fake_host = _FakeIec104Host()
+            mgr = SimulatorClusterManager(
+                sim_dir=APP_ROOT,
+                models_root=models_root,
+                runtime_root=runtime_root,
+                health_checker=lambda h, p, m, t: (False, {}, ""),
+                port_checker=lambda h, p: False,
+            )
+            srv = make_simulator_proxy_server(
+                ("127.0.0.1", 0),
+                mgr,
+                static_root=static_dir,
+                iec104_host=fake_host,
+            )
+            try:
+                Handler = srv.RequestHandlerClass
+
+                def _req(raw: bytes):
+                    sock = _FakeSocket(raw)
+                    Handler(sock, ("127.0.0.1", 50010), srv)
+                    return _parse_http_response(sock.raw_response)
+
+                s_page, _, b_page = _req(b"GET /simulator104 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                self.assertEqual(s_page, 200)
+                self.assertIn(b"iec104-ui", b_page)
+
+                s_st, _, b_st = _req(b"GET /api/simulator104/status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                self.assertEqual(s_st, 200)
+                self.assertEqual(json.loads(b_st.decode("utf-8"))["hosted_by"], "simulator")
+
+                s_pts, _, b_pts = _req(b"GET /api/simulator104/points?rtu_id=1&kind=yc HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                self.assertEqual(s_pts, 200)
+                self.assertEqual(len(json.loads(b_pts.decode("utf-8"))["items"]), 1)
+
+                s_logs, _, b_logs = _req(b"GET /api/simulator104/logs?rtu_id=1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                self.assertEqual(s_logs, 200)
+                self.assertEqual(len(json.loads(b_logs.decode("utf-8"))["items"]), 1)
+
+                cmd_body = json.dumps({"rtu_id": 1, "kind": "yk", "pnt_no": 1, "value": 1}).encode("utf-8")
+                s_cmd, _, b_cmd = _req(
+                    b"POST /api/simulator104/commands HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    b"Content-Type: application/json\r\n"
+                    + f"Content-Length: {len(cmd_body)}\r\n\r\n".encode("ascii")
+                    + cmd_body
+                )
+                self.assertEqual(s_cmd, 200)
+                self.assertTrue(json.loads(b_cmd.decode("utf-8"))["item"]["applied_to_simulator"])
+
+                ch_body = json.dumps({"rtu_id": 1, "action": "stop"}).encode("utf-8")
+                s_ch, _, b_ch = _req(
+                    b"POST /api/simulator104/channel HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    b"Content-Type: application/json\r\n"
+                    + f"Content-Length: {len(ch_body)}\r\n\r\n".encode("ascii")
+                    + ch_body
+                )
+                self.assertEqual(s_ch, 200)
+                self.assertFalse(json.loads(b_ch.decode("utf-8"))["channel"]["running"])
+            finally:
+                srv.server_close()
+            self.assertTrue(fake_host.closed)
+            self.assertIn(("cmd", 1, "yk", 1, 1), calls)
+            self.assertIn(("channel", 1, "stop"), calls)
+
 
 if __name__ == "__main__":
     unittest.main()

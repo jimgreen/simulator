@@ -4,8 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>模拟台 · IEC104 联动</title>
-  <link rel="stylesheet" href="/scada104.css?v=20261123-opt">
-  <script src="/scada104.js?v=20261123-opt" defer></script>
+  <script>
+    try {
+      if (localStorage.getItem("polarUiTheme") === "dark") {
+        document.documentElement.dataset.theme = "dark";
+      }
+    } catch (_e) {}
+  </script>
+  <link rel="stylesheet" href="/scada104.css?v=20261123-sim-hosted">
+  <script src="/scada104.js?v=20261123-sim-hosted" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -14,90 +21,155 @@
         <span class="brand-dot" aria-hidden="true"></span>
         <h1>IEC104 联动</h1>
       </div>
-      <nav aria-label="SCADA 工作台">
-        <a href="/channels">通道参数</a>
-        <a href="/points">四遥点表</a>
-        <a href="/communication">通信监视</a>
-        <a href="/logs">通信日志</a>
+      <nav class="tab-nav" aria-label="IEC104 视图切换" role="tablist">
+        <button type="button" class="tab-btn is-active" data-view-tab="channels" role="tab" aria-selected="true">通道与指令</button>
+        <button type="button" class="tab-btn" data-view-tab="points" role="tab" aria-selected="false">四遥点表</button>
+        <button type="button" class="tab-btn" data-view-tab="logs" role="tab" aria-selected="false">通信日志</button>
       </nav>
-      <button id="themeToggleButton" class="theme-toggle" type="button" title="切换深色/浅色主题" aria-label="切换深色或浅色主题">
-        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
-        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32 1.41-1.41" /></svg>
-      </button>
+      <div class="topbar-right">
+        <a class="nav-link" href="/">返回模拟台</a>
+        <a id="externalScadaLink" class="nav-link" href="#" target="_blank" rel="noopener" hidden>SCADA 工作台</a>
+        <button id="themeToggleButton" class="theme-toggle" type="button" title="切换深色/浅色主题" aria-label="切换深色或浅色主题">
+          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32 1.41-1.41" /></svg>
+        </button>
+      </div>
     </div>
   </header>
   <main>
     <p id="database" class="path"></p>
-    <section class="card" aria-label="模型服务">
-      <div class="card-head">
-        <h2>模型通道状态</h2>
-        <div class="card-actions">
-          <button id="refreshStatusBtn" class="ghost-btn" type="button" title="立即刷新模型通道状态">刷新状态</button>
+    <p id="bridgeError" class="status-banner is-error" role="status"></p>
+
+    <div data-view-pane="channels">
+      <section class="card" aria-label="模型通道状态">
+        <div class="card-head">
+          <h2>模型通道状态</h2>
+          <div class="card-actions">
+            <button id="refreshStatusBtn" class="ghost-btn" type="button" title="立即刷新模型通道状态">刷新状态</button>
+          </div>
         </div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>模型</th>
-              <th class="num">RTU</th>
-              <th class="mono">IEC104 地址</th>
-              <th>状态</th>
-              <th class="num">YC / YX / YK / YT</th>
-              <th>点表</th>
-            </tr>
-          </thead>
-          <tbody id="modelRows"><tr><td colspan="6" class="empty">正在读取模型</td></tr></tbody>
-        </table>
-      </div>
-      <p id="bridgeError" class="status-banner is-error" role="status"></p>
-    </section>
-    <section class="card" aria-labelledby="commandTitle">
-      <div class="card-head">
-        <h2 id="commandTitle">下发仿真指令</h2>
-        <div class="card-actions">
-          <input id="pointSearch" class="search-input" type="search" placeholder="筛选控制点名称或点号…" aria-label="筛选控制点">
-          <button id="refreshPointsBtn" class="ghost-btn" type="button" title="重新读取当前模型控制点列表">刷新点表</button>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>模型</th>
+                <th class="num">RTU</th>
+                <th class="mono">IEC104 地址</th>
+                <th>状态</th>
+                <th class="num">YC / YX / YK / YT</th>
+                <th>通道与点表操作</th>
+              </tr>
+            </thead>
+            <tbody id="modelRows"><tr><td colspan="6" class="empty">正在读取模型</td></tr></tbody>
+          </table>
         </div>
-      </div>
-      <form id="commandForm">
-        <label>模型
-          <select id="rtu" required><option value="">选择模型</option></select>
-        </label>
-        <label>类型
-          <select id="kind">
-            <option value="yk">遥控 YK</option>
-            <option value="yt">遥调 YT</option>
-          </select>
-        </label>
-        <label class="field-wide">控制点
-          <select id="point" required><option value="">请先选择模型</option></select>
-        </label>
-        <label>指令值
-          <select id="valueSelect" required>
-            <option value="1">1 · 合 / 投入</option>
-            <option value="0">0 · 分 / 退出</option>
-          </select>
-          <input id="value" type="number" step="any" placeholder="输入设定值" hidden>
-        </label>
-        <button id="send" class="primary" type="submit">核对并下发</button>
-      </form>
-      <p id="pointMeta" class="point-meta"></p>
-      <p id="receipt" class="status-banner" role="status"></p>
-      <ul id="recentReceipts" class="receipt-history" aria-label="最近指令记录"></ul>
-    </section>
+      </section>
+
+      <section class="card" aria-labelledby="commandTitle">
+        <div class="card-head">
+          <h2 id="commandTitle">下发仿真指令</h2>
+          <div class="card-actions">
+            <input id="pointSearch" class="search-input" type="search" placeholder="筛选控制点名称或点号…" aria-label="筛选控制点">
+            <button id="refreshPointsBtn" class="ghost-btn" type="button" title="重新读取当前模型控制点列表">刷新点表</button>
+          </div>
+        </div>
+        <form id="commandForm">
+          <label>模型
+            <select id="rtu" required><option value="">选择模型</option></select>
+          </label>
+          <label>类型
+            <select id="kind">
+              <option value="yk">遥控 YK</option>
+              <option value="yt">遥调 YT</option>
+            </select>
+          </label>
+          <label class="field-wide">控制点
+            <select id="point" required><option value="">请先选择模型</option></select>
+          </label>
+          <label>指令值
+            <select id="valueSelect" required>
+              <option value="1">1 · 合 / 投入</option>
+              <option value="0">0 · 分 / 退出</option>
+            </select>
+            <input id="value" type="number" step="any" placeholder="输入设定值" hidden>
+          </label>
+          <button id="send" class="primary" type="submit">核对并下发</button>
+        </form>
+        <p id="pointMeta" class="point-meta"></p>
+        <p id="receipt" class="status-banner" role="status"></p>
+        <ul id="recentReceipts" class="receipt-history" aria-label="最近指令记录"></ul>
+      </section>
+    </div>
+
+    <div data-view-pane="points" hidden>
+      <section class="card" aria-label="四遥点表">
+        <div class="card-head">
+          <h2>四遥点表</h2>
+          <div class="card-actions">
+            <select id="pointsRtuSelect" aria-label="点表模型"></select>
+            <select id="pointsKindSelect" aria-label="四遥类型">
+              <option value="yc">遥测 YC</option>
+              <option value="yx">遥信 YX</option>
+              <option value="yk">遥控 YK</option>
+              <option value="yt">遥调 YT</option>
+            </select>
+            <input id="pointsTableSearch" class="search-input" type="search" placeholder="筛选测点名称或点号…" aria-label="筛选四遥点表">
+            <button id="reloadPointsTableBtn" class="ghost-btn" type="button">刷新</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th class="num">点号</th>
+                <th>测点名称</th>
+                <th class="mono">仿真源名</th>
+                <th class="num">当前值</th>
+                <th>质量/状态</th>
+                <th>操作控制</th>
+              </tr>
+            </thead>
+            <tbody id="pointsTableBody"><tr><td colspan="6" class="empty">请选择模型查看点表</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <div data-view-pane="logs" hidden>
+      <section class="card" aria-label="IEC104 通信日志">
+        <div class="card-head">
+          <h2>IEC104 通信日志</h2>
+          <div class="card-actions">
+            <select id="logsRtuSelect" aria-label="日志模型"></select>
+            <button id="reloadLogsBtn" class="ghost-btn" type="button">刷新日志</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th class="mono">时间</th>
+                <th>级别</th>
+                <th>内容</th>
+              </tr>
+            </thead>
+            <tbody id="logsTableBody"><tr><td colspan="3" class="empty">请选择模型查看通信日志</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
   </main>
 
   <dialog id="scadaConfirmDialog" class="confirm-dialog" aria-labelledby="scadaConfirmTitle">
     <div class="confirm-card">
       <div class="confirm-head">
-        <span class="confirm-badge">指令核对</span>
-        <h2 id="scadaConfirmTitle">确认下发仿真指令？</h2>
+        <span class="confirm-badge">操作核对</span>
+        <h2 id="scadaConfirmTitle">确认执行操作？</h2>
       </div>
       <p id="scadaConfirmDetail" class="confirm-detail"></p>
       <div class="confirm-actions">
         <button id="scadaConfirmCancel" type="button">取消</button>
-        <button id="scadaConfirmOk" class="primary" type="button">确认下发</button>
+        <button id="scadaConfirmOk" class="primary" type="button">确认执行</button>
       </div>
     </div>
   </dialog>
