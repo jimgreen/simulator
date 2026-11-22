@@ -626,6 +626,7 @@ function runBundle(htmlPath) {
   }
 }
 for (const p of process.argv.slice(1)) runBundle(p);
+process.exit(0);
 """
         bundles = [
             str(REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "index.html"),
@@ -753,6 +754,37 @@ if (translatePhrase("12 台设备", "ru-RU") !== "12 устр.") {
                 timeout=30,
             )
             self.assertEqual(proc.returncode, 0, f"i18n 词典校验失败：\n{proc.stderr}")
+
+    def test_dark_theme_covers_all_legacy_light_backgrounds(self) -> None:
+        """既有 CSS 中所有浅色硬编码背景类必须被暗黑覆盖层显式接管，杜绝白底穿帮。"""
+        import re
+
+        light_bg_re = re.compile(
+            r"background(?:-color)?\s*:\s*(?:#(?:fff|ffffff|[def][0-9a-f]{5}|[def][0-9a-f]{2})\b|white\b|rgba\(\s*2[2-5]\d|linear-gradient\([^)]*#(?:fff|[def][0-9a-f]{5}))",
+            re.IGNORECASE,
+        )
+        whitelist = {".brand-mark"}
+        for css_path in (
+            REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "styles.css",
+            REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "styles.css",
+        ):
+            text = css_path.read_text(encoding="utf-8")
+            cut = text.find("全 8 套官方视觉风格")
+            self.assertGreater(cut, 0, f"{css_path} 缺少多风格覆盖层")
+            head, tail = text[:cut], text[cut:]
+            uncovered = []
+            for sel, body in re.findall(r"([^{}]+)\{([^{}]+)\}", head):
+                if not light_bg_re.search(body):
+                    continue
+                clean_sel = " ".join(sel.split())
+                if clean_sel.startswith("@") or clean_sel.startswith("from") or clean_sel.startswith("to") or "::" in clean_sel:
+                    continue
+                classes = re.findall(r"\.[a-zA-Z0-9_-]+", clean_sel)
+                if not classes or all(c in whitelist for c in classes):
+                    continue
+                if not any(c in tail for c in classes):
+                    uncovered.append(clean_sel)
+            self.assertEqual(uncovered, [], f"{css_path.name} 存在未被暗黑主题覆盖的浅底选择器：{uncovered}")
 
 
 if __name__ == "__main__":

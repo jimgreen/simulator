@@ -7187,6 +7187,229 @@ html:not([data-simulator-ui-mode="direct"]) .model-switcher > span {
   }
 }
 
+/* ==========================================================================
+   2026-11-23 深色系全量防穿帮补强（主状态区、能量流图标/绿电卡、冻结列、徽章、弹窗）
+   ========================================================================== */
+:root[data-color-scheme="dark"] .overview-status-primary {
+  background: var(--surface-subtle);
+  border-right-color: var(--line);
+  color: var(--ink);
+}
+
+:root[data-color-scheme="dark"] .overview-state-dot {
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+
+:root[data-color-scheme="dark"] .energy-device-icon,
+:root[data-color-scheme="dark"] .energy-hydrogen-icon,
+:root[data-color-scheme="dark"] .energy-converter-icon {
+  background: var(--surface-subtle);
+  box-shadow: 0 0 0 3px var(--surface);
+}
+
+:root[data-color-scheme="dark"] .energy-converter-icon {
+  box-shadow: 0 0 0 4px var(--surface);
+}
+
+:root[data-color-scheme="dark"] .energy-green-share {
+  background: var(--surface-subtle);
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+}
+
+:root[data-color-scheme="dark"] .energy-green-metric + .energy-green-metric {
+  border-left-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .model-param-table th:first-child,
+:root[data-color-scheme="dark"] .model-param-table td:first-child,
+:root[data-color-scheme="dark"] .model-param-table th:nth-child(2),
+:root[data-color-scheme="dark"] .model-param-table td:nth-child(2) {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .model-param-table thead th:first-child,
+:root[data-color-scheme="dark"] .model-param-table thead th:nth-child(2),
+:root[data-color-scheme="dark"] .manual-definition-changes-table thead th {
+  background: var(--surface-subtle);
+  color: var(--muted);
+  border-color: var(--line-strong);
+}
+
+:root[data-color-scheme="dark"] .model-param-table tbody tr:nth-child(even) td:first-child,
+:root[data-color-scheme="dark"] .model-param-table tbody tr:nth-child(even) td:nth-child(2) {
+  background: var(--table-stripe);
+}
+
+:root[data-color-scheme="dark"] .model-param-table tbody tr:hover td:first-child,
+:root[data-color-scheme="dark"] .model-param-table tbody tr:hover td:nth-child(2),
+:root[data-color-scheme="dark"] .measurement-compare-table tbody tr:hover,
+:root[data-color-scheme="dark"] .measurement-compare-table tbody tr.is-selected,
+:root[data-color-scheme="dark"] .runtime-command-table tbody tr.is-selected,
+:root[data-color-scheme="dark"] .manual-definition-changes-table tbody tr.is-selected,
+:root[data-color-scheme="dark"] .runtime-log-row[data-runtime-log-seq]:focus-visible,
+:root[data-color-scheme="dark"] .runtime-log-row[data-runtime-log-seq].is-selected {
+  background: var(--table-hover);
+}
+
+:root[data-color-scheme="dark"] .command-process-pill,
+:root[data-color-scheme="dark"] .model-service-state-pill,
+:root[data-color-scheme="dark"] .model-state-pill,
+:root[data-color-scheme="dark"] .curve-toolbar > span {
+  background: var(--surface-subtle);
+  color: var(--muted);
+  border-color: var(--line-strong);
+}
+
+:root[data-color-scheme="dark"] .command-process-pill.is-effective {
+  background: var(--ok-soft);
+  color: var(--green);
+  border-color: transparent;
+}
+
+:root[data-color-scheme="dark"] .command-process-pill.is-queued {
+  background: var(--warn-soft);
+  color: var(--amber);
+  border-color: transparent;
+}
+
+:root[data-color-scheme="dark"] .runtime-log-detail-dialog {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+:root[data-color-scheme="dark"] .runtime-log-detail-meta > div,
+:root[data-color-scheme="dark"] .runtime-log-detail-content h3,
+:root[data-color-scheme="dark"] .import-file-summary div {
+  background: var(--surface-subtle);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .fault-editor-table input:disabled {
+  background: var(--surface-subtle);
+  color: var(--muted);
+  border-color: var(--line);
+}
+
+/* 全量收口：所有子标签栏、设备树节点、.is-active 激活态、画布、开关与消息条 */
+:root[data-color-scheme="dark"] .model-param-tabs,
+:root[data-color-scheme="dark"] .measurement-type-tabs,
+:root[data-color-scheme="dark"] .runtime-command-tabs,
+:root[data-color-scheme="dark"] .sub-tabs,
+:root[data-color-scheme="dark"] .segmented-control,
+:root[data-color-scheme="dark"] .diagram-device-tabs,
+:root[data-color-scheme="dark"] .model-management-list-wrap,
+:root[data-color-scheme="dark"] .overview-clock-controls {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .model-param-tab.is-active,
+:root[data-color-scheme="dark"] .measurement-type-tab.is-active,
+:root[data-color-scheme="dark"] .runtime-command-tab.is-active,
+:root[data-color-scheme="dark"] .diagram-trend-tabs button.is-active,
+:root[data-color-scheme="dark"] .diagram-device-tab[aria-selected="true"],
+:root[data-color-scheme="dark"] .icon-button.is-active,
+:root[data-color-scheme="dark"] .tree-node.is-active,
+:root[data-color-scheme="dark"] .tree-child.is-active {
+  background: var(--teal-soft);
+  color: var(--teal);
+  border-color: var(--teal);
+}
+
+:root[data-color-scheme="dark"] .sub-tabs button.is-active,
+:root[data-color-scheme="dark"] .segmented-control button.is-active {
+  background: var(--teal);
+  border-color: var(--teal);
+  color: var(--btn-primary-ink);
+  font-weight: 600;
+}
+
+:root[data-color-scheme="dark"] .tree-node,
+:root[data-color-scheme="dark"] .tree-child,
+:root[data-color-scheme="dark"] .tree-subgroup > .tree-parent-row .tree-type,
+:root[data-color-scheme="dark"] .diagram-device-tab,
+:root[data-color-scheme="dark"] .parameter-state-list div,
+:root[data-color-scheme="dark"] .curve-medium-marker,
+:root[data-color-scheme="dark"] .curve-medium-marker.is-environment,
+:root[data-color-scheme="dark"] .curve-medium-marker.is-electric,
+:root[data-color-scheme="dark"] .curve-medium-marker.is-hydrogen,
+:root[data-color-scheme="dark"] .curve-medium-marker.is-heat,
+:root[data-color-scheme="dark"] .diagram-definition-change-list code,
+:root[data-color-scheme="dark"] .command-active-only-track,
+:root[data-color-scheme="dark"] .chart-period-navigation button:disabled,
+:root[data-color-scheme="dark"] .runtime-command-delete-button:disabled {
+  background: var(--surface-subtle);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .tree-node:hover,
+:root[data-color-scheme="dark"] .tree-child:hover,
+:root[data-color-scheme="dark"] .tree-collapse-toggle:hover,
+:root[data-color-scheme="dark"] .tree-collapse-toggle:focus-visible,
+:root[data-color-scheme="dark"] .measurement-type-tab:hover,
+:root[data-color-scheme="dark"] .model-management-item:hover,
+:root[data-color-scheme="dark"] .model-management-item:focus-visible,
+:root[data-color-scheme="dark"] .diagram-context-menu-item:hover,
+:root[data-color-scheme="dark"] .diagram-context-menu-item:focus-visible {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+:root[data-color-scheme="dark"] .one-line,
+:root[data-color-scheme="dark"] .model-diagram-canvas,
+:root[data-color-scheme="dark"] .diagram-trend-chart {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .curve-table td[contenteditable="true"],
+:root[data-color-scheme="dark"] .table-filter-bar input,
+:root[data-color-scheme="dark"] .table-filter-bar select,
+:root[data-color-scheme="dark"] .device-tree-filter input,
+:root[data-color-scheme="dark"] .diagram-definition-input,
+:root[data-color-scheme="dark"] .modal-field input,
+:root[data-color-scheme="dark"] .modal-field select,
+:root[data-color-scheme="dark"] .diagram-trend-tabs .diagram-trend-period-navigation button,
+:root[data-color-scheme="dark"] .runtime-command-delete-button {
+  background: var(--surface-subtle);
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+:root[data-color-scheme="dark"] .curve-table td[contenteditable="true"]:focus {
+  background: var(--teal-soft);
+  color: var(--ink);
+}
+
+:root[data-color-scheme="dark"] .diagram-definition-message,
+:root[data-color-scheme="dark"] .manual-definition-changes-message,
+:root[data-color-scheme="dark"] .manual-change-persistence {
+  background: var(--ok-soft);
+  color: var(--green);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .manual-definition-changes-message.is-error,
+:root[data-color-scheme="dark"] .runtime-command-delete-button:hover:not(:disabled),
+:root[data-color-scheme="dark"] .power-flow-failure-alert,
+:root[data-color-scheme="dark"] .danger-confirm-badge {
+  background: var(--danger-soft);
+  color: var(--red);
+  border-color: var(--red);
+}
+
+:root[data-color-scheme="dark"] .power-flow-failure-alert {
+  background-color: var(--surface);
+  color: var(--ink);
+}
+
 .device-tree-panel.is-collapsed .tree-collapse-btn {
   padding: 0 4px;
   font-size: 11px;

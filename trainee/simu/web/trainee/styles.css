@@ -7858,6 +7858,22 @@ table tbody tr:hover {
   gap: 10px;
 }
 
+.brand > div {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.brand p {
+  margin-top: 0;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  border: 1px solid var(--line);
+  background: var(--surface-subtle);
+  white-space: nowrap;
+}
+
 .brand h1 {
   font-size: 17px;
   white-space: nowrap;
@@ -7899,6 +7915,287 @@ table tbody tr:hover {
   .model-toolbar {
     flex-wrap: wrap;
   }
+}
+
+/* ==========================================================================
+   2026-11-23 深色系全量防穿帮补强（主状态区、能量流图标/绿电卡、冻结列、徽章、弹窗）
+   ========================================================================== */
+:root[data-color-scheme="dark"] .overview-status-primary {
+  background: var(--surface-subtle);
+  border-right-color: var(--line);
+  color: var(--ink);
+}
+
+:root[data-color-scheme="dark"] .overview-state-dot {
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+
+:root[data-color-scheme="dark"] .energy-device-icon,
+:root[data-color-scheme="dark"] .energy-hydrogen-icon,
+:root[data-color-scheme="dark"] .energy-converter-icon {
+  background: var(--surface-subtle);
+  box-shadow: 0 0 0 3px var(--surface);
+}
+
+:root[data-color-scheme="dark"] .energy-converter-icon {
+  box-shadow: 0 0 0 4px var(--surface);
+}
+
+:root[data-color-scheme="dark"] .energy-green-share {
+  background: var(--surface-subtle);
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+}
+
+:root[data-color-scheme="dark"] .energy-green-metric + .energy-green-metric {
+  border-left-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .model-param-table th:first-child,
+:root[data-color-scheme="dark"] .model-param-table td:first-child,
+:root[data-color-scheme="dark"] .model-param-table th:nth-child(2),
+:root[data-color-scheme="dark"] .model-param-table td:nth-child(2) {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .model-param-table thead th:first-child,
+:root[data-color-scheme="dark"] .model-param-table thead th:nth-child(2),
+:root[data-color-scheme="dark"] .system-parameter-table th,
+:root[data-color-scheme="dark"] .storage-power-derating-table th,
+:root[data-color-scheme="dark"] .renewable-metric-table thead th,
+:root[data-color-scheme="dark"] .manual-definition-changes-table thead th {
+  background: var(--surface-subtle);
+  color: var(--muted);
+  border-color: var(--line-strong);
+}
+
+:root[data-color-scheme="dark"] .model-param-table tbody tr:nth-child(even) td:first-child,
+:root[data-color-scheme="dark"] .model-param-table tbody tr:nth-child(even) td:nth-child(2) {
+  background: var(--table-stripe);
+}
+
+:root[data-color-scheme="dark"] .model-param-table tbody tr:hover td:first-child,
+:root[data-color-scheme="dark"] .model-param-table tbody tr:hover td:nth-child(2),
+:root[data-color-scheme="dark"] .measurement-compare-table tbody tr:hover,
+:root[data-color-scheme="dark"] .measurement-compare-table tbody tr.is-selected,
+:root[data-color-scheme="dark"] .runtime-device-table tbody tr:hover,
+:root[data-color-scheme="dark"] .runtime-device-table tr.is-selected,
+:root[data-color-scheme="dark"] .remote-adjustment-table tbody tr:hover,
+:root[data-color-scheme="dark"] .renewable-metric-table tbody tr:hover,
+:root[data-color-scheme="dark"] .manual-definition-changes-table tbody tr.is-selected,
+:root[data-color-scheme="dark"] .renewable-control-log-table .runtime-log-row:hover td,
+:root[data-color-scheme="dark"] .renewable-control-log-table .runtime-log-row.is-selected td,
+:root[data-color-scheme="dark"] .runtime-log-row[data-runtime-log-seq]:focus-visible,
+:root[data-color-scheme="dark"] .runtime-log-row[data-runtime-log-seq].is-selected {
+  background: var(--table-hover);
+}
+
+:root[data-color-scheme="dark"] .status-pill,
+:root[data-color-scheme="dark"] .status-pill.is-off,
+:root[data-color-scheme="dark"] .command-process-pill,
+:root[data-color-scheme="dark"] .model-state-pill,
+:root[data-color-scheme="dark"] .curve-toolbar > span {
+  background: var(--surface-subtle);
+  color: var(--muted);
+  border-color: var(--line-strong);
+}
+
+:root[data-color-scheme="dark"] .status-pill.is-ok,
+:root[data-color-scheme="dark"] .command-process-pill.is-effective,
+:root[data-color-scheme="dark"] .renewable-status.is-ok {
+  background: var(--ok-soft);
+  color: var(--green);
+  border-color: transparent;
+}
+
+:root[data-color-scheme="dark"] .command-process-pill.is-queued,
+:root[data-color-scheme="dark"] .renewable-status.is-warning {
+  background: var(--warn-soft);
+  color: var(--amber);
+  border-color: transparent;
+}
+
+:root[data-color-scheme="dark"] .renewable-status.is-error {
+  background: var(--danger-soft);
+  color: var(--red);
+  border-color: transparent;
+}
+
+:root[data-color-scheme="dark"] .runtime-log-detail-dialog,
+:root[data-color-scheme="dark"] .remote-control-dialog,
+:root[data-color-scheme="dark"] .storage-power-derating-table-wrap,
+:root[data-color-scheme="dark"] .model-management-list-wrap {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+:root[data-color-scheme="dark"] .runtime-log-detail-meta > div,
+:root[data-color-scheme="dark"] .runtime-log-detail-content h3,
+:root[data-color-scheme="dark"] .renewable-control-log-detail-meta > div,
+:root[data-color-scheme="dark"] .renewable-control-log-detail-content h3,
+:root[data-color-scheme="dark"] .remote-control-summary div,
+:root[data-color-scheme="dark"] .import-file-summary div,
+:root[data-color-scheme="dark"] .renewable-hydrogen-overview-field,
+:root[data-color-scheme="dark"] .renewable-trend-series-head,
+:root[data-color-scheme="dark"] .curve-display-table td {
+  background: var(--surface-subtle);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .runtime-device-table input:disabled {
+  background: var(--surface-subtle);
+  color: var(--muted);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .runtime-device-table tr.is-pending,
+:root[data-color-scheme="dark"] .runtime-device-table input.is-pending {
+  background: var(--warn-soft);
+  border-color: var(--amber);
+}
+
+/* 全量收口：所有子标签栏、设备树节点、.is-active 激活态、画布、新能源趋势与消息条 */
+:root[data-color-scheme="dark"] .model-param-tabs,
+:root[data-color-scheme="dark"] .measurement-type-tabs,
+:root[data-color-scheme="dark"] .command-tab-bar,
+:root[data-color-scheme="dark"] .segmented-control,
+:root[data-color-scheme="dark"] .diagram-device-tabs,
+:root[data-color-scheme="dark"] .renewable-detail-tabs,
+:root[data-color-scheme="dark"] .renewable-metric-tabs,
+:root[data-color-scheme="dark"] .renewable-strategy-tabs,
+:root[data-color-scheme="dark"] .renewable-control-parameter-tabs {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .model-param-tab.is-active,
+:root[data-color-scheme="dark"] .measurement-type-tab.is-active,
+:root[data-color-scheme="dark"] .command-tab.is-active,
+:root[data-color-scheme="dark"] .diagram-trend-tabs button.is-active,
+:root[data-color-scheme="dark"] .diagram-device-tab[aria-selected="true"],
+:root[data-color-scheme="dark"] .renewable-detail-tabs button.is-active,
+:root[data-color-scheme="dark"] .renewable-metric-tabs button.is-active,
+:root[data-color-scheme="dark"] .renewable-strategy-tabs button.is-active,
+:root[data-color-scheme="dark"] .renewable-control-parameter-tabs button.is-active,
+:root[data-color-scheme="dark"] .tree-node.is-active,
+:root[data-color-scheme="dark"] .tree-child.is-active {
+  background: var(--teal-soft);
+  color: var(--teal);
+  border-color: var(--teal);
+}
+
+:root[data-color-scheme="dark"] .segmented-control button.is-active {
+  background: var(--teal);
+  border-color: var(--teal);
+  color: var(--btn-primary-ink);
+  font-weight: 600;
+}
+
+:root[data-color-scheme="dark"] .tree-node,
+:root[data-color-scheme="dark"] .tree-child,
+:root[data-color-scheme="dark"] .tree-subgroup > .tree-parent-row .tree-type,
+:root[data-color-scheme="dark"] .diagram-device-tab,
+:root[data-color-scheme="dark"] .curve-medium-marker,
+:root[data-color-scheme="dark"] .curve-medium-marker.is-environment,
+:root[data-color-scheme="dark"] .curve-medium-marker.is-electric,
+:root[data-color-scheme="dark"] .curve-medium-marker.is-hydrogen,
+:root[data-color-scheme="dark"] .curve-medium-marker.is-heat,
+:root[data-color-scheme="dark"] .diagram-definition-change-list code,
+:root[data-color-scheme="dark"] .command-active-only-track,
+:root[data-color-scheme="dark"] .chart-period-navigation button:disabled,
+:root[data-color-scheme="dark"] .renewable-backend-state,
+:root[data-color-scheme="dark"] .renewable-command-table tr.is-muted,
+:root[data-color-scheme="dark"] .renewable-trend-series-panel,
+:root[data-color-scheme="dark"] .renewable-trend-series-tools,
+:root[data-color-scheme="dark"] .renewable-trend-series-action,
+:root[data-color-scheme="dark"] .renewable-trend-inline-legend,
+:root[data-color-scheme="dark"] .diagram-device-command-option,
+:root[data-color-scheme="dark"] .diagram-device-command-option-type {
+  background: var(--surface-subtle);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .tree-node:hover,
+:root[data-color-scheme="dark"] .tree-child:hover,
+:root[data-color-scheme="dark"] .tree-collapse-toggle:hover,
+:root[data-color-scheme="dark"] .tree-collapse-toggle:focus-visible,
+:root[data-color-scheme="dark"] .measurement-type-tab:hover,
+:root[data-color-scheme="dark"] .command-tab:hover,
+:root[data-color-scheme="dark"] .renewable-detail-tabs button:hover,
+:root[data-color-scheme="dark"] .renewable-metric-tabs button:hover,
+:root[data-color-scheme="dark"] .renewable-strategy-tabs button:hover,
+:root[data-color-scheme="dark"] .renewable-control-parameter-tabs button:hover,
+:root[data-color-scheme="dark"] .renewable-trend-series-action:hover:not(:disabled),
+:root[data-color-scheme="dark"] .renewable-trend-series-group > summary:hover,
+:root[data-color-scheme="dark"] .renewable-trend-series-device > summary:hover,
+:root[data-color-scheme="dark"] .renewable-trend-inline-legend-item:hover,
+:root[data-color-scheme="dark"] .run-status-command-cell:hover,
+:root[data-color-scheme="dark"] .dialog-close-button:hover,
+:root[data-color-scheme="dark"] .diagram-device-command-option:hover,
+:root[data-color-scheme="dark"] .diagram-device-command-option:focus-visible,
+:root[data-color-scheme="dark"] .storage-power-derating-row:hover td,
+:root[data-color-scheme="dark"] .model-management-item:hover,
+:root[data-color-scheme="dark"] .model-management-item:focus-visible,
+:root[data-color-scheme="dark"] .diagram-context-menu-item:hover,
+:root[data-color-scheme="dark"] .diagram-context-menu-item:focus-visible {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+:root[data-color-scheme="dark"] .one-line,
+:root[data-color-scheme="dark"] .model-diagram-canvas,
+:root[data-color-scheme="dark"] .diagram-trend-chart,
+:root[data-color-scheme="dark"] .renewable-trend-chart-surface,
+:root[data-color-scheme="dark"] .manual-definition-changes-wrap,
+:root[data-color-scheme="dark"] .command-trace-panel {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .table-filter-bar input,
+:root[data-color-scheme="dark"] .table-filter-bar select,
+:root[data-color-scheme="dark"] .device-tree-filter input,
+:root[data-color-scheme="dark"] .diagram-definition-input,
+:root[data-color-scheme="dark"] .renewable-trend-series-search input,
+:root[data-color-scheme="dark"] .storage-power-derating-input,
+:root[data-color-scheme="dark"] .diagram-trend-tabs .diagram-trend-period-navigation button {
+  background: var(--surface-subtle);
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+:root[data-color-scheme="dark"] .remote-control-options label:has(input:checked) {
+  background: var(--teal-soft);
+  border-color: var(--teal);
+  color: var(--ink);
+}
+
+:root[data-color-scheme="dark"] .diagram-definition-message,
+:root[data-color-scheme="dark"] .manual-definition-changes-message,
+:root[data-color-scheme="dark"] .manual-change-persistence {
+  background: var(--ok-soft);
+  color: var(--green);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .command-cancel-button:hover,
+:root[data-color-scheme="dark"] .receive-warning-list li,
+:root[data-color-scheme="dark"] .danger-confirm-badge {
+  background: var(--danger-soft);
+  color: var(--red);
+  border-color: var(--red);
+}
+
+:root[data-color-scheme="dark"] .power-flow-failure-alert {
+  background-color: var(--surface);
+  color: var(--ink);
+  border-color: var(--red);
 }
 
 .device-tree-panel.is-collapsed .tree-collapse-btn {
