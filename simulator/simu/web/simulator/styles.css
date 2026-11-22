@@ -8407,3 +8407,231 @@ body.is-ux-col-resizing .app-sidebar {
     overflow: visible !important;
   }
 }
+
+/* ==========================================================================
+   2026-11-23 主页能量流看板与全站拖拽分栏宽窄自适应防遮挡（双端通用）
+   ========================================================================== */
+@container (min-width: 761px) {
+  .energy-flow-map {
+    --energy-side-col: clamp(230px, 24%, 304px);
+    --energy-col-gap: 14px;
+    --energy-bus-inset: calc(var(--energy-side-col) + var(--energy-col-gap) + 12px);
+    grid-template-columns: var(--energy-side-col) 24px minmax(0, 1fr) 24px var(--energy-side-col);
+    column-gap: var(--energy-col-gap);
+  }
+
+  .energy-hydrogen-chain {
+    left: var(--energy-bus-inset);
+    right: var(--energy-bus-inset);
+    grid-template-columns: 12px minmax(0, 1fr) 8px minmax(0, 0.96fr) 8px minmax(0, 1fr) 12px;
+    overflow: hidden;
+  }
+
+  .energy-green-share {
+    width: min(320px, calc(100% - 2 * var(--energy-bus-inset) - 20px));
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .energy-acdc-converter {
+    width: min(290px, calc(100% - 2 * var(--energy-bus-inset) - 20px));
+    min-width: 0;
+  }
+
+  .energy-grid-forming-stack {
+    left: var(--energy-bus-inset);
+    right: var(--energy-bus-inset);
+    overflow: hidden;
+  }
+}
+
+.energy-hydrogen-device,
+.energy-hydrogen-card,
+.energy-hydrogen-readings,
+.energy-hydrogen-readings .energy-device-reading,
+.energy-green-share > div,
+.energy-converter-card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.energy-hydrogen-card-head > span,
+.energy-hydrogen-card-count,
+.energy-hydrogen-readings .energy-device-reading span,
+.energy-hydrogen-readings .energy-device-reading strong,
+.energy-green-share strong,
+.energy-green-share span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@container (max-width: 1280px) and (min-width: 761px) {
+  .energy-flow-map {
+    --energy-side-col: clamp(208px, 23.5%, 268px);
+    --energy-col-gap: 12px;
+  }
+
+  .energy-hydrogen-chain {
+    grid-template-columns: 10px minmax(0, 1fr) 6px minmax(0, 0.96fr) 6px minmax(0, 1fr) 10px;
+  }
+
+  .energy-hydrogen-device {
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .energy-hydrogen-icon {
+    width: 30px;
+    height: 30px;
+    flex-basis: 30px;
+  }
+
+  .energy-hydrogen-icon svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .energy-hydrogen-card {
+    padding: 5px 6px;
+  }
+
+  .energy-hydrogen-card-head {
+    gap: 4px;
+  }
+
+  .energy-hydrogen-card-head > span {
+    font-size: 11px;
+  }
+
+  .energy-hydrogen-readings .energy-device-reading span {
+    font-size: 10px;
+  }
+
+  .energy-hydrogen-readings .energy-device-reading strong {
+    font-size: 12.5px;
+  }
+}
+
+@container (max-width: 1120px) and (min-width: 761px) {
+  .energy-flow-map {
+    --energy-side-col: clamp(190px, 23%, 234px);
+    --energy-col-gap: 10px;
+    --energy-device-icon-size: 48px;
+    --energy-device-icon-glyph-size: 32px;
+  }
+
+  .energy-hydrogen-device {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .energy-hydrogen-icon {
+    display: none;
+  }
+
+  .energy-hydrogen-card {
+    grid-column: 1 / -1;
+    padding: 5px 6px;
+  }
+
+  .energy-hydrogen-card-head > span,
+  .energy-hydrogen-card-count {
+    font-size: 10.5px;
+    line-height: 13px;
+  }
+
+  .energy-hydrogen-readings .energy-device-reading strong {
+    font-size: 12px;
+  }
+}
+
+@container (max-width: 960px) and (min-width: 761px) {
+  .energy-flow-map {
+    --energy-side-col: clamp(166px, 22.5%, 204px);
+    --energy-col-gap: 8px;
+    --energy-device-icon-size: 38px;
+    --energy-device-icon-glyph-size: 24px;
+  }
+
+  .energy-hydrogen-chain {
+    grid-template-columns: 8px minmax(0, 1fr) 5px minmax(0, 0.96fr) 5px minmax(0, 1fr) 8px;
+  }
+
+  .energy-grid-forming-stack .energy-device.storage .energy-device-icon {
+    display: none;
+  }
+
+  .energy-grid-forming-stack .energy-storage-branch-wrap .energy-device.storage {
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+}
+
+/* 主页顶部指标条、边界栏、参数状态栏与左侧树在拖拽缩窄时自适应防挤压 */
+.overview-status-metrics {
+  min-width: 0;
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+}
+
+.overview-status-metrics dd,
+.overview-status-metrics dt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-boundary-panel,
+.parameter-state-panel {
+  container-type: inline-size;
+  min-width: 0;
+}
+
+@container (max-width: 245px) {
+  .boundary-list {
+    grid-template-columns: 1fr !important;
+  }
+
+  .boundary-list div {
+    flex-direction: row !important;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border-right: 0 !important;
+    padding: 6px 10px;
+  }
+}
+
+@container (max-width: 265px) {
+  .parameter-state-list div {
+    grid-template-columns: 1fr !important;
+    gap: 2px;
+    min-height: 40px;
+    padding: 6px 8px;
+  }
+}
+
+.model-tree-panel .panel-head,
+.curve-tree-panel .panel-head,
+.fault-tree-panel .panel-head,
+.mode-tree-panel .panel-head,
+.runtime-tree-panel .panel-head,
+.measurement-tree-panel .panel-head {
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.device-tree .tree-node,
+.curve-tree .tree-node {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.device-tree .tree-node > span,
+.curve-tree .tree-node > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
