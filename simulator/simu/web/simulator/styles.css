@@ -8213,3 +8213,197 @@ textarea[aria-invalid="true"] {
     grid-column: 1 / -1;
   }
 }
+
+/* ==========================================================================
+   2026-11-23 全局可拖拽纵向分隔条（调宽 / 一键显隐 / 双击重置，双端通用）
+   ========================================================================== */
+.app-sidebar {
+  flex: 0 0 var(--app-sidebar-width, 184px);
+  width: var(--app-sidebar-width, 184px);
+}
+
+:root[data-sidebar-hidden="true"] .app-sidebar {
+  flex: 0 0 0px !important;
+  width: 0px !important;
+  border-right-width: 0 !important;
+  opacity: 0;
+  pointer-events: none;
+}
+
+body.is-ux-col-resizing,
+body.is-ux-col-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+body.is-ux-col-resizing .app-sidebar {
+  transition: none !important;
+}
+
+.ux-col-splitter {
+  position: relative;
+  flex: 0 0 10px;
+  width: 10px;
+  min-width: 10px;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+  z-index: 12;
+  background: transparent;
+}
+
+.ux-col-splitter::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 2px;
+  background: var(--line);
+  opacity: 0.45;
+  transition: background 150ms ease, opacity 150ms ease, box-shadow 150ms ease;
+}
+
+.ux-col-splitter.is-sidebar-splitter {
+  width: 8px;
+  flex: 0 0 8px;
+  min-width: 8px;
+}
+
+.ux-col-splitter.is-sidebar-splitter::before {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  opacity: 0.25;
+}
+
+.ux-col-splitter:hover::before,
+.ux-col-splitter.is-dragging::before,
+.ux-col-splitter:focus-visible::before,
+.ux-col-splitter.is-target-hidden::before {
+  background: var(--teal);
+  opacity: 1;
+}
+
+.ux-col-splitter:focus-visible {
+  outline: none;
+}
+
+.ux-col-splitter-toggle {
+  position: relative;
+  z-index: 2;
+  width: 16px;
+  height: 44px;
+  min-width: 16px;
+  padding: 0 !important;
+  margin: 0;
+  border-radius: 999px !important;
+  border: 1px solid var(--line-strong) !important;
+  background: var(--surface) !important;
+  color: var(--muted) !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0.55;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
+  transition: opacity 150ms ease, color 150ms ease, border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.ux-col-splitter-toggle svg {
+  width: 11px;
+  height: 11px;
+  transition: transform 160ms ease;
+}
+
+.ux-col-splitter-toggle.is-point-right svg {
+  transform: rotate(180deg);
+}
+
+.ux-col-splitter:hover .ux-col-splitter-toggle,
+.ux-col-splitter.is-dragging .ux-col-splitter-toggle,
+.ux-col-splitter.is-target-hidden .ux-col-splitter-toggle,
+.ux-col-splitter-toggle:hover,
+.ux-col-splitter-toggle:focus-visible {
+  opacity: 1;
+  border-color: var(--teal) !important;
+  color: var(--teal) !important;
+  background: var(--surface) !important;
+}
+
+.ux-col-splitter-toggle:hover {
+  transform: scale(1.06);
+}
+
+/* 页面内部分栏三列网格接管（左侧可调可隐 / 右侧可调可隐） */
+.ux-has-col-splitter {
+  column-gap: 0 !important;
+}
+
+.ux-has-col-splitter.is-side-left {
+  grid-template-columns: var(--ux-split-size, 280px) 10px minmax(0, 1fr) !important;
+}
+
+.ux-has-col-splitter.is-side-left.is-pane-hidden {
+  grid-template-columns: 0px 14px minmax(0, 1fr) !important;
+}
+
+.ux-has-col-splitter.is-side-right {
+  grid-template-columns: minmax(0, 1fr) 10px var(--ux-split-size, 300px) !important;
+}
+
+.ux-has-col-splitter.is-side-right.is-pane-hidden {
+  grid-template-columns: minmax(0, 1fr) 14px 0px !important;
+}
+
+.ux-has-col-splitter.is-pane-hidden > .ux-collapsible-pane {
+  min-width: 0 !important;
+  width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border-width: 0 !important;
+  opacity: 0 !important;
+  overflow: hidden !important;
+  pointer-events: none !important;
+  box-shadow: none !important;
+}
+
+.ux-has-col-splitter.is-pane-hidden > .ux-col-splitter {
+  width: 14px;
+  min-width: 14px;
+}
+
+/* 窄屏单列回退：自动隐藏纵向分隔条并恢复完整面板可见 */
+@media (max-width: 960px) {
+  .ux-col-splitter {
+    display: none !important;
+  }
+
+  :root[data-sidebar-hidden="true"] .app-sidebar {
+    flex: 0 0 auto !important;
+    width: 100% !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+  }
+
+  .ux-has-col-splitter,
+  .ux-has-col-splitter.is-side-left,
+  .ux-has-col-splitter.is-side-right,
+  .ux-has-col-splitter.is-pane-hidden {
+    grid-template-columns: 1fr !important;
+    column-gap: 12px !important;
+  }
+
+  .ux-has-col-splitter.is-pane-hidden > .ux-collapsible-pane {
+    width: auto !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    overflow: visible !important;
+  }
+}

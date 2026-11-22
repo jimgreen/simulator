@@ -399,39 +399,357 @@
   /**
    * 共享左侧导航边栏折叠/展开与持久化（双端通用）
    */
+  const SPLIT_STATE_STORAGE_KEY = (() => {
+    const isTrainee = Boolean(document.getElementById("traineeRunToggle"));
+    return isTrainee ? "polarTraineeHorizontalSplitsV1" : "polarSimulatorHorizontalSplitsV1";
+  })();
+
+  function readHorizontalSplitStore() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(SPLIT_STATE_STORAGE_KEY) || "{}");
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch (_e) {}
+    return {};
+  }
+
+  function writeHorizontalSplitEntry(key, entry) {
+    try {
+      const store = readHorizontalSplitStore();
+      store[key] = entry;
+      localStorage.setItem(SPLIT_STATE_STORAGE_KEY, JSON.stringify(store));
+    } catch (_e) {}
+  }
+
+  function dispatchLayoutResize() {
+    try {
+      window.dispatchEvent(new Event("resize"));
+    } catch (_e) {}
+  }
+
+  function createColSplitterElement(side, onToggleHidden) {
+    const splitter = document.createElement("div");
+    splitter.className = `ux-col-splitter is-side-${side}`;
+    splitter.setAttribute("role", "separator");
+    splitter.setAttribute("aria-orientation", "vertical");
+    splitter.setAttribute("tabindex", "0");
+    splitter.title = tr("拖拽调整宽度，双击恢复默认");
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "ux-col-splitter-toggle";
+    toggleBtn.setAttribute("aria-label", tr("隐藏面板"));
+    toggleBtn.title = tr("隐藏面板");
+    toggleBtn.innerHTML = `<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 2.5 4 6l3.5 3.5"/></svg>`;
+    toggleBtn.addEventListener("pointerdown", (event) => {
+      event.stopPropagation();
+    });
+    toggleBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onToggleHidden();
+    });
+    splitter.appendChild(toggleBtn);
+    return { splitter, toggleBtn };
+  }
+
+  function updateSplitterToggleVisual(splitter, toggleBtn, side, hidden) {
+    splitter.classList.toggle("is-target-hidden", Boolean(hidden));
+    const label = tr(hidden ? "显示面板" : "隐藏面板");
+    toggleBtn.title = label;
+    toggleBtn.setAttribute("aria-label", label);
+    toggleBtn.setAttribute("aria-pressed", hidden ? "true" : "false");
+    // side="left": 展开时箭头朝左(收起)，隐藏时朝右(展开)；side="right" 相反
+    const pointRight = side === "left" ? Boolean(hidden) : !Boolean(hidden);
+    toggleBtn.classList.toggle("is-point-right", pointRight);
+  }
+
   function initSharedSidebarToggle() {
     const toggleBtn = document.getElementById("appSidebarToggle");
-    if (!toggleBtn || toggleBtn.dataset.bound === "true") return;
-    toggleBtn.dataset.bound = "true";
+    const sidebar = document.getElementById("appSidebar");
+    const appBody = sidebar?.parentElement;
+
     const applyCollapsed = (collapsed, persist = true) => {
       document.documentElement.dataset.sidebarCollapsed = collapsed ? "true" : "false";
-      toggleBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
-      const label = tr(collapsed ? "展开侧栏" : "收起侧栏");
-      toggleBtn.title = label;
-      const span = toggleBtn.querySelector(".nav-label");
-      if (span) span.textContent = label;
+      if (toggleBtn) {
+        toggleBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        const label = tr(collapsed ? "展开侧栏" : "收起侧栏");
+        toggleBtn.title = label;
+        const span = toggleBtn.querySelector(".nav-label");
+        if (span) span.textContent = label;
+      }
       if (persist) {
         try {
           localStorage.setItem("polarSidebarCollapsed", collapsed ? "1" : "0");
         } catch (_e) {}
       }
-      setTimeout(() => {
-        try { window.dispatchEvent(new Event("resize")); } catch (_e) {}
-      }, 180);
+      setTimeout(dispatchLayoutResize, 180);
     };
-    const initial = document.documentElement.dataset.sidebarCollapsed === "true";
-    applyCollapsed(initial, false);
-    toggleBtn.addEventListener("click", () => {
-      const next = document.documentElement.dataset.sidebarCollapsed !== "true";
-      applyCollapsed(next, true);
+
+    if (toggleBtn && toggleBtn.dataset.bound !== "true") {
+      toggleBtn.dataset.bound = "true";
+      const initial = document.documentElement.dataset.sidebarCollapsed === "true";
+      applyCollapsed(initial, false);
+      toggleBtn.addEventListener("click", () => {
+        document.documentElement.dataset.sidebarHidden = "false";
+        const next = document.documentElement.dataset.sidebarCollapsed !== "true";
+        applyCollapsed(next, true);
+        if (sidebar) sidebar.dispatchEvent(new CustomEvent("ux-sidebar-sync"));
+      });
+    }
+
+    if (!sidebar || !appBody || sidebar.dataset.uxSplitterBound === "true") return;
+    sidebar.dataset.uxSplitterBound = "true";
+
+    const DEFAULT_WIDTH = 184;
+    const MIN_WIDTH = 136;
+    const MAX_WIDTH = 320;
+    const HIDE_THRESHOLD = 46;
+    const COMPACT_THRESHOLD = 104;
+
+    const store = readHorizontalSplitStore();
+    const saved = store.__appSidebar || {};
+    let expandedWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Number(saved.size) || DEFAULT_WIDTH));
+    let isHidden = Boolean(saved.hidden);
+
+    const { splitter, toggleBtn: hideBtn } = createColSplitterElement("left", () => {
+      isHidden = !isHidden;
+      applySidebarState(true);
+    });
+    splitter.classList.add("is-sidebar-splitter");
+
+    function applySidebarState(persist = false) {
+      document.documentElement.style.setProperty("--app-sidebar-width", `${Math.round(expandedWidth)}px`);
+      document.documentElement.dataset.sidebarHidden = isHidden ? "true" : "false";
+      updateSplitterToggleVisual(splitter, hideBtn, "left", isHidden);
+      if (persist) {
+        writeHorizontalSplitEntry("__appSidebar", { size: Math.round(expandedWidth), hidden: isHidden });
+      }
+      setTimeout(dispatchLayoutResize, 60);
+    }
+
+    sidebar.addEventListener("ux-sidebar-sync", () => {
+      isHidden = document.documentElement.dataset.sidebarHidden === "true";
+      updateSplitterToggleVisual(splitter, hideBtn, "left", isHidden);
+      writeHorizontalSplitEntry("__appSidebar", { size: Math.round(expandedWidth), hidden: isHidden });
+    });
+
+    if (typeof appBody.insertBefore === "function") {
+      appBody.insertBefore(splitter, sidebar.nextSibling);
+    }
+    applySidebarState(false);
+
+    splitter.addEventListener("dblclick", () => {
+      isHidden = false;
+      expandedWidth = DEFAULT_WIDTH;
+      applyCollapsed(false, true);
+      applySidebarState(true);
+    });
+
+    splitter.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        isHidden = !isHidden;
+        applySidebarState(true);
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        isHidden = false;
+        applyCollapsed(false, true);
+        expandedWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, expandedWidth + (event.key === "ArrowRight" ? 16 : -16)));
+        applySidebarState(true);
+      }
+    });
+
+    splitter.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      if (event.target instanceof Element && event.target.closest(".ux-col-splitter-toggle")) return;
+      event.preventDefault();
+      const bodyRect = appBody.getBoundingClientRect();
+      splitter.classList.add("is-dragging");
+      document.body?.classList?.add("is-ux-col-resizing");
+      try { splitter.setPointerCapture(event.pointerId); } catch (_e) {}
+
+      const onMove = (moveEvent) => {
+        const raw = moveEvent.clientX - bodyRect.left;
+        if (raw <= HIDE_THRESHOLD) {
+          isHidden = true;
+          applySidebarState(false);
+        } else if (raw <= COMPACT_THRESHOLD) {
+          isHidden = false;
+          applyCollapsed(true, false);
+          applySidebarState(false);
+        } else {
+          isHidden = false;
+          if (document.documentElement.dataset.sidebarCollapsed === "true") {
+            applyCollapsed(false, false);
+          }
+          expandedWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, raw));
+          applySidebarState(false);
+        }
+      };
+
+      const onUp = () => {
+        splitter.classList.remove("is-dragging");
+        document.body?.classList?.remove("is-ux-col-resizing");
+        splitter.removeEventListener("pointermove", onMove);
+        splitter.removeEventListener("pointerup", onUp);
+        splitter.removeEventListener("pointercancel", onUp);
+        try { localStorage.setItem("polarSidebarCollapsed", document.documentElement.dataset.sidebarCollapsed === "true" ? "1" : "0"); } catch (_e) {}
+        applySidebarState(true);
+      };
+
+      splitter.addEventListener("pointermove", onMove);
+      splitter.addEventListener("pointerup", onUp);
+      splitter.addEventListener("pointercancel", onUp);
     });
   }
+
+  /**
+   * 通用页面内部左右分栏纵向分隔条引擎（双端所有两栏页面自动接入）
+   */
+  const HORIZONTAL_SPLIT_SPECS = [
+    { selector: ".model-page-layout", key: "model", side: "left", defaultSize: 280, minSize: 160, maxSize: 520 },
+    { selector: ".curve-page-layout", key: "curves", side: "left", defaultSize: 280, minSize: 160, maxSize: 520 },
+    { selector: ".fault-split-layout", key: "faults", side: "left", defaultSize: 280, minSize: 160, maxSize: 520 },
+    { selector: ".mode-page-layout", key: "modes", side: "left", defaultSize: 280, minSize: 160, maxSize: 520 },
+    { selector: ".runtime-page-layout", key: "runtime", side: "left", defaultSize: 280, minSize: 160, maxSize: 520 },
+    { selector: ".measurement-page-layout", key: "measurements", side: "left", defaultSize: 280, minSize: 160, maxSize: 520 },
+    { selector: ".renewable-page-layout", key: "renewable", side: "left", defaultSize: 340, minSize: 240, maxSize: 540 },
+    { selector: ".renewable-trend-workspace", key: "renewable-trend", side: "left", defaultSize: 224, minSize: 150, maxSize: 380 },
+    { selector: ".overview-main-grid", key: "overview-boundary", side: "right", defaultSize: 300, minSize: 190, maxSize: 480 },
+    { selector: ".parameter-page-layout", key: "parameters", side: "right", defaultSize: 340, minSize: 210, maxSize: 520 },
+  ];
+
+  function resolveSplitStorageKey(container, spec) {
+    const faultPanel = container.closest?.("[data-fault-panel]")?.getAttribute("data-fault-panel");
+    if (faultPanel) return `${spec.key}:${faultPanel}`;
+    const pageName = container.closest?.("[data-page]")?.getAttribute("data-page");
+    return pageName ? `${pageName}:${spec.key}` : spec.key;
+  }
+
+  function bindGridHorizontalSplitter(container, spec) {
+    if (!container || container.dataset.uxSplitBound === "true") return;
+    const directChildren = Array.from(container.children || []).filter(
+      (child) => !child.classList?.contains("ux-col-splitter"),
+    );
+    if (directChildren.length !== 2) return;
+    const [leftPane, rightPane] = directChildren;
+    const targetPane = spec.side === "left" ? leftPane : rightPane;
+    container.dataset.uxSplitBound = "true";
+    container.classList.add("ux-has-col-splitter", `is-side-${spec.side}`);
+    targetPane.classList.add("ux-collapsible-pane");
+
+    const storageKey = resolveSplitStorageKey(container, spec);
+    const store = readHorizontalSplitStore();
+    const saved = store[storageKey] || {};
+    const HIDE_THRESHOLD = 72;
+    let currentSize = Math.min(spec.maxSize, Math.max(spec.minSize, Number(saved.size) || spec.defaultSize));
+    let isHidden = Boolean(saved.hidden);
+
+    const { splitter, toggleBtn } = createColSplitterElement(spec.side, () => {
+      isHidden = !isHidden;
+      applyState(true);
+    });
+
+    function applyState(persist = false) {
+      container.style.setProperty("--ux-split-size", `${Math.round(currentSize)}px`);
+      container.classList.toggle("is-pane-hidden", isHidden);
+      targetPane.setAttribute("aria-hidden", isHidden ? "true" : "false");
+      updateSplitterToggleVisual(splitter, toggleBtn, spec.side, isHidden);
+      if (persist) {
+        writeHorizontalSplitEntry(storageKey, { size: Math.round(currentSize), hidden: isHidden });
+      }
+      setTimeout(dispatchLayoutResize, 60);
+    }
+
+    if (typeof container.insertBefore === "function") {
+      container.insertBefore(splitter, rightPane);
+    }
+    applyState(false);
+
+    splitter.addEventListener("dblclick", () => {
+      isHidden = false;
+      currentSize = spec.defaultSize;
+      applyState(true);
+    });
+
+    splitter.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        isHidden = !isHidden;
+        applyState(true);
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        const sign = spec.side === "left"
+          ? (event.key === "ArrowRight" ? 1 : -1)
+          : (event.key === "ArrowLeft" ? 1 : -1);
+        isHidden = false;
+        currentSize = Math.min(spec.maxSize, Math.max(spec.minSize, currentSize + sign * 20));
+        applyState(true);
+      }
+    });
+
+    splitter.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      if (event.target instanceof Element && event.target.closest(".ux-col-splitter-toggle")) return;
+      event.preventDefault();
+      const rect = container.getBoundingClientRect();
+      const maxAllowed = Math.min(spec.maxSize, Math.max(spec.minSize, rect.width - 260));
+      splitter.classList.add("is-dragging");
+      document.body?.classList?.add("is-ux-col-resizing");
+      try { splitter.setPointerCapture(event.pointerId); } catch (_e) {}
+
+      const onMove = (moveEvent) => {
+        const raw = spec.side === "left"
+          ? (moveEvent.clientX - rect.left)
+          : (rect.right - moveEvent.clientX);
+        if (raw < HIDE_THRESHOLD) {
+          isHidden = true;
+          applyState(false);
+        } else {
+          isHidden = false;
+          currentSize = Math.min(maxAllowed, Math.max(spec.minSize, raw));
+          applyState(false);
+        }
+      };
+
+      const onUp = () => {
+        splitter.classList.remove("is-dragging");
+        document.body?.classList?.remove("is-ux-col-resizing");
+        splitter.removeEventListener("pointermove", onMove);
+        splitter.removeEventListener("pointerup", onUp);
+        splitter.removeEventListener("pointercancel", onUp);
+        applyState(true);
+      };
+
+      splitter.addEventListener("pointermove", onMove);
+      splitter.addEventListener("pointerup", onUp);
+      splitter.addEventListener("pointercancel", onUp);
+    });
+  }
+
+  function enhanceAllHorizontalSplitters() {
+    for (const spec of HORIZONTAL_SPLIT_SPECS) {
+      document.querySelectorAll(spec.selector).forEach((container) => {
+        bindGridHorizontalSplitter(container, spec);
+      });
+    }
+  }
+  window.refreshUxSplitters = enhanceAllHorizontalSplitters;
 
   /**
    * 顶栏注入轻量 Ctrl+K 快捷入口按钮、全局快捷键与导航进度条监听
    */
   function initGlobalShortcutsAndChrome() {
     initSharedSidebarToggle();
+    enhanceAllHorizontalSplitters();
+
+    const pageMain = document.querySelector(".page-main");
+    if (pageMain && typeof MutationObserver === "function") {
+      const splitObserver = new MutationObserver(() => {
+        enhanceAllHorizontalSplitters();
+      });
+      splitObserver.observe(pageMain, { childList: true });
+    }
     const utilityGroup = document.querySelector(".topbar-utility-group");
     if (utilityGroup && !document.getElementById("uxCommandPaletteButton")) {
       const btn = document.createElement("button");
@@ -445,7 +763,10 @@
     }
 
     document.querySelectorAll(".page-nav button[data-nav-page]").forEach((btn) => {
-      btn.addEventListener("click", flashTopProgress);
+      btn.addEventListener("click", () => {
+        flashTopProgress();
+        requestAnimationFrame(enhanceAllHorizontalSplitters);
+      });
     });
     const modelSel = document.getElementById("modelSelector");
     modelSel?.addEventListener("change", flashTopProgress);

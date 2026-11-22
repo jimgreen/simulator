@@ -586,6 +586,9 @@ const PHRASE_TRANSLATIONS = {
   "收起侧栏": ["Collapse Sidebar", "Свернуть меню"],
   "展开侧栏": ["Expand Sidebar", "Развернуть меню"],
   "未在日志对象中匹配到设备": ["No matching device found in log entry", "Устройство не найдено в записи журнала"],
+  "拖拽调整宽度，双击恢复默认": ["Drag to resize, double-click to reset", "Тяните для ширины, двойной клик — сброс"],
+  "隐藏面板": ["Hide Panel", "Скрыть панель"],
+  "显示面板": ["Show Panel", "Показать панель"],
 
   // 主页、边界、曲线与参数配置补充词条（实现静态 HTML 100% 三语全覆盖）
   "输入边界": ["Input Boundaries", "Входные границы"],
