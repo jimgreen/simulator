@@ -546,6 +546,7 @@ class TraineeFrontendStructureTests(unittest.TestCase):
         index_html = (web_dir / "index.html").read_text(encoding="utf-8")
         self.assertFalse((web_dir / "app.js").exists(), "旧单体 app.js 应已移除")
         expected_modules = [
+            "00-i18n.js",
             "01-state-core.js",
             "02-diagram-core.js",
             "03-diagram-editor.js",
@@ -618,6 +619,11 @@ function runBundle(htmlPath) {
     const fp = path.join(rootDir, rel.replace(/^\//, ""));
     vm.runInContext(fs.readFileSync(fp, "utf8"), ctx, { filename: rel });
   }
+  if (typeof ctx.applyUiLanguage === "function") {
+    ctx.applyUiLanguage("en-US", { persist: true, notify: false, redraw: false });
+    ctx.applyUiLanguage("ru-RU", { persist: true, notify: false, redraw: false });
+    ctx.applyUiLanguage("zh-CN", { persist: true, notify: false, redraw: false });
+  }
 }
 for (const p of process.argv.slice(1)) runBundle(p);
 """
@@ -634,17 +640,19 @@ for (const p of process.argv.slice(1)) runBundle(p);
         )
         self.assertEqual(proc.returncode, 0, f"前端模块顺序加载失败：\n{proc.stderr}")
 
-    def test_all_web_pages_expose_all_seven_style_presets(self) -> None:
-        """三套 Web 页面均应完整列出全部 7 套风格预设，CSS 完整实现对应 data-theme。"""
+    def test_all_web_pages_expose_all_eight_style_presets(self) -> None:
+        """三套 Web 页面均应完整列出最新 8 套风格预设，移除 neo-brutalism 与旧 sci-fi。"""
         expected_themes = (
             "minimalist-light",
             "precision-dark",
             "bento-grid",
             "glassmorphism",
             "editorial",
-            "neo-brutalism",
-            "sci-fi",
+            "sci-fi-cyan",
+            "sci-fi-purple",
+            "sci-fi-matrix",
         )
+        removed_themes = ("neo-brutalism", "sci-fi")
         pages = [
             (
                 REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "index.html",
@@ -666,6 +674,75 @@ for (const p of process.argv.slice(1)) runBundle(p);
             for theme_id in expected_themes:
                 self.assertIn(f'value="{theme_id}"', html_text, f"{html_path.name} 缺少风格选项 {theme_id}")
                 self.assertIn(f'[data-theme="{theme_id}"]', css_text, f"{css_path.name} 缺少风格样式 {theme_id}")
+            for old_id in removed_themes:
+                self.assertNotIn(f'value="{old_id}"', html_text, f"{html_path.name} 仍残留已废弃选项 {old_id}")
+                self.assertNotIn(f'[data-theme="{old_id}"]', css_text, f"{css_path.name} 仍残留已废弃样式 {old_id}")
+
+    def test_all_web_pages_support_trilingual_i18n(self) -> None:
+        """三套 Web 页面均应提供 zh-CN / en-US / ru-RU 实时切换器且三语词典键完整对齐。"""
+        import shutil
+        import subprocess
+
+        pages = [
+            REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "index.html",
+            REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "index.html",
+            REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "scada104.html",
+        ]
+        for html_path in pages:
+            html_text = html_path.read_text(encoding="utf-8")
+            self.assertIn('id="langSelector"', html_text, f"{html_path.name} 缺少语言选择器")
+            self.assertIn("/js/00-i18n.js", html_text, f"{html_path.name} 未引入 00-i18n.js")
+            for lang_code in ("zh-CN", "en-US", "ru-RU"):
+                self.assertIn(f'value="{lang_code}"', html_text, f"{html_path.name} 缺少语言选项 {lang_code}")
+
+        sim_i18n = (REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "js" / "00-i18n.js").read_text(encoding="utf-8")
+        trn_i18n = (REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "js" / "00-i18n.js").read_text(encoding="utf-8")
+        self.assertEqual(sim_i18n, trn_i18n, "教员端与学员端 00-i18n.js 内容应保持一致")
+
+        node = shutil.which("node")
+        if node:
+            check_js = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync(process.argv[1], "utf8");
+const ctx = {
+  document: { documentElement: { lang: "zh-CN", dataset: {} }, body: null, getElementById: () => null, querySelector: () => null },
+  window: { addEventListener(){} },
+  localStorage: { getItem: () => null, setItem(){} },
+  WeakMap, Set, Map, Object, Array, RegExp, String,
+};
+vm.createContext(ctx);
+vm.runInContext(code + "\nthis.__EXPORT = { I18N_DICT, PHRASE_TRANSLATIONS, translatePhrase, t };", ctx);
+const { I18N_DICT, PHRASE_TRANSLATIONS, translatePhrase } = ctx.__EXPORT;
+const zhKeys = Object.keys(I18N_DICT["zh-CN"]).sort();
+for (const lang of ["en-US", "ru-RU"]) {
+  const keys = Object.keys(I18N_DICT[lang]).sort();
+  if (JSON.stringify(keys) !== JSON.stringify(zhKeys)) {
+    throw new Error(`I18N_DICT keys mismatch for ${lang}`);
+  }
+}
+for (const [zh, pair] of Object.entries(PHRASE_TRANSLATIONS)) {
+  if (!Array.isArray(pair) || pair.length !== 2 || !pair[0] || !pair[1]) {
+    throw new Error(`Invalid phrase pair for ${zh}`);
+  }
+}
+if (translatePhrase("极地微电网模拟台", "en-US") !== "Polar Microgrid Simulator") {
+  throw new Error("en-US translation check failed");
+}
+if (translatePhrase("极地微电网模拟台", "ru-RU") !== "Симулятор полярной микросети") {
+  throw new Error("ru-RU translation check failed");
+}
+if (translatePhrase("12 台设备", "ru-RU") !== "12 устр.") {
+  throw new Error("dynamic pattern check failed");
+}
+"""
+            proc = subprocess.run(
+                [node, "-e", check_js, str(REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "js" / "00-i18n.js")],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(proc.returncode, 0, f"i18n 词典校验失败：\n{proc.stderr}")
 
 
 if __name__ == "__main__":

@@ -1986,16 +1986,22 @@ const UI_THEME_PRESETS = [
   { id: "bento-grid", label: "便当盒网格", scheme: "light" },
   { id: "glassmorphism", label: "毛玻璃拟态", scheme: "dark" },
   { id: "editorial", label: "编辑杂志", scheme: "light" },
-  { id: "neo-brutalism", label: "新粗野主义", scheme: "light" },
-  { id: "sci-fi", label: "科幻战情", scheme: "dark" },
+  { id: "sci-fi-cyan", label: "科幻 · 电光青", scheme: "dark" },
+  { id: "sci-fi-purple", label: "科幻 · 赛博紫", scheme: "dark" },
+  { id: "sci-fi-matrix", label: "科幻 · 矩阵绿", scheme: "dark" },
 ];
 
 const UI_THEME_MAP = new Map(UI_THEME_PRESETS.map((item) => [item.id, item]));
+const LEGACY_UI_THEME_MAP = {
+  dark: "precision-dark",
+  light: "minimalist-light",
+  "sci-fi": "sci-fi-cyan",
+  "neo-brutalism": "minimalist-light",
+};
 
 function normalizeUiTheme(raw) {
-  if (raw === "dark") return "precision-dark";
-  if (raw === "light") return "minimalist-light";
-  return UI_THEME_MAP.has(raw) ? raw : "minimalist-light";
+  const mapped = LEGACY_UI_THEME_MAP[raw] || raw;
+  return UI_THEME_MAP.has(mapped) ? mapped : "minimalist-light";
 }
 
 function currentUiTheme() {
@@ -2020,14 +2026,16 @@ function applyUiTheme(themeId, { persist = true, notify = false, redraw = true }
     redrawActiveTraineeCharts();
   }
   if (notify) {
-    showUiToast(`已切换至「${meta.label}」风格`, "info", 2000);
+    const themeName = typeof t === "function" ? t(`theme.${meta.id}`) : meta.label;
+    const msg = typeof t === "function" ? t("toast.themeChanged", { name: themeName }) : `已切换至「${meta.label}」风格`;
+    showUiToast(msg, "info", 2000);
   }
   return meta;
 }
 
 function chartThemePalette() {
   const theme = currentUiTheme();
-  if (theme === "sci-fi") {
+  if (theme === "sci-fi-cyan") {
     return {
       bg: "#061020",
       grid: "rgba(0, 229, 255, 0.14)",
@@ -2039,6 +2047,34 @@ function chartThemePalette() {
       tooltipBorder: "rgba(0, 229, 255, 0.42)",
       tooltipTitle: "#e6f7ff",
       tooltipText: "#bae6fd",
+    };
+  }
+  if (theme === "sci-fi-purple") {
+    return {
+      bg: "#120c24",
+      grid: "rgba(192, 132, 252, 0.15)",
+      gridSubtle: "rgba(192, 132, 252, 0.08)",
+      axis: "rgba(192, 132, 252, 0.36)",
+      text: "#a695c9",
+      markerFill: "#120c24",
+      tooltipBg: "rgba(18, 12, 36, 0.96)",
+      tooltipBorder: "rgba(192, 132, 252, 0.44)",
+      tooltipTitle: "#f3eeff",
+      tooltipText: "#d8b4fe",
+    };
+  }
+  if (theme === "sci-fi-matrix") {
+    return {
+      bg: "#081810",
+      grid: "rgba(0, 230, 118, 0.14)",
+      gridSubtle: "rgba(0, 230, 118, 0.07)",
+      axis: "rgba(0, 230, 118, 0.34)",
+      text: "#7eb396",
+      markerFill: "#081810",
+      tooltipBg: "rgba(8, 24, 16, 0.96)",
+      tooltipBorder: "rgba(0, 230, 118, 0.42)",
+      tooltipTitle: "#e2fbe9",
+      tooltipText: "#a7f3d0",
     };
   }
   if (theme === "glassmorphism") {
@@ -2081,20 +2117,6 @@ function chartThemePalette() {
       tooltipBorder: "#d4d4d8",
       tooltipTitle: "#18181b",
       tooltipText: "#3f3f46",
-    };
-  }
-  if (theme === "neo-brutalism") {
-    return {
-      bg: "#fffdf7",
-      grid: "rgba(9, 9, 11, 0.18)",
-      gridSubtle: "rgba(9, 9, 11, 0.08)",
-      axis: "#09090b",
-      text: "#27272a",
-      markerFill: "#fef9c3",
-      tooltipBg: "#ffffff",
-      tooltipBorder: "#09090b",
-      tooltipTitle: "#09090b",
-      tooltipText: "#27272a",
     };
   }
   if (theme === "bento-grid") {
@@ -2205,6 +2227,9 @@ function initPrecisionUiChrome() {
       applyUiTheme(event.newValue, { persist: false, notify: false, redraw: true });
     }
   });
+  if (typeof initUiI18n === "function") {
+    initUiI18n();
+  }
   // 为所有含左侧设备树的页面注入一键折叠/展开按钮，扩大表格与曲线主可视区。
   document.querySelectorAll(".device-tree-panel").forEach((aside) => {
     const head = aside.querySelector(".panel-head");
@@ -2212,11 +2237,13 @@ function initPrecisionUiChrome() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "tree-collapse-btn";
-    btn.textContent = "收起";
-    btn.title = "折叠/展开左侧设备树面板";
+    btn.dataset.i18n = "tree.collapse";
+    btn.textContent = typeof t === "function" ? t("tree.collapse") : "收起";
+    btn.title = typeof t === "function" ? t("tree.toggleTitle") : "折叠/展开左侧设备树面板";
     btn.addEventListener("click", () => {
       const collapsed = aside.classList.toggle("is-collapsed");
-      btn.textContent = collapsed ? "展开" : "收起";
+      btn.dataset.i18n = collapsed ? "tree.expand" : "tree.collapse";
+      btn.textContent = typeof t === "function" ? t(btn.dataset.i18n) : (collapsed ? "展开" : "收起");
       requestAnimationFrame(redrawActiveTraineeCharts);
     });
     head.appendChild(btn);

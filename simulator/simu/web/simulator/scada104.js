@@ -31,15 +31,21 @@ const UI_THEME_PRESETS = [
   { id: "bento-grid", label: "便当盒网格", scheme: "light" },
   { id: "glassmorphism", label: "毛玻璃拟态", scheme: "dark" },
   { id: "editorial", label: "编辑杂志", scheme: "light" },
-  { id: "neo-brutalism", label: "新粗野主义", scheme: "light" },
-  { id: "sci-fi", label: "科幻战情", scheme: "dark" },
+  { id: "sci-fi-cyan", label: "科幻 · 电光青", scheme: "dark" },
+  { id: "sci-fi-purple", label: "科幻 · 赛博紫", scheme: "dark" },
+  { id: "sci-fi-matrix", label: "科幻 · 矩阵绿", scheme: "dark" },
 ];
 const UI_THEME_MAP = new Map(UI_THEME_PRESETS.map((item) => [item.id, item]));
+const LEGACY_UI_THEME_MAP = {
+  dark: "precision-dark",
+  light: "minimalist-light",
+  "sci-fi": "sci-fi-cyan",
+  "neo-brutalism": "minimalist-light",
+};
 
 function normalizeUiTheme(raw) {
-  if (raw === "dark") return "precision-dark";
-  if (raw === "light") return "minimalist-light";
-  return UI_THEME_MAP.has(raw) ? raw : "minimalist-light";
+  const mapped = LEGACY_UI_THEME_MAP[raw] || raw;
+  return UI_THEME_MAP.has(mapped) ? mapped : "minimalist-light";
 }
 
 function applyUiTheme(themeId, { persist = true } = {}) {
@@ -76,6 +82,9 @@ function initThemeToggle() {
       applyUiTheme(event.newValue, { persist: false });
     }
   });
+  if (typeof initUiI18n === "function") {
+    initUiI18n();
+  }
 }
 
 function setActiveViewTab(tab) {
