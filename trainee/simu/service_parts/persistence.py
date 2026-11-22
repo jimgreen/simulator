@@ -74,16 +74,17 @@ class _PersistenceMixin:
     def _load_runtime_state_from_disk(self) -> None:
         self._copy_runtime_inputs()
         self.weather_defaults = self._read_weather_defaults()
+        self.local_settings = self._read_local_settings()
+        self._source_measurement_statuses = self._read_source_measurement_statuses()
+        # 首次加载定义后再检查天气量测；仅在确有增补写盘时才重载，消除冷启动重复解析 3 遍的开销。
         self.reload_definition_state()
-        self.ensure_weather_measurements_in_definition_files()
-        self.reload_definition_state()
+        if self.ensure_weather_measurements_in_definition_files():
+            self.reload_definition_state()
         with self.curves_lock:
             self.curves = self._read_curves()
             self._curve_revision += 1
             curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
         self.clock.speed = _simulation_mode_default_clock_speed(curve_mode)
-        self.local_settings = self._read_local_settings()
-        self._source_measurement_statuses = self._read_source_measurement_statuses()
         self._apply_stored_system_parameters()
         self.command_history = self._read_command_history()
         self._rebuild_strategy_generation_index()
@@ -92,7 +93,6 @@ class _PersistenceMixin:
         self._last_command_response_index = len(self.command_history)
         self.runtime_logs = self._read_runtime_logs()
         self._runtime_log_seq = max((int(_to_float(item.get("seq"), 0) or 0) for item in self.runtime_logs), default=0)
-        self.reload_definition_state()
         self._load_manual_definition_changes()
         self._reset_hydrogen_storage_state_to_initial()
         self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
@@ -1000,6 +1000,34 @@ class _PersistenceMixin:
                 self._manual_definition_changes.pop(change_id, None)
 
     def snapshot(
+        self,
+        include_static: bool = True,
+        runtime_log_limit: int = 300,
+        *,
+        include_runtime_logs: bool = True,
+        include_measurements: bool = True,
+        include_static_meta: bool = True,
+        static_fields: Optional[Sequence[str]] = None,
+        include_devices: bool = True,
+        include_device_states: bool = True,
+        include_commands: bool = True,
+        include_command_history: bool = True,
+    ) -> Dict[str, Any]:
+        with self.lock:
+            return self._snapshot_locked(
+                include_static=include_static,
+                runtime_log_limit=runtime_log_limit,
+                include_runtime_logs=include_runtime_logs,
+                include_measurements=include_measurements,
+                include_static_meta=include_static_meta,
+                static_fields=static_fields,
+                include_devices=include_devices,
+                include_device_states=include_device_states,
+                include_commands=include_commands,
+                include_command_history=include_command_history,
+            )
+
+    def _snapshot_locked(
         self,
         include_static: bool = True,
         runtime_log_limit: int = 300,

@@ -419,9 +419,10 @@ function openRemoteAdjustmentDialog(row) {
 async function sendRemoteAdjustmentCommand() {
   const row = state.remoteAdjustment;
   if (!row || state.remoteAdjustmentSending) return;
-  const setValue = Number($("remoteAdjustmentValue").value);
-  if (!Number.isFinite(setValue)) {
-    $("remoteAdjustmentHint").textContent = "请输入有效的控制值。";
+  const rawInput = String($("remoteAdjustmentValue")?.value ?? "").trim();
+  const setValue = Number(rawInput);
+  if (!rawInput || !Number.isFinite(setValue)) {
+    $("remoteAdjustmentHint").textContent = "请输入有效的控制值（不能为空）。";
     $("remoteAdjustmentHint").className = "remote-control-hint is-error";
     return;
   }
@@ -729,13 +730,21 @@ document.addEventListener("input", (event) => {
   if (setKey) {
     const [dev_type, dev_name] = setKey.split("|");
     const set_type = target.dataset.setType;
-    pending.set_values.set(`${setKey}|${set_type}`, {
-      dev_type,
-      dev_name,
-      set_type,
-      set_value: Number(target.value),
-    });
-    target.classList.add("is-pending");
+    const entryKey = `${setKey}|${set_type}`;
+    const rawValue = String(target.value ?? "").trim();
+    const parsed = Number(rawValue);
+    if (!rawValue || !Number.isFinite(parsed)) {
+      pending.set_values.delete(entryKey);
+      target.classList.remove("is-pending");
+    } else {
+      pending.set_values.set(entryKey, {
+        dev_type,
+        dev_name,
+        set_type,
+        set_value: parsed,
+      });
+      target.classList.add("is-pending");
+    }
     updatePendingCount();
     drawCommandTraceChart();
   }
@@ -932,7 +941,7 @@ $("renewableControlLogPager")?.addEventListener("click", (event) => {
   state.renewableControl.lastControlLogRenderKey = "";
   renderRenewableControlLogs();
 });
-$("clearRuntimeLogs").addEventListener("click", clearTraineeRuntimeLogs);
+// #clearRuntimeLogs 由全局点击事件委托统一处理，避免重复绑定触发二次 showModal() 报错。
 const runtimeLogTableNode = $("commandHistory");
 runtimeLogTableNode.addEventListener("click", handleRuntimeLogTableActivation);
 runtimeLogTableNode.addEventListener("dblclick", handleRuntimeLogTableActivation);
@@ -1119,14 +1128,23 @@ if (curveDisplayChart) {
     handleCurveDisplaySelection(event);
   });
 }
+let traineeResizeTimerId = null;
 window.addEventListener("resize", () => {
-  drawMeasurementTraceChart();
-  drawCommandTraceChart();
-  drawRenewableTrendChart();
-  drawCurveDisplay(state.snapshot || {});
+  if (traineeResizeTimerId !== null) clearTimeout(traineeResizeTimerId);
+  traineeResizeTimerId = setTimeout(() => {
+    traineeResizeTimerId = null;
+    redrawActiveTraineeCharts();
+  }, 120);
 });
 document.addEventListener("visibilitychange", () => {
-  scheduleNextRefresh(pageIsHidden() ? HIDDEN_REFRESH_INTERVAL_MS : 0);
+  if (pageIsHidden()) {
+    if (state.frontendRefreshTimerId) {
+      clearTimeout(state.frontendRefreshTimerId);
+      state.frontendRefreshTimerId = null;
+    }
+    return;
+  }
+  scheduleNextRefresh(0);
 });
 
 function initTraineeUiEnhancements() {
@@ -1207,6 +1225,26 @@ function initTraineeUiEnhancements() {
           });
           return;
         }
+        if (topDialog.id === "remoteControlDialog") {
+          event.preventDefault();
+          closeRemoteControlDialog();
+          return;
+        }
+        if (topDialog.id === "remoteAdjustmentDialog") {
+          event.preventDefault();
+          closeRemoteAdjustmentDialog();
+          return;
+        }
+        if (topDialog.id === "diagramDeviceCommandDialog") {
+          event.preventDefault();
+          closeDiagramDeviceCommandDialog();
+          return;
+        }
+        if (topDialog.id === "modelManagementDialog") {
+          event.preventDefault();
+          closeModelManagementDialog();
+          return;
+        }
         if (typeof topDialog.close === "function") {
           event.preventDefault();
           topDialog.close();
@@ -1215,6 +1253,7 @@ function initTraineeUiEnhancements() {
       return;
     }
     if (event.key === "/" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (document.querySelector("dialog[open]")) return;
       const active = document.activeElement;
       const inEditable = active && (
         active.tagName === "INPUT"
@@ -1231,6 +1270,31 @@ function initTraineeUiEnhancements() {
         visible.select();
       }
     }
+  });
+
+  // 5. 量测异常速筛/CSV 导出 & 运行日志关键字搜索/仅看告警
+  $("measurementOnlyAbnormalFilter")?.addEventListener("change", (event) => {
+    state.measurementOnlyAbnormal = Boolean(event.target.checked);
+    renderMeasurements(state.snapshot || {});
+  });
+  $("exportMeasurementsCsvButton")?.addEventListener("click", () => {
+    exportTraineeMeasurementsCsv();
+  });
+  let traineeLogSearchTimer = null;
+  $("traineeRuntimeLogKeywordFilter")?.addEventListener("input", (event) => {
+    const val = String(event.target.value || "");
+    if (traineeLogSearchTimer) clearTimeout(traineeLogSearchTimer);
+    traineeLogSearchTimer = setTimeout(() => {
+      traineeLogSearchTimer = null;
+      state.runtimeLogKeywordFilter = val;
+      state.runtimeLogPage = 1;
+      renderHistory();
+    }, 150);
+  });
+  $("traineeRuntimeLogOnlyAlertFilter")?.addEventListener("change", (event) => {
+    state.runtimeLogOnlyAlert = Boolean(event.target.checked);
+    state.runtimeLogPage = 1;
+    renderHistory();
   });
 
   // 4. 离开页面前未保存变更保护

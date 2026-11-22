@@ -956,14 +956,20 @@ function renderMeasurements(snapshot = state.snapshot || {}) {
   const allRows = measurementRows(snapshot);
   const filteredRows = filteredMeasurements(allRows, state.measurementFilter);
   syncMeasurementTypeFilter(filteredRows);
-  const tableFilteredRows = applyMeasurementTableFilters(filteredRows);
+  let tableFilteredRows = applyMeasurementTableFilters(filteredRows);
+  if (state.measurementOnlyAbnormal) {
+    tableFilteredRows = tableFilteredRows.filter(
+      (item) => Number(item.valid) !== 1 || String(item.status || "normal") !== "normal",
+    );
+  }
   const telemetryRows = measurementTelemetryRows(tableFilteredRows);
   const signalRows = measurementSignalRows(tableFilteredRows);
   const rows = activeMeasurementRows(tableFilteredRows);
   ensureSelectedMeasurement(rows);
   const validCount = rows.filter((item) => Number(item.valid) === 1).length;
   const activeLabel = state.activeMeasurementTab === "signal" ? "遥信" : "遥测";
-  const filterActive = tableFilterIsActive(state.measurementKeywordFilter, state.measurementTypeFilter);
+  const filterActive = Boolean(state.measurementOnlyAbnormal)
+    || tableFilterIsActive(state.measurementKeywordFilter, state.measurementTypeFilter);
   $("measurementValidCount").textContent = filterActive
     ? `${activeLabel} ${rows.length}/${tableFilteredRows.length} 点 · 有效 ${validCount} 点 · 过滤 ${tableFilteredRows.length}/${filteredRows.length} 点`
     : `${activeLabel} ${rows.length}/${filteredRows.length} 点 · 有效 ${validCount} 点`;
@@ -1001,7 +1007,7 @@ function renderMeasurements(snapshot = state.snapshot || {}) {
   ].join("|");
   if (
     container.dataset.measurementStructureKey === structureKey
-    && updateMeasurementTableLiveCells(rows)
+    && updateMeasurementTableLiveCells(virtualRows.rows)
   ) {
     drawMeasurementTraceChart();
     return;
@@ -1526,8 +1532,9 @@ function drawMeasurementTraceChart() {
   const chartKey = "measurementTrace";
   const ctx = canvas.getContext("2d");
   const { width, height, ratio } = resizeCanvas(canvas);
+  const palette = chartThemePalette();
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#fcfeff";
+  ctx.fillStyle = palette.bg;
   ctx.fillRect(0, 0, width, height);
   const left = 62 * ratio;
   const right = 24 * ratio;
@@ -1537,7 +1544,7 @@ function drawMeasurementTraceChart() {
   const plotHeight = height - top - bottom;
   const plot = { left, right, top, bottom };
   state.chartPlotInfo = { ...(state.chartPlotInfo || {}), [chartKey]: plot };
-  ctx.strokeStyle = "#d8e1e5";
+  ctx.strokeStyle = palette.grid;
   ctx.lineWidth = 1 * ratio;
   for (let i = 0; i <= 4; i += 1) {
     const y = top + (plotHeight * i) / 4;
@@ -1551,12 +1558,12 @@ function drawMeasurementTraceChart() {
   const xTicks = measurementTraceAxisTicks(range, width / ratio);
   xTicks.forEach((minute, tickIndex) => {
     const x = left + ((minute - range.startMinute) / range.windowMinutes) * plotWidth;
-    ctx.strokeStyle = tickIndex === xTicks.length - 1 ? "#c9d6dc" : "#e7eef1";
+    ctx.strokeStyle = tickIndex === xTicks.length - 1 ? palette.axis : palette.gridSubtle;
     ctx.beginPath();
     ctx.moveTo(x, top);
     ctx.lineTo(x, top + plotHeight);
     ctx.stroke();
-    ctx.fillStyle = "#63717a";
+    ctx.fillStyle = palette.text;
     ctx.font = `${12 * ratio}px Consolas, Microsoft YaHei, Arial`;
     ctx.textAlign = tickIndex === xTicks.length - 1 ? "right" : "left";
     const textOffset = tickIndex === 0 ? 0 : tickIndex === xTicks.length - 1 ? 0 : 4 * ratio;
@@ -1744,8 +1751,9 @@ function drawCommandTraceChart() {
   const chartKey = "commandTrace";
   const ctx = canvas.getContext("2d");
   const { width, height, ratio } = resizeCanvas(canvas);
+  const palette = chartThemePalette();
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#fcfeff";
+  ctx.fillStyle = palette.bg;
   ctx.fillRect(0, 0, width, height);
   const left = 62 * ratio;
   const right = 24 * ratio;
@@ -1755,7 +1763,7 @@ function drawCommandTraceChart() {
   const plotHeight = height - top - bottom;
   const plot = { left, right, top, bottom };
   state.chartPlotInfo = { ...(state.chartPlotInfo || {}), [chartKey]: plot };
-  ctx.strokeStyle = "#d8e1e5";
+  ctx.strokeStyle = palette.grid;
   ctx.lineWidth = 1 * ratio;
   for (let i = 0; i <= 4; i += 1) {
     const y = top + (plotHeight * i) / 4;
@@ -1769,12 +1777,12 @@ function drawCommandTraceChart() {
   const xTicks = measurementTraceAxisTicks(range, width / ratio);
   xTicks.forEach((minute, tickIndex) => {
     const x = left + ((minute - range.startMinute) / range.windowMinutes) * plotWidth;
-    ctx.strokeStyle = tickIndex === xTicks.length - 1 ? "#c9d6dc" : "#e7eef1";
+    ctx.strokeStyle = tickIndex === xTicks.length - 1 ? palette.axis : palette.gridSubtle;
     ctx.beginPath();
     ctx.moveTo(x, top);
     ctx.lineTo(x, top + plotHeight);
     ctx.stroke();
-    ctx.fillStyle = "#63717a";
+    ctx.fillStyle = palette.text;
     ctx.font = `${12 * ratio}px Consolas, Microsoft YaHei, Arial`;
     ctx.textAlign = tickIndex === xTicks.length - 1 ? "right" : "left";
     const textOffset = tickIndex === 0 ? 0 : tickIndex === xTicks.length - 1 ? 0 : 4 * ratio;
@@ -2880,6 +2888,46 @@ function enableRuntimeLogColumnResizing(table) {
   });
 }
 
+function exportTraineeMeasurementsCsv() {
+  const snapshot = state.snapshot || {};
+  const allRows = measurementRows(snapshot);
+  const filteredRows = filteredMeasurements(allRows, state.measurementFilter);
+  let tableFilteredRows = applyMeasurementTableFilters(filteredRows);
+  if (state.measurementOnlyAbnormal) {
+    tableFilteredRows = tableFilteredRows.filter(
+      (item) => Number(item.valid) !== 1 || String(item.status || "normal") !== "normal",
+    );
+  }
+  const rows = activeMeasurementRows(tableFilteredRows);
+  if (!rows.length) {
+    showUiToast("当前筛选下无可导出的量测数据", "warn");
+    return;
+  }
+  const csvCell = (val) => `"${String(val ?? "").replace(/"/g, '""')}"`;
+  const lines = [
+    ["idx", "量测名", "设备", "类型", "量测值", "有效性", "状态"].map(csvCell).join(","),
+    ...rows.map((item) => [
+      item.idx ?? "",
+      measurementDisplayName(item) || "",
+      measurementDeviceDisplay(item),
+      measurementTypeDisplay(item),
+      item.scada_value ?? "",
+      Number(item.valid) === 1 ? "有效" : "无效",
+      item.status || "normal",
+    ].map(csvCell).join(",")),
+  ];
+  const blob = new Blob([`\uFEFF${lines.join("\n")}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `trainee-measurements-${state.activeModelId || "model"}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showUiToast(`已导出 ${rows.length} 条量测记录`, "ok", 2200);
+}
+
 function renderHistory() {
   const historyCount = $("historyCount");
   const commandHistory = $("commandHistory");
@@ -2888,9 +2936,25 @@ function renderHistory() {
   const allLogs = filteredTraineeRuntimeLogs();
   const logs = pagedTraineeRuntimeLogs(allLogs);
   renderTraineeRuntimeLogPager(allLogs);
-  historyCount.textContent = state.runtimeLogTypeFilter === "all"
-    ? `${state.runtimeLogs.length} 条`
-    : `${allLogs.length}/${state.runtimeLogs.length} 条`;
+  const filterOn = state.runtimeLogTypeFilter !== "all"
+    || Boolean(String(state.runtimeLogKeywordFilter || "").trim())
+    || Boolean(state.runtimeLogOnlyAlert);
+  historyCount.textContent = filterOn
+    ? `${allLogs.length}/${state.runtimeLogs.length} 条`
+    : `${state.runtimeLogs.length} 条`;
+  const renderKey = [
+    allLogs.length,
+    state.runtimeLogPage,
+    state.runtimeLogSelectedSeq,
+    state.runtimeLogTypeFilter,
+    state.runtimeLogKeywordFilter || "",
+    Boolean(state.runtimeLogOnlyAlert),
+    logs.map((item) => `${item.seq}:${item.level}`).join(","),
+  ].join("|");
+  if (commandHistory.dataset.historyRenderKey === renderKey) {
+    return;
+  }
+  commandHistory.dataset.historyRenderKey = renderKey;
   if (!allLogs.length) {
     commandHistory.innerHTML = '<div class="empty-state">暂无运行日志</div>';
     return;
@@ -2938,15 +3002,32 @@ function syncTraineeRuntimeLogTypeFilter() {
   if (state.runtimeLogTypeFilter !== "all" && !types.includes(state.runtimeLogTypeFilter)) {
     state.runtimeLogTypeFilter = "all";
   }
-  select.innerHTML = ["<option value=\"all\">全部类型</option>", ...types.map((type) => (
-    `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`
-  ))].join("");
-  select.value = state.runtimeLogTypeFilter;
+  const optionsKey = types.join("|");
+  if (select.dataset.optionsKey !== optionsKey) {
+    select.dataset.optionsKey = optionsKey;
+    select.innerHTML = ["<option value=\"all\">全部类型</option>", ...types.map((type) => (
+      `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`
+    ))].join("");
+  }
+  if (select.value !== state.runtimeLogTypeFilter) {
+    select.value = state.runtimeLogTypeFilter;
+  }
 }
 
 function filteredTraineeRuntimeLogs() {
-  if (state.runtimeLogTypeFilter === "all") return state.runtimeLogs;
-  return state.runtimeLogs.filter((item) => item.type === state.runtimeLogTypeFilter);
+  const keyword = String(state.runtimeLogKeywordFilter || "").trim().toLowerCase();
+  const onlyAlert = Boolean(state.runtimeLogOnlyAlert);
+  return state.runtimeLogs.filter((item) => {
+    if (state.runtimeLogTypeFilter !== "all" && item.type !== state.runtimeLogTypeFilter) return false;
+    if (onlyAlert && !["warn", "warning", "error", "bad"].includes(String(item.level || "").toLowerCase())) {
+      return false;
+    }
+    if (keyword) {
+      const hay = `${item.type || ""} ${item.target || ""} ${item.result || ""} ${runtimeLogSummaryText(item)}`.toLowerCase();
+      if (!hay.includes(keyword)) return false;
+    }
+    return true;
+  });
 }
 
 function traineeRuntimeLogPageCount(logs = filteredTraineeRuntimeLogs()) {

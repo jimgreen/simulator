@@ -150,8 +150,8 @@ class _MeasurementsMixin:
         simu_loop.write_measurement_snapshot(meas_file, before, new_rows, after)
         return True
 
-    def ensure_weather_measurements_in_definition_files(self) -> None:
-        self._ensure_weather_measurements_in_file(self.source_files["meas"])
+    def ensure_weather_measurements_in_definition_files(self) -> bool:
+        return bool(self._ensure_weather_measurements_in_file(self.source_files["meas"]))
 
     def _sync_latest_storage_soc_measurement_rows(self) -> None:
         soc_values = self._runtime_storage_soc_values()
@@ -735,7 +735,21 @@ class _MeasurementsMixin:
         layout = self._compiled_measurement_definitions()
         return [dict(row) for row in layout.rows]
 
+    def _record_last_scada_values_locked(
+        self,
+        measurements: Mapping[str, Sequence[Mapping[str, Any]]],
+    ) -> None:
+        """在持锁步进提交阶段更新最近一次 SCADA 量测缓存，避免只读查询并发写字典。"""
+        for item in measurements.get("scada", ()):
+            self._last_scada_values[
+                f"{item['name']}|{item['dev_type']}|{item['dev_name']}|{item['meas_type']}"
+            ] = item.get("value", 0.0) or 0.0
+
     def measurements(self) -> Dict[str, List[Dict[str, Any]]]:
+        with self.lock:
+            return self._measurements_locked()
+
+    def _measurements_locked(self) -> Dict[str, List[Dict[str, Any]]]:
         definitions = self.measurement_definitions()
         real = [_measurement_row_to_dict(row) for row in self.latest_real_rows]
         scada = [_measurement_row_to_dict(row) for row in self.latest_scada_rows]
@@ -783,10 +797,6 @@ class _MeasurementsMixin:
                         row["status"] = status
                         row["fixed_value"] = None
                         row["valid"] = MEASUREMENT_STATUS_VALIDITY.get(status, int(_to_float(raw_valid, 0) or 0))
-        for item in measurements["scada"]:
-            self._last_scada_values[
-                f"{item['name']}|{item['dev_type']}|{item['dev_name']}|{item['meas_type']}"
-            ] = item.get("value", 0.0) or 0.0
         return measurements
 
     def _measurement_delta_current_items(

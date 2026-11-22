@@ -1569,8 +1569,9 @@ function drawRenewableTrendChart() {
   canvas.style.minWidth = `${layout.minCanvasWidth}px`;
   const ctx = canvas.getContext("2d");
   const { width, height, ratio } = resizeCanvas(canvas);
+  const palette = chartThemePalette();
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#fcfeff";
+  ctx.fillStyle = palette.bg;
   ctx.fillRect(0, 0, width, height);
 
   const left = layout.left * ratio;
@@ -1588,7 +1589,7 @@ function drawRenewableTrendChart() {
   for (let index = 0; index <= 4; index += 1) {
     const fraction = index / 4;
     const y = top + plotHeight * fraction;
-    ctx.strokeStyle = index === 4 ? "#c9d6dc" : "#e2eaee";
+    ctx.strokeStyle = index === 4 ? palette.axis : palette.grid;
     ctx.lineWidth = 1 * ratio;
     ctx.beginPath();
     ctx.moveTo(left, y);
@@ -2354,6 +2355,18 @@ async function setRenewableLoopMode(mode) {
   if (renewableLoopMode() === nextMode) {
     renderRenewableControl(state.snapshot || {});
     return;
+  }
+  if (nextMode === "closed") {
+    const confirmed = await confirmDangerousAction({
+      title: "切换为新能源闭环控制？",
+      target: `当前模型：${state.activeModelId || "默认模型"}`,
+      message: "启用闭环模式后，学员台将按控制周期自动向模拟台下发遥控与遥调指令。",
+      confirmLabel: "确认启用闭环",
+    });
+    if (!confirmed) {
+      renderRenewableControl(state.snapshot || {});
+      return;
+    }
   }
   await runRenewableControlAction("set_loop_mode", { loop_mode: nextMode });
 }

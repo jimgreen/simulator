@@ -4,15 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>模拟台 · IEC104 联动</title>
-  <script>
-    try {
-      if (localStorage.getItem("polarUiTheme") === "dark") {
-        document.documentElement.dataset.theme = "dark";
-      }
-    } catch (_e) {}
-  </script>
-  <link rel="stylesheet" href="/scada104.css?v=20261122-precision-ui">
-  <script src="/scada104.js?v=20261122-precision-ui" defer></script>
+  <link rel="stylesheet" href="/scada104.css?v=20261123-opt">
+  <script src="/scada104.js?v=20261123-opt" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -38,6 +31,9 @@
     <section class="card" aria-label="模型服务">
       <div class="card-head">
         <h2>模型通道状态</h2>
+        <div class="card-actions">
+          <button id="refreshStatusBtn" class="ghost-btn" type="button" title="立即刷新模型通道状态">刷新状态</button>
+        </div>
       </div>
       <div class="table-wrap">
         <table>
@@ -59,6 +55,10 @@
     <section class="card" aria-labelledby="commandTitle">
       <div class="card-head">
         <h2 id="commandTitle">下发仿真指令</h2>
+        <div class="card-actions">
+          <input id="pointSearch" class="search-input" type="search" placeholder="筛选控制点名称或点号…" aria-label="筛选控制点">
+          <button id="refreshPointsBtn" class="ghost-btn" type="button" title="重新读取当前模型控制点列表">刷新点表</button>
+        </div>
       </div>
       <form id="commandForm">
         <label>模型
@@ -78,11 +78,13 @@
             <option value="1">1 · 合 / 投入</option>
             <option value="0">0 · 分 / 退出</option>
           </select>
-          <input id="value" type="number" step="any" hidden>
+          <input id="value" type="number" step="any" placeholder="输入设定值" hidden>
         </label>
         <button id="send" class="primary" type="submit">核对并下发</button>
       </form>
+      <p id="pointMeta" class="point-meta"></p>
       <p id="receipt" class="status-banner" role="status"></p>
+      <ul id="recentReceipts" class="receipt-history" aria-label="最近指令记录"></ul>
     </section>
   </main>
 

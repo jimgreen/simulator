@@ -461,13 +461,35 @@ class TraineeRouteCacheTests(unittest.TestCase):
         self.assertNotIn("trainee_exchange", dh.get("process", {}))
         self.assertNotIn("renewable_control", dh.get("process", {}))
 
-        # 1. /api/trainee/ui-frame 连续两次 GET 命中帧缓存，仅计算 1 次
-        s1, _, d1 = _dispatch(b"GET /api/trainee/ui-frame?page=overview HTTP/1.1\r\nHost: localhost\r\n\r\n")
-        s2, _, d2 = _dispatch(b"GET /api/trainee/ui-frame?page=overview HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        # 1. /api/trainee/ui-frame 连续两次 GET 命中帧缓存，仅计算 1 次；带 If-None-Match 命中 304 零字节短路
+        s1, h1, d1 = _dispatch(b"GET /api/trainee/ui-frame?page=overview HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        s2, h2, d2 = _dispatch(b"GET /api/trainee/ui-frame?page=overview HTTP/1.1\r\nHost: localhost\r\n\r\n")
         self.assertEqual((s1, s2), (200, 200))
         self.assertEqual(d1["snapshot"]["call"], 1)
         self.assertEqual(d2["snapshot"]["call"], 1)
         self.assertEqual(calls["ui_frame"], 1)
+        etag1 = h1.get("etag", "")
+        self.assertTrue(etag1.startswith('W/"'))
+        sock_304 = _FakeSocket(
+            f"GET /api/trainee/ui-frame?page=overview HTTP/1.1\r\nHost: localhost\r\nIf-None-Match: {etag1}\r\n\r\n".encode("ascii")
+        )
+        PolarMicrogridHandler(sock_304, ("127.0.0.1", 50000), srv)
+        s304, _, b304 = _parse_http_response(sock_304.raw_response)
+        self.assertEqual(s304, 304)
+        self.assertEqual(b304, b"")
+
+        # 1b. 带 ?refresh=1 强制绕过读缓存重新计算
+        s_ref, _, d_ref = _dispatch(b"GET /api/trainee/ui-frame?page=overview&refresh=1 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        self.assertEqual(s_ref, 200)
+        self.assertEqual(d_ref["snapshot"]["call"], 2)
+        self.assertEqual(calls["ui_frame"], 2)
+
+        # 1c. 交换层错误态变更（last_error）立即使帧缓存键变化，不再返回假在线旧缓存
+        srv._ctx.exchange._states["m1"].last_error = "simulator disconnected"
+        s_err, _, d_err = _dispatch(b"GET /api/trainee/ui-frame?page=overview HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        self.assertEqual(s_err, 200)
+        self.assertEqual(d_err["snapshot"]["call"], 3)
+        self.assertEqual(calls["ui_frame"], 3)
 
         # 2. /api/trainee/renewable-control 连续两次 GET 命中帧缓存
         s3, _, d3 = _dispatch(b"GET /api/trainee/renewable-control HTTP/1.1\r\nHost: localhost\r\n\r\n")
@@ -477,7 +499,7 @@ class TraineeRouteCacheTests(unittest.TestCase):
         self.assertEqual(d4["call"], 1)
         self.assertEqual(calls["renewable"], 1)
 
-        # 3. 发起 POST 变更后，帧缓存自动清空，再次 GET 重新计算
+        # 3. 发起写操作 POST 变更后，帧缓存自动清空，再次 GET 重新计算
         post_body = b"{}"
         post_req = (
             b"POST /api/runtime-logs/clear HTTP/1.1\r\n"
@@ -491,8 +513,29 @@ class TraineeRouteCacheTests(unittest.TestCase):
 
         s5, _, d5 = _dispatch(b"GET /api/trainee/ui-frame?page=overview HTTP/1.1\r\nHost: localhost\r\n\r\n")
         self.assertEqual(s5, 200)
-        self.assertEqual(d5["snapshot"]["call"], 2)
-        self.assertEqual(calls["ui_frame"], 2)
+        self.assertEqual(d5["snapshot"]["call"], 4)
+        self.assertEqual(calls["ui_frame"], 4)
+
+    def test_access_log_demotion_and_lru_etag_cache(self) -> None:
+        from simu.http_common import EncodedResponseCache, encode_json_for_cache, should_demote_access_log
+
+        self.assertTrue(should_demote_access_log("GET", "/api/models", 200))
+        self.assertTrue(should_demote_access_log("GET", "/api/snapshot?lite=1", 200))
+        self.assertTrue(should_demote_access_log("GET", "/styles.css?v=1", 304))
+        self.assertFalse(should_demote_access_log("GET", "/api/snapshot", 500))
+        self.assertFalse(should_demote_access_log("POST", "/api/models/clone", 200))
+        self.assertFalse(should_demote_access_log("GET", "/", 200))
+
+        # 验证 LRU 淘汰最近最少使用的键（k2），而非最先写入但刚被访问的热键（k1）
+        cache = EncodedResponseCache(max_entries=4)
+        for k in ("k1", "k2", "k3", "k4"):
+            raw, gz = encode_json_for_cache({"k": k})
+            cache.put(k, raw, gz)
+        self.assertIsNotNone(cache.get("k1"))
+        raw5, gz5 = encode_json_for_cache({"k": "k5"})
+        cache.put("k5", raw5, gz5)
+        self.assertIsNotNone(cache.get("k1"))
+        self.assertIsNone(cache.get("k2"))
 
 
 class TraineeFrontendStructureTests(unittest.TestCase):

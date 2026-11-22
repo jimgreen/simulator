@@ -1919,6 +1919,7 @@ class _ClockStepMixin:
                 self._apply_measurement_statuses(minute, absolute_minute)
                 self._automatic_runtime_state_invalidated = False
                 self.latest_measurements = self.measurements()
+                self._record_last_scada_values_locked(self.latest_measurements)
                 measurement_updated_at = time.time()
                 measurement_clock = self.clock.as_dict()
                 measurement_clock["step_count"] = self.clock.step_count + 1

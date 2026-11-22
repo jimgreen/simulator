@@ -26,6 +26,7 @@ try:
         read_json_body,
         safe_write_bytes,
         send_json_response,
+        should_demote_access_log,
     )
     from .simulator_cluster import SimulatorClusterManager
 except ImportError:  # pragma: no cover - legacy direct-module compatibility.
@@ -40,6 +41,7 @@ except ImportError:  # pragma: no cover - legacy direct-module compatibility.
         read_json_body,
         safe_write_bytes,
         send_json_response,
+        should_demote_access_log,
     )
     from simulator_cluster import SimulatorClusterManager
 
@@ -74,6 +76,16 @@ def make_simulator_proxy_server(
             "/api/models/delete",
             "/api/models/import-definitions",
         }
+
+        def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+            logger = logging.getLogger("simu.web")
+            method = getattr(self, "command", "")
+            request_path = getattr(self, "path", "")
+            if should_demote_access_log(method, request_path, code):
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug('%s "%s" %s %s', self.client_address[0], self.requestline, code, size)
+                return
+            logger.info('%s "%s" %s %s', self.client_address[0], self.requestline, code, size)
 
         def log_message(self, fmt: str, *args: Any) -> None:
             logging.getLogger("simu.web").info("%s %s", self.client_address[0], fmt % args)

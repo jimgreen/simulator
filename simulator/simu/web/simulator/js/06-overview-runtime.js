@@ -848,7 +848,8 @@ function renderActiveSimulatorPage(snapshot = state.snapshot, force = false) {
 
 function renderSnapshot(snapshot) {
   state.frontendDiagnostics.snapshotRenderCount += 1;
-  if (snapshot.model?.id && snapshot.model.id !== state.activeModelId) {
+  // 仅在 activeModelId 尚未初始化时兜底，禁止用旧模型延迟快照反写当前选中模型。
+  if (!state.activeModelId && snapshot.model?.id) {
     state.activeModelId = snapshot.model.id;
   }
   renderModelSelector();
@@ -1085,12 +1086,28 @@ function renderRuntimeLogs() {
   const allLogs = filteredRuntimeLogs();
   const logs = pagedRuntimeLogs(allLogs);
   renderRuntimeLogPager(allLogs);
-  const totalLogs = state.runtimeLogTypeFilter === "all"
+  const filterOn = state.runtimeLogTypeFilter !== "all"
+    || Boolean(String(state.runtimeLogKeywordFilter || "").trim())
+    || Boolean(state.runtimeLogOnlyAlert);
+  const totalLogs = !filterOn
     ? Math.max(state.runtimeLogs.length, Number(state.runtimeLogTotal) || 0)
     : state.runtimeLogs.length;
-  $("runtimeLogSummary").textContent = state.runtimeLogTypeFilter === "all"
+  $("runtimeLogSummary").textContent = !filterOn
     ? `已加载 ${state.runtimeLogs.length}/${totalLogs} 条`
     : `${allLogs.length}/${state.runtimeLogs.length} 条`;
+  const renderKey = [
+    allLogs.length,
+    state.runtimeLogPage,
+    state.runtimeLogSelectedSeq,
+    state.runtimeLogTypeFilter,
+    state.runtimeLogKeywordFilter || "",
+    Boolean(state.runtimeLogOnlyAlert),
+    logs.map((item) => `${item.seq}:${item.level}`).join(","),
+  ].join("|");
+  if (container.dataset.runtimeLogRenderKey === renderKey) {
+    return;
+  }
+  container.dataset.runtimeLogRenderKey = renderKey;
   if (!allLogs.length) {
     container.innerHTML = '<div class="empty-state">暂无运行日志</div>';
     return;
@@ -1337,15 +1354,32 @@ function syncRuntimeLogTypeFilter() {
   if (state.runtimeLogTypeFilter !== "all" && !types.includes(state.runtimeLogTypeFilter)) {
     state.runtimeLogTypeFilter = "all";
   }
-  select.innerHTML = ["<option value=\"all\">全部类型</option>", ...types.map((type) => (
-    `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`
-  ))].join("");
-  select.value = state.runtimeLogTypeFilter;
+  const optionsKey = types.join("|");
+  if (select.dataset.optionsKey !== optionsKey) {
+    select.dataset.optionsKey = optionsKey;
+    select.innerHTML = ["<option value=\"all\">全部类型</option>", ...types.map((type) => (
+      `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`
+    ))].join("");
+  }
+  if (select.value !== state.runtimeLogTypeFilter) {
+    select.value = state.runtimeLogTypeFilter;
+  }
 }
 
 function filteredRuntimeLogs() {
-  if (state.runtimeLogTypeFilter === "all") return state.runtimeLogs;
-  return state.runtimeLogs.filter((item) => item.type === state.runtimeLogTypeFilter);
+  const keyword = String(state.runtimeLogKeywordFilter || "").trim().toLowerCase();
+  const onlyAlert = Boolean(state.runtimeLogOnlyAlert);
+  return state.runtimeLogs.filter((item) => {
+    if (state.runtimeLogTypeFilter !== "all" && item.type !== state.runtimeLogTypeFilter) return false;
+    if (onlyAlert && !["warn", "warning", "error", "bad"].includes(String(item.level || "").toLowerCase())) {
+      return false;
+    }
+    if (keyword) {
+      const hay = `${item.type || ""} ${item.target || ""} ${item.result || ""} ${runtimeLogSummaryText(item)}`.toLowerCase();
+      if (!hay.includes(keyword)) return false;
+    }
+    return true;
+  });
 }
 
 function runtimeLogPageCount(logs = filteredRuntimeLogs()) {
@@ -2381,11 +2415,11 @@ async function deleteRuntimeCommand(commandName, label = "") {
     const deleted = result.deleted || result;
     const count = Number(deleted.remote_controls || 0) + Number(deleted.remote_adjustments || 0);
     if (!count) {
-      window.alert(`未找到可删除的当前有效指令：${displayLabel}`);
+      showUiToast(`未找到可删除的当前有效指令：${displayLabel}`, "warn", 3200);
     }
     await refresh();
   } catch (error) {
-    window.alert(`删除控制指令失败：${apiErrorText(error)}`);
+    showUiToast(`删除控制指令失败：${apiErrorText(error)}`, "error", 3600);
   } finally {
     state.runtimeCommandDeleteSending.delete(name);
     renderRuntimeDeviceTable();
@@ -2899,13 +2933,14 @@ function drawRuntimeTraceChart() {
   const visibleSeries = visibleChartSeries(chartKey, seriesDefs);
   const values = points.flatMap((point) => visibleSeries.map((series) => point[series.field]))
     .filter((value) => value !== null && Number.isFinite(value));
+  const palette = chartThemePalette();
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#fcfeff";
+  ctx.fillStyle = palette.bg;
   ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = "#d8e1e5";
+  ctx.strokeStyle = palette.grid;
   ctx.lineWidth = 1;
   ctx.font = "12px Microsoft YaHei, Arial";
-  ctx.fillStyle = "#63717a";
+  ctx.fillStyle = palette.text;
   for (let i = 0; i <= 4; i += 1) {
     const y = top + i * ((bottom - top) / 4);
     ctx.beginPath();
@@ -2917,12 +2952,12 @@ function drawRuntimeTraceChart() {
   xTicks.forEach((minute, tickIndex) => {
     const ratio = (minute - range.startMinute) / range.windowMinutes;
     const x = left + ratio * (right - left);
-    ctx.strokeStyle = tickIndex === xTicks.length - 1 ? "#c9d6dc" : "#e7eef1";
+    ctx.strokeStyle = tickIndex === xTicks.length - 1 ? palette.axis : palette.gridSubtle;
     ctx.beginPath();
     ctx.moveTo(x, top);
     ctx.lineTo(x, bottom);
     ctx.stroke();
-    ctx.fillStyle = "#63717a";
+    ctx.fillStyle = palette.text;
     ctx.textAlign = tickIndex === xTicks.length - 1 ? "right" : "left";
     const textOffset = tickIndex === 0 ? 0 : tickIndex === xTicks.length - 1 ? 0 : 4;
     ctx.fillText(runtimeAxisTickLabel(minute, range, tickIndex, xTicks.length - 1), x + textOffset, height - 12);
@@ -2935,7 +2970,7 @@ function drawRuntimeTraceChart() {
   if ((!selectedCommandSeries && !chartDevices.length) || !points.length || !visibleSeries.length || !values.length) {
     state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: [] };
     syncChartLegendButtons(chartKey);
-    ctx.fillStyle = "#63717a";
+    ctx.fillStyle = palette.text;
     ctx.textAlign = "center";
     ctx.fillText(!visibleSeries.length ? "所有曲线已隐藏" : "暂无跟踪数据", width / 2, height / 2);
     ctx.textAlign = "left";

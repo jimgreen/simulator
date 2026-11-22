@@ -42,6 +42,7 @@ try:
         safe_write_bytes,
         send_json_response,
         send_preencoded_json_response,
+        should_demote_access_log,
     )
     from .model_artifacts import (
         ModelPreflightError,
@@ -99,6 +100,7 @@ except ImportError:  # pragma: no cover - legacy direct-module compatibility.
         safe_write_bytes,
         send_json_response,
         send_preencoded_json_response,
+        should_demote_access_log,
     )
     from simu.model_artifacts import (
         ModelPreflightError,
@@ -199,39 +201,59 @@ UPLOAD_POST_PATHS = frozenset(
 
 PROCESS_STARTED_MONOTONIC = time.monotonic()
 
+_READONLY_POST_PATHS = frozenset(
+    {
+        "/api/external/telemetry/query",
+        "/api/external/telemetry/values/query",
+        "/api/external/telemetry/history/query",
+        "/api/external/curves/query",
+    }
+)
+
+if os.name == "nt":
+    try:
+        import ctypes as _win_ctypes
+        from ctypes import wintypes as _win_wintypes
+
+        class _ProcessMemoryCountersEx(_win_ctypes.Structure):
+            _fields_ = [
+                ("cb", _win_wintypes.DWORD),
+                ("PageFaultCount", _win_wintypes.DWORD),
+                ("PeakWorkingSetSize", _win_ctypes.c_size_t),
+                ("WorkingSetSize", _win_ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", _win_ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", _win_ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", _win_ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", _win_ctypes.c_size_t),
+                ("PagefileUsage", _win_ctypes.c_size_t),
+                ("PeakPagefileUsage", _win_ctypes.c_size_t),
+                ("PrivateUsage", _win_ctypes.c_size_t),
+            ]
+    except Exception:
+        _win_ctypes = None
+        _ProcessMemoryCountersEx = None
+else:
+    _win_ctypes = None
+    _ProcessMemoryCountersEx = None
+
 
 def _current_process_memory() -> dict[str, Optional[float]]:
     working_set_bytes: Optional[int] = None
     private_bytes: Optional[int] = None
     if os.name == "nt":
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            class _ProcessMemoryCountersEx(ctypes.Structure):
-                _fields_ = [
-                    ("cb", wintypes.DWORD),
-                    ("PageFaultCount", wintypes.DWORD),
-                    ("PeakWorkingSetSize", ctypes.c_size_t),
-                    ("WorkingSetSize", ctypes.c_size_t),
-                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                    ("PagefileUsage", ctypes.c_size_t),
-                    ("PeakPagefileUsage", ctypes.c_size_t),
-                    ("PrivateUsage", ctypes.c_size_t),
-                ]
-
-            counters = _ProcessMemoryCountersEx()
-            counters.cb = ctypes.sizeof(counters)
-            handle = ctypes.windll.kernel32.GetCurrentProcess()
-            if ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
-                working_set_bytes = int(counters.WorkingSetSize)
-                private_bytes = int(counters.PrivateUsage)
-        except Exception:
-            working_set_bytes = None
-            private_bytes = None
+        if _win_ctypes is not None and _ProcessMemoryCountersEx is not None:
+            try:
+                counters = _ProcessMemoryCountersEx()
+                counters.cb = _win_ctypes.sizeof(counters)
+                handle = _win_ctypes.windll.kernel32.GetCurrentProcess()
+                if _win_ctypes.windll.psapi.GetProcessMemoryInfo(
+                    handle, _win_ctypes.byref(counters), counters.cb
+                ):
+                    working_set_bytes = int(counters.WorkingSetSize)
+                    private_bytes = int(counters.PrivateUsage)
+            except Exception:
+                working_set_bytes = None
+                private_bytes = None
     else:
         try:
             import resource
@@ -355,6 +377,16 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
     def _ctx(self) -> "_ServerContext":
         return self.server._ctx  # type: ignore[attr-defined]
 
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        logger = logging.getLogger("simu.web")
+        method = getattr(self, "command", "")
+        request_path = getattr(self, "path", "")
+        if should_demote_access_log(method, request_path, code):
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug('%s "%s" %s %s', self.client_address[0], self.requestline, code, size)
+            return
+        logger.info('%s "%s" %s %s', self.client_address[0], self.requestline, code, size)
+
     def log_message(self, fmt: str, *args: Any) -> None:
         logging.getLogger("simu.web").info("%s %s", self.client_address[0], fmt % args)
 
@@ -430,10 +462,12 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
             )
 
     def do_POST(self) -> None:
+        path = urlparse(self.path).path
+        mutated_successfully = False
         try:
-            path = urlparse(self.path).path
             if path == EXTERNAL_REALTIME_INPUTS_PATH and self._ctx.role != "simulator":
                 self._handle_api_post()
+                mutated_successfully = True
                 return
             if (
                 path in LOCAL_DEFINITION_PATHS
@@ -442,9 +476,11 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 or (self._ctx.role == "trainee" and path in TRAINEE_LOCAL_POST_PATHS)
             ):
                 self._handle_api_post()
+                mutated_successfully = True
                 return
             if path == RENEWABLE_CONTROL_PATH and self._ctx.role == "trainee":
                 self._handle_api_post()
+                mutated_successfully = True
                 return
             if (
                 self.path.startswith("/api/")
@@ -453,8 +489,10 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 and not path.startswith("/api/trainee/")
             ):
                 self._proxy_to_simulator("POST", self._ctx.sim_url)
+                mutated_successfully = True
                 return
             self._handle_api_post()
+            mutated_successfully = True
         except CLIENT_DISCONNECT_ERRORS:
             return
         except JsonApiError as exc:
@@ -467,6 +505,15 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 {"error": str(exc), **self._external_error_metadata({})},
                 status=413,
             )
+        except (
+            ServiceInstanceRetiredError,
+            TraineeExchangeLifecycleError,
+            TraineeRenewableControlLifecycleError,
+        ) as exc:
+            self._send_json(
+                {"error": str(exc), **self._external_error_metadata({})},
+                status=409,
+            )
         except Exception as exc:
             logging.getLogger("simu.web").exception("Unhandled POST error for %s", self.path)
             self._send_json(
@@ -474,7 +521,9 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 status=500,
             )
         finally:
-            self._ctx.response_cache.clear()
+            # 仅在写操作成功返回后清空响应缓存，避免只读 query POST 或失败请求击穿热点缓存。
+            if mutated_successfully and path not in _READONLY_POST_PATHS:
+                self._ctx.response_cache.clear()
 
     def do_PUT(self) -> None:
         self.do_POST()
@@ -1120,40 +1169,76 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
         *,
         extra: Any = "",
     ) -> Optional[tuple[Any, ...]]:
-        """构造学员端 ui-frame / renewable-control 帧缓存键，任意交换或控制版本变更即失效。"""
+        """构造学员端 ui-frame / renewable-control 帧缓存键，纳入断连错误与墙钟超时/冻结状态。"""
         base_key = self._frame_cache_key(target, scope)
         if base_key is None:
             return None
-        ex_rev = None
+        ex_rev: Any = None
         if self._ctx.exchange is not None:
             try:
-                ex_state = self._ctx.exchange._states.get(target.model_id)
-                if ex_state is not None:
-                    ex_rev = (ex_state.revision, ex_state.receive_epoch, ex_state.frame_identity)
+                token_fn = getattr(self._ctx.exchange, "cache_version_token", None)
+                if callable(token_fn):
+                    ex_rev = token_fn(target.model_id)
+                else:
+                    ex_state = self._ctx.exchange._states.get(target.model_id)
+                    if ex_state is not None:
+                        ex_rev = (
+                            ex_state.revision,
+                            ex_state.receive_epoch,
+                            ex_state.frame_identity,
+                            getattr(ex_state, "last_error", ""),
+                            getattr(ex_state, "consecutive_failures", 0),
+                        )
             except Exception:
                 return None
-        rc_rev = None
+        rc_rev: Any = None
         if self._ctx.renewable_manager is not None:
             try:
-                rc_state = self._ctx.renewable_manager._states.get(target.model_id)
-                if rc_state is not None:
-                    rc_rev = (rc_state.revision, rc_state.plan_revision, rc_state.settings_revision)
+                token_fn = getattr(self._ctx.renewable_manager, "cache_version_token", None)
+                if callable(token_fn):
+                    rc_rev = token_fn(target.model_id)
+                else:
+                    rc_state = self._ctx.renewable_manager._states.get(target.model_id)
+                    if rc_state is not None:
+                        rc_rev = (
+                            rc_state.revision,
+                            rc_state.plan_revision,
+                            rc_state.settings_revision,
+                        )
             except Exception:
                 return None
         return (*base_key, ex_rev, rc_rev, extra)
+
+    def _try_send_cached_json(self, cache_key: Optional[tuple[Any, ...]]) -> bool:
+        """尝试命中帧级预编码缓存并支持 If-None-Match → 304 零字节短路。"""
+        if cache_key is None:
+            return False
+        cached = self._ctx.response_cache.get_with_etag(cache_key)
+        if cached is None:
+            return False
+        send_preencoded_json_response(
+            self,
+            cached[0],
+            cached[1],
+            status=200,
+            cors_fn=self._cors,
+            etag=cached[2],
+        )
+        return True
 
     def _send_cached_json(self, cache_key: Optional[tuple[Any, ...]], payload: Any) -> None:
         if cache_key is None:
             self._send_json(payload)
             return
         raw_bytes, gzip_bytes = encode_json_for_cache(payload)
-        self._ctx.response_cache.put(cache_key, raw_bytes, gzip_bytes)
+        etag = self._ctx.response_cache.put(cache_key, raw_bytes, gzip_bytes)
         send_preencoded_json_response(
             self,
             raw_bytes,
             gzip_bytes,
             status=200,
             cors_fn=self._cors,
+            etag=etag,
         )
 
     def _handle_api_get(self) -> None:
@@ -1185,38 +1270,45 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
         elif path == RENEWABLE_CONTROL_TREND_PATH:
             self._send_json(self._renewable_trend_payload(target))
         elif path == RENEWABLE_CONTROL_PATH:
-            rc_cache_key = self._trainee_frame_cache_key(target, "renewable_control")
-            if rc_cache_key is not None:
-                cached = self._ctx.response_cache.get(rc_cache_key)
-                if cached is not None:
-                    send_preencoded_json_response(
-                        self, cached[0], cached[1], status=200, cors_fn=self._cors
-                    )
-                    return
+            force_refresh = self._truthy_query("refresh")
+            rc_cache_key = (
+                None
+                if force_refresh
+                else self._trainee_frame_cache_key(target, "renewable_control")
+            )
+            if self._try_send_cached_json(rc_cache_key):
+                return
             self._send_cached_json(rc_cache_key, self._renewable_state_payload(target))
         elif path == TRAINEE_UI_FRAME_PATH:
             if self._ctx.role != "trainee":
                 raise JsonApiError(404, f"Unknown API route: {path}")
-            receive_state = target.trainee_receive_state()
-            receive_state_revision = hashlib.sha256(
-                json.dumps(
-                    receive_state,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    default=str,
-                ).encode("utf-8")
-            ).hexdigest()[:20]
-            ui_cache_key = self._trainee_frame_cache_key(
-                target, "trainee_ui_frame", extra=receive_state_revision
+            force_refresh = self._truthy_query("refresh")
+            rev_getter = getattr(target, "trainee_receive_revision", None)
+            receive_state: Optional[Dict[str, Any]] = None
+            if callable(rev_getter):
+                receive_state_revision = f"r{rev_getter()}"
+            else:
+                receive_state = target.trainee_receive_state()
+                receive_state_revision = hashlib.sha256(
+                    json.dumps(
+                        receive_state,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    ).encode("utf-8")
+                ).hexdigest()[:20]
+            ui_cache_key = (
+                None
+                if force_refresh
+                else self._trainee_frame_cache_key(
+                    target, "trainee_ui_frame", extra=receive_state_revision
+                )
             )
-            if ui_cache_key is not None:
-                cached = self._ctx.response_cache.get(ui_cache_key)
-                if cached is not None:
-                    send_preencoded_json_response(
-                        self, cached[0], cached[1], status=200, cors_fn=self._cors
-                    )
-                    return
+            if self._try_send_cached_json(ui_cache_key):
+                return
+            if receive_state is None:
+                receive_state = target.trainee_receive_state()
             query = parse_qs(urlparse(self.path).query)
             after_receive_state_revision = str(
                 (query.get("after_receive_state_revision") or [""])[0]
@@ -1238,17 +1330,8 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
             self._send_json(target.manual_definition_changes())
         elif path == "/api/snapshot":
             snap_cache_key = self._frame_cache_key(target, "snapshot")
-            if snap_cache_key is not None:
-                cached = self._ctx.response_cache.get(snap_cache_key)
-                if cached is not None:
-                    send_preencoded_json_response(
-                        self,
-                        cached[0],
-                        cached[1],
-                        status=200,
-                        cors_fn=self._cors,
-                    )
-                    return
+            if self._try_send_cached_json(snap_cache_key):
+                return
             lite = self._truthy_query("lite")
             trainee_view = self._truthy_query("trainee_view")
             compact_device_runtime = self._truthy_query("device_runtime_compact")
@@ -1308,23 +1391,51 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 strip_trainee_truth_from_snapshot(snapshot_payload)
             commands_payload = snapshot_payload.get("commands")
             if isinstance(commands_payload, Mapping):
-                command_signature = command_payload_signature(commands_payload)
+                cmd_cache_key = (
+                    getattr(target.clock, "run_id", 0),
+                    getattr(target.clock, "step_count", 0),
+                    len(getattr(target, "command_history", ())),
+                    getattr(target, "_remote_adjustment_cycle_seq", 0),
+                    not self._falsey_query("command_history"),
+                    bool(trainee_view),
+                )
+                cached_cmd_sig = getattr(target, "_command_signature_cache", None)
+                if cached_cmd_sig is not None and cached_cmd_sig[0] == cmd_cache_key:
+                    command_signature = cached_cmd_sig[1]
+                else:
+                    command_signature = command_payload_signature(commands_payload)
+                    target._command_signature_cache = (cmd_cache_key, command_signature)
                 snapshot_payload["command_signature"] = command_signature
                 if after_command_signature == command_signature:
                     snapshot_payload.pop("commands", None)
             if compact_device_runtime:
                 if periodic_trainee_frame or supplement_device_runtime:
-                    measurement_definitions = target.measurement_definitions()
-                    if periodic_trainee_frame:
-                        measurement_definitions = target.measurement_runtime_definitions(
-                            measurement_definitions
-                        )
-                    device_runtime_frame = compact_device_runtime_supplement_frame(
-                        target.devices(),
-                        target.device_states(),
-                        measurement_definitions,
-                        definition_revision=target.definition_snapshot.revision,
+                    sup_cache_key = (
+                        getattr(target.clock, "run_id", 0),
+                        getattr(target.clock, "step_count", 0),
+                        target.definition_snapshot.revision,
+                        id(getattr(target, "runtime_stat_book", None)),
+                        len(getattr(target, "command_history", ())),
+                        getattr(target, "_remote_adjustment_cycle_seq", 0),
+                        bool(periodic_trainee_frame),
                     )
+                    cached_sup = getattr(target, "_device_runtime_supplement_cache", None)
+                    if cached_sup is not None and cached_sup[0] == sup_cache_key:
+                        device_runtime_frame = cached_sup[1]
+                    else:
+                        with target.lock:
+                            measurement_definitions = target.measurement_definitions()
+                            if periodic_trainee_frame:
+                                measurement_definitions = target.measurement_runtime_definitions(
+                                    measurement_definitions
+                                )
+                            device_runtime_frame = compact_device_runtime_supplement_frame(
+                                target.devices(),
+                                target.device_states(),
+                                measurement_definitions,
+                                definition_revision=target.definition_snapshot.revision,
+                            )
+                        target._device_runtime_supplement_cache = (sup_cache_key, device_runtime_frame)
                 else:
                     device_runtime_frame = target.device_runtime_frame()
                 device_runtime_signature = str(
@@ -1347,17 +1458,8 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
             )
         elif path == "/api/measurements":
             meas_cache_key = self._frame_cache_key(target, "measurements")
-            if meas_cache_key is not None:
-                cached = self._ctx.response_cache.get(meas_cache_key)
-                if cached is not None:
-                    send_preencoded_json_response(
-                        self,
-                        cached[0],
-                        cached[1],
-                        status=200,
-                        cors_fn=self._cors,
-                    )
-                    return
+            if self._try_send_cached_json(meas_cache_key):
+                return
             measurements_payload = target.measurements()
             if self._ctx.role == "trainee" or self._truthy_query("trainee_view"):
                 measurements_payload = strip_trainee_truth_from_measurements(
@@ -2040,6 +2142,11 @@ class ManagedThreadingHTTPServer(ThreadingHTTPServer):
         self.renewable_control_manager = context.renewable_manager
 
     def server_close(self) -> None:
+        # 先中断学员台底层 HTTP 连接池在途 I/O，再关闭控制管理器，避免关停卡死等待完整超时。
+        if self._ctx.exchange is not None and not self._trainee_exchange_closed:
+            abort_fn = getattr(self._ctx.exchange, "abort_inflight_io", None)
+            if callable(abort_fn):
+                abort_fn()
         if self._ctx.renewable_manager is not None and not self._renewable_manager_closed:
             self._renewable_manager_closed = True
             self._ctx.renewable_manager.close()

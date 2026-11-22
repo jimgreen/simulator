@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import threading
+from collections import OrderedDict
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
@@ -23,7 +24,65 @@ CLIENT_DISCONNECT_ERRORS = (
 DEFAULT_MAX_JSON_BYTES = 8 * 1024 * 1024
 UPLOAD_MAX_JSON_BYTES = 64 * 1024 * 1024
 STATIC_CACHE_MAX_ENTRIES = 256
-ENCODED_RESPONSE_CACHE_MAX_ENTRIES = 24
+ENCODED_RESPONSE_CACHE_MAX_ENTRIES = 64
+
+# 高频只读轮询接口白名单：200/204/304 成功响应降级为 DEBUG，避免淹没写操作与错误日志。
+HIGH_FREQUENCY_POLL_GET_PATHS = frozenset(
+    {
+        "/api/health",
+        "/api/models",
+        "/api/simulator-services",
+        "/api/snapshot",
+        "/api/measurements",
+        "/api/measurements/delta",
+        "/api/runtime-logs",
+        "/api/trainee/ui-frame",
+        "/api/trainee/renewable-control",
+        "/api/trainee/receive-state",
+        "/api/external/controls/names",
+        "/api/simulator104/status",
+    }
+)
+
+
+def should_demote_access_log(method: str, request_path: str, status_code: Any) -> bool:
+    """判断单次 HTTP 访问日志是否应降级为 DEBUG，消除高频轮询与 304 刷屏噪音。"""
+    try:
+        code = int(status_code)
+    except (TypeError, ValueError):
+        return False
+    if str(method or "").upper() != "GET":
+        return False
+    if code == 304:
+        return True
+    if code not in (200, 204):
+        return False
+    path = urlparse(str(request_path or "")).path
+    return path in HIGH_FREQUENCY_POLL_GET_PATHS
+
+
+def compute_weak_etag(raw_bytes: bytes) -> str:
+    """基于响应体字节快速计算轻量弱 ETag，用于 HTTP 304 协商缓存。"""
+    digest = hashlib.blake2b(raw_bytes, digest_size=8).hexdigest()
+    return f'W/"{digest}"'
+
+
+def etag_matches(if_none_match: Optional[str], etag: str) -> bool:
+    """按 RFC 7232 弱比较规则检查请求头 If-None-Match 是否命中当前 ETag。"""
+    if not if_none_match or not etag:
+        return False
+    target = etag.strip()
+    target_opaque = target[2:] if target.startswith("W/") else target
+    for raw_token in str(if_none_match).split(","):
+        token = raw_token.strip()
+        if not token:
+            continue
+        if token == "*":
+            return True
+        token_opaque = token[2:] if token.startswith("W/") else token
+        if token_opaque == target_opaque:
+            return True
+    return False
 
 
 def is_mapping(value: Any) -> bool:
@@ -32,22 +91,45 @@ def is_mapping(value: Any) -> bool:
 
 
 class EncodedResponseCache:
-    """线程安全的帧级 JSON / gzip 响应字节缓存，避免同一仿真步内重复序列化大快照。"""
+    """线程安全的 LRU 帧级 JSON / gzip / ETag 响应字节缓存，避免同一仿真步内重复序列化大快照。"""
 
     def __init__(self, max_entries: int = ENCODED_RESPONSE_CACHE_MAX_ENTRIES) -> None:
         self._lock = threading.RLock()
-        self._entries: dict[Any, tuple[bytes, bytes]] = {}
+        self._entries: OrderedDict[Any, tuple[bytes, bytes, str]] = OrderedDict()
         self._max_entries = max(4, int(max_entries))
 
     def get(self, key: Any) -> Optional[tuple[bytes, bytes]]:
         with self._lock:
-            return self._entries.get(key)
+            item = self._entries.get(key)
+            if item is None:
+                return None
+            self._entries.move_to_end(key)
+            return item[0], item[1]
 
-    def put(self, key: Any, raw_bytes: bytes, gzip_bytes: bytes) -> None:
+    def get_with_etag(self, key: Any) -> Optional[tuple[bytes, bytes, str]]:
+        """获取缓存的 (raw_bytes, gzip_bytes, etag) 并刷新 LRU 顺序。"""
         with self._lock:
-            if len(self._entries) >= self._max_entries and key not in self._entries:
-                self._entries.pop(next(iter(self._entries)))
-            self._entries[key] = (raw_bytes, gzip_bytes)
+            item = self._entries.get(key)
+            if item is None:
+                return None
+            self._entries.move_to_end(key)
+            return item
+
+    def put(
+        self,
+        key: Any,
+        raw_bytes: bytes,
+        gzip_bytes: bytes,
+        etag: Optional[str] = None,
+    ) -> str:
+        resolved_etag = str(etag) if etag else compute_weak_etag(raw_bytes)
+        with self._lock:
+            if key in self._entries:
+                self._entries.move_to_end(key)
+            elif len(self._entries) >= self._max_entries:
+                self._entries.popitem(last=False)
+            self._entries[key] = (raw_bytes, gzip_bytes, resolved_etag)
+        return resolved_etag
 
     def clear(self) -> None:
         with self._lock:
@@ -61,8 +143,20 @@ def send_preencoded_json_response(
     *,
     status: int = 200,
     cors_fn: Optional[Callable[[], None]] = None,
+    etag: str = "",
 ) -> bool:
-    """直接发送已序列化/预压缩的 JSON 字节，零重复编码开销。"""
+    """直接发送已序列化/预压缩的 JSON 字节，支持 If-None-Match 命中 304 零字节短路。"""
+    if status == 200 and etag and etag_matches(handler.headers.get("If-None-Match"), etag):
+        try:
+            handler.send_response(304)
+            if cors_fn is not None:
+                cors_fn()
+            handler.send_header("ETag", etag)
+            handler.send_header("Vary", "Accept-Encoding")
+            handler.send_header("Content-Length", "0")
+            return safe_write_bytes(handler, b"")
+        except CLIENT_DISCONNECT_ERRORS:
+            return False
     accepted = str(handler.headers.get("Accept-Encoding", "")).lower()
     use_gzip = bool(gzip_bytes and "gzip" in accepted)
     data = gzip_bytes if use_gzip else raw_bytes
@@ -71,6 +165,8 @@ def send_preencoded_json_response(
         if cors_fn is not None:
             cors_fn()
         handler.send_header("Content-Type", "application/json; charset=utf-8")
+        if etag:
+            handler.send_header("ETag", etag)
         handler.send_header("Vary", "Accept-Encoding")
         if use_gzip:
             handler.send_header("Content-Encoding", "gzip")
@@ -176,7 +272,8 @@ def apply_cors_headers(
         if allowed != "*":
             handler.send_header("Vary", "Origin")
     handler.send_header("Access-Control-Allow-Methods", methods)
-    handler.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+    handler.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, If-None-Match")
+    handler.send_header("Access-Control-Expose-Headers", "ETag")
     handler.send_header("Cache-Control", cache_control)
 
 

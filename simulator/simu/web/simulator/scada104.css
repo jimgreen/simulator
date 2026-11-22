@@ -398,3 +398,98 @@ dialog.confirm-dialog::backdrop {
 .confirm-actions button {
   cursor: pointer;
 }
+
+.card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.search-input {
+  width: 210px;
+  height: 32px;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+}
+
+.ghost-btn {
+  height: 32px;
+  padding: 0 11px;
+  font-size: 12.5px;
+  background: var(--surface-subtle);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.ghost-btn:hover {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+tbody tr.is-selectable {
+  cursor: pointer;
+}
+
+tbody tr.is-selected {
+  background: rgba(13, 148, 136, 0.1);
+}
+
+.point-meta {
+  margin: 10px 0 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.point-meta:empty {
+  display: none;
+}
+
+.receipt-history {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px dashed var(--line);
+  display: grid;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.receipt-history:empty {
+  display: none;
+}
+
+.receipt-history li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.receipt-history li.is-error {
+  color: var(--red);
+}
+
+dialog.confirm-dialog.is-danger .confirm-card {
+  border-left-color: var(--red);
+}
+
+dialog.confirm-dialog.is-danger .confirm-badge {
+  color: var(--red);
+  background: rgba(220, 38, 38, 0.12);
+}
+
+button.danger {
+  padding: 0 16px;
+  background: var(--red);
+  border-color: var(--red);
+  color: #ffffff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.danger:hover {
+  filter: brightness(0.92);
+}

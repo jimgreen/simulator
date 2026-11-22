@@ -465,13 +465,14 @@ function drawMeasurementTraceChart() {
   const visibleSeries = visibleChartSeries(chartKey, seriesDefs);
   const values = points.flatMap((point) => visibleSeries.map((series) => point[series.field]))
     .filter((value) => value !== null && Number.isFinite(value));
+  const palette = chartThemePalette();
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#fcfeff";
+  ctx.fillStyle = palette.bg;
   ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = "#d8e1e5";
+  ctx.strokeStyle = palette.grid;
   ctx.lineWidth = 1;
   ctx.font = "12px Microsoft YaHei, Arial";
-  ctx.fillStyle = "#63717a";
+  ctx.fillStyle = palette.text;
   for (let i = 0; i <= 4; i += 1) {
     const y = top + i * ((bottom - top) / 4);
     ctx.beginPath();
@@ -483,12 +484,12 @@ function drawMeasurementTraceChart() {
   xTicks.forEach((minute, tickIndex) => {
     const ratio = (minute - range.startMinute) / range.windowMinutes;
     const x = left + ratio * (right - left);
-    ctx.strokeStyle = tickIndex === xTicks.length - 1 ? "#c9d6dc" : "#e7eef1";
+    ctx.strokeStyle = tickIndex === xTicks.length - 1 ? palette.axis : palette.gridSubtle;
     ctx.beginPath();
     ctx.moveTo(x, top);
     ctx.lineTo(x, bottom);
     ctx.stroke();
-    ctx.fillStyle = "#63717a";
+    ctx.fillStyle = palette.text;
     ctx.textAlign = tickIndex === xTicks.length - 1 ? "right" : "left";
     const textOffset = tickIndex === 0 ? 0 : tickIndex === xTicks.length - 1 ? 0 : 4;
     ctx.fillText(runtimeAxisTickLabel(minute, range, tickIndex, xTicks.length - 1), x + textOffset, height - 12);
@@ -498,7 +499,7 @@ function drawMeasurementTraceChart() {
   if (!selectedRow || !points.length || !visibleSeries.length || !values.length) {
     state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: [] };
     syncChartLegendButtons(chartKey);
-    ctx.fillStyle = "#63717a";
+    ctx.fillStyle = palette.text;
     ctx.textAlign = "center";
     ctx.fillText(!visibleSeries.length ? "所有曲线已隐藏" : "暂无跟踪数据", width / 2, height / 2);
     ctx.textAlign = "left";
@@ -779,6 +780,46 @@ function setMeasurementCompareFilter(devType, devName = "", event = null, button
   renderMeasurementCompareTable();
 }
 
+function exportSimulatorMeasurementsCsv() {
+  const allRows = measurementCompareRows();
+  const filteredRows = filteredMeasurementCompareRows(allRows);
+  let tableFilteredRows = applyMeasurementCompareTableFilters(filteredRows);
+  if (state.measurementCompareOnlyAbnormal) {
+    tableFilteredRows = tableFilteredRows.filter(
+      (row) => Number(row.valid) !== 1 || String(row.status || "normal") !== "normal",
+    );
+  }
+  const rows = activeMeasurementCompareRows(tableFilteredRows);
+  if (!rows.length) {
+    showUiToast("当前筛选下无可导出的量测数据", "warn");
+    return;
+  }
+  const csvCell = (val) => `"${String(val ?? "").replace(/"/g, '""')}"`;
+  const lines = [
+    ["量测名称", "设备", "量测类型", "真值", "量测值", "偏差", "有效性", "状态"].map(csvCell).join(","),
+    ...rows.map((row) => [
+      measurementDisplayName(row),
+      row.device_display || `${row.dev_type || ""}/${row.dev_name || ""}`,
+      row.meas_type || "",
+      row.real_value ?? "",
+      row.scada_value ?? "",
+      row.diff ?? "",
+      Number(row.valid) === 1 ? "有效" : "无效",
+      row.status || "normal",
+    ].map(csvCell).join(",")),
+  ];
+  const blob = new Blob([`\uFEFF${lines.join("\n")}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `simulator-measurements-${state.activeModelId || "model"}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showUiToast(`已导出 ${rows.length} 条量测比对记录`, "ok", 2200);
+}
+
 function renderMeasurementCompareTable() {
   const container = $("measurementCompareTable");
   if (!container) return;
@@ -786,14 +827,20 @@ function renderMeasurementCompareTable() {
   renderMeasurementCompareDeviceTree(allRows);
   const filteredRows = filteredMeasurementCompareRows(allRows);
   syncMeasurementCompareTypeFilter(filteredRows);
-  const tableFilteredRows = applyMeasurementCompareTableFilters(filteredRows);
+  let tableFilteredRows = applyMeasurementCompareTableFilters(filteredRows);
+  if (state.measurementCompareOnlyAbnormal) {
+    tableFilteredRows = tableFilteredRows.filter(
+      (row) => Number(row.valid) !== 1 || String(row.status || "normal") !== "normal",
+    );
+  }
   const telemetryRows = measurementTelemetryRows(tableFilteredRows);
   const signalRows = measurementSignalRows(tableFilteredRows);
   const rows = activeMeasurementCompareRows(tableFilteredRows);
   const selectedKey = ensureSelectedMeasurementKey(rows, []);
   const validCount = rows.filter((row) => Number(row.valid) === 1).length;
   const activeLabel = state.activeMeasurementCompareTab === "signal" ? "遥信" : "遥测";
-  const filterActive = tableFilterIsActive(state.measurementCompareKeywordFilter, state.measurementCompareTypeFilter);
+  const filterActive = Boolean(state.measurementCompareOnlyAbnormal)
+    || tableFilterIsActive(state.measurementCompareKeywordFilter, state.measurementCompareTypeFilter);
   $("measurementCompareSummary").textContent = filterActive
     ? `${activeLabel} ${rows.length}/${tableFilteredRows.length} 点 · 有效 ${validCount} 点 · 过滤 ${tableFilteredRows.length}/${filteredRows.length} 点`
     : `${activeLabel} ${rows.length}/${filteredRows.length} 点 · 有效 ${validCount} 点`;
@@ -831,7 +878,7 @@ function renderMeasurementCompareTable() {
   }
   if (
     container.dataset.measurementStructureKey === structureKey
-    && updateMeasurementCompareTableLiveCells(rows, selectedKey)
+    && updateMeasurementCompareTableLiveCells(virtualRows.rows, selectedKey)
   ) {
     drawMeasurementTraceChart();
     return;
@@ -1911,6 +1958,9 @@ $("undoRuntimeParameters").addEventListener("click", undoWebRuntimeSettings);
 $("restoreRuntimeParameterDefaults").addEventListener("click", restoreWebRuntimeDefaults);
 document.querySelectorAll("[data-runtime-setting]").forEach((input) => {
   input.addEventListener("input", () => updateWebRuntimeDraft(input));
+  if (input.tagName === "SELECT") {
+    input.addEventListener("change", () => updateWebRuntimeDraft(input));
+  }
 });
 $("refreshManualChanges").addEventListener("click", loadManualDefinitionChanges);
 $("retryPendingManualChanges").addEventListener("click", retryPendingManualDefinitionChanges);
@@ -1961,18 +2011,48 @@ function handleSimulatorTableFilterControl(target) {
   return false;
 }
 
-document.addEventListener("input", (event) => {
-  if (handleSimulatorTableFilterControl(event.target)) return;
-  if (event.target?.id === "curveTreeFilter") {
-    state.curveTreeSearch = event.target.value || "";
+const _simulatorSearchDebounceTimers = new WeakMap();
+const _simulatorSearchComposing = new WeakSet();
+document.addEventListener("compositionstart", (event) => {
+  if (event.target instanceof HTMLInputElement && event.target.type === "search") {
+    _simulatorSearchComposing.add(event.target);
+  }
+});
+document.addEventListener("compositionend", (event) => {
+  if (event.target instanceof HTMLInputElement && event.target.type === "search") {
+    _simulatorSearchComposing.delete(event.target);
+    event.target.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+});
+
+function _applySimulatorSearchInput(target) {
+  if (handleSimulatorTableFilterControl(target)) return;
+  if (target?.id === "curveTreeFilter") {
+    state.curveTreeSearch = target.value || "";
     renderCurveTree();
     return;
   }
-  const input = event.target.closest?.("[data-device-tree-filter-scope]");
+  const input = target.closest?.("[data-device-tree-filter-scope]");
   if (!input) return;
   const scope = input.dataset.deviceTreeFilterScope || "";
   state.deviceTreeSearch[scope] = input.value || "";
   refreshDeviceTreeFilterScope(scope);
+}
+
+document.addEventListener("input", (event) => {
+  const target = event.target;
+  if (target instanceof HTMLInputElement && target.type === "search") {
+    if (_simulatorSearchComposing.has(target)) return;
+    const prevTimer = _simulatorSearchDebounceTimers.get(target);
+    if (prevTimer) clearTimeout(prevTimer);
+    const nextTimer = setTimeout(() => {
+      _simulatorSearchDebounceTimers.delete(target);
+      _applySimulatorSearchInput(target);
+    }, 150);
+    _simulatorSearchDebounceTimers.set(target, nextTimer);
+    return;
+  }
+  _applySimulatorSearchInput(target);
 });
 document.addEventListener("change", (event) => {
   if (!(event.target instanceof Element)) return;
@@ -2170,24 +2250,53 @@ document.addEventListener("input", (event) => {
     updateMeasurementFault(Number(event.target.dataset.measIndex), event.target.dataset.measField, event.target.value, false);
   }
 });
-// 为全局搜索过滤框提供 150ms 防抖、实用快捷键以及未保存修改离开保护
+// 为实用快捷键、未保存离开保护、异常速筛及日志过滤提供统一装配
 (function setupUsabilityEnhancements() {
-  document.querySelectorAll('input[type="search"]').forEach((searchInput) => {
-    if (searchInput.dataset.debouncedReady) return;
-    searchInput.dataset.debouncedReady = "1";
-    let composing = false;
-    searchInput.addEventListener("compositionstart", () => { composing = true; });
-    searchInput.addEventListener("compositionend", () => { composing = false; });
-    const notifyDebounced = debounce(() => {
-      if (composing) return;
-      searchInput.dispatchEvent(new Event("change", { bubbles: true }));
-    }, 150);
-    searchInput.addEventListener("input", notifyDebounced);
+  $("measurementCompareOnlyAbnormalFilter")?.addEventListener("change", (event) => {
+    state.measurementCompareOnlyAbnormal = Boolean(event.target.checked);
+    renderMeasurementCompareTable();
+    drawMeasurementTraceChart();
   });
+  $("exportSimulatorMeasurementsCsvButton")?.addEventListener("click", () => {
+    exportSimulatorMeasurementsCsv();
+  });
+  let simLogSearchTimer = null;
+  $("runtimeLogKeywordFilter")?.addEventListener("input", (event) => {
+    const val = String(event.target.value || "");
+    if (simLogSearchTimer) clearTimeout(simLogSearchTimer);
+    simLogSearchTimer = setTimeout(() => {
+      simLogSearchTimer = null;
+      state.runtimeLogKeywordFilter = val;
+      state.runtimeLogPage = 1;
+      renderRuntimeLogs();
+    }, 150);
+  });
+  $("runtimeLogOnlyAlertFilter")?.addEventListener("change", (event) => {
+    state.runtimeLogOnlyAlert = Boolean(event.target.checked);
+    state.runtimeLogPage = 1;
+    renderRuntimeLogs();
+  });
+
+  const hasOpenOverlay = () => Boolean(
+    document.querySelector("dialog[open]")
+    || [
+      "startSimulationDialog",
+      "newModelDialog",
+      "updateModelDialog",
+      "cloneModelDialog",
+      "importModelDialog",
+      "modelManagementDialog",
+      "traineeLinkDialog",
+    ].some((id) => {
+      const el = $(id);
+      return el && !el.hidden;
+    }),
+  );
 
   document.addEventListener("keydown", (event) => {
     const tag = String(event.target?.tagName || "").toUpperCase();
     const isEditable = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || event.target?.isContentEditable;
+    const isInteractiveFocus = isEditable || tag === "BUTTON" || tag === "A";
     if (event.key === "Escape") {
       const openModal = [
         ["startSimulationDialog", closeStartSimulationDialog],
@@ -2205,7 +2314,7 @@ document.addEventListener("input", (event) => {
       }
       return;
     }
-    if (isEditable || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (isEditable || event.ctrlKey || event.metaKey || event.altKey || hasOpenOverlay()) return;
     if (event.key === "/") {
       const activeSection = document.querySelector(".page-section.is-active");
       const searchBox = activeSection?.querySelector('input[type="search"]');
@@ -2214,7 +2323,7 @@ document.addEventListener("input", (event) => {
         searchBox.focus();
         searchBox.select();
       }
-    } else if (event.code === "Space") {
+    } else if (event.code === "Space" && !isInteractiveFocus) {
       const clockState = String(state.snapshot?.clock?.state || "");
       if (clockState === "running" || clockState === "paused") {
         event.preventDefault();
@@ -2232,7 +2341,14 @@ document.addEventListener("input", (event) => {
 }());
 
 document.addEventListener("visibilitychange", () => {
-  scheduleNextRefresh(pageIsHidden() ? HIDDEN_REFRESH_INTERVAL_MS : 0);
+  if (pageIsHidden()) {
+    if (state.frontendRefreshTimerId) {
+      clearTimeout(state.frontendRefreshTimerId);
+      state.frontendRefreshTimerId = null;
+    }
+    return;
+  }
+  scheduleNextRefresh(0);
 });
 generateCurves(0);
 initCurveEditor();

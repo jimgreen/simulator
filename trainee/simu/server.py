@@ -170,7 +170,13 @@ def _advance_clock_if_due(service: PolarMicrogridSimulator, last_step: float) ->
                 record_log("error", "clock", f"仿真步进异常，已自动暂停时钟：{exc}")
             except Exception:
                 pass
-        service.control_clock({"action": "pause"})
+        try:
+            service.control_clock({"action": "pause"})
+        except Exception:
+            logging.getLogger("simu.web").exception(
+                "Failed to pause simulation clock after step error for model %s",
+                getattr(service, "model_id", ""),
+            )
     return time.monotonic()
 
 

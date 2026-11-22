@@ -104,6 +104,11 @@ class _PersistentJsonClient:
         self._connections: Dict[Tuple[str, str, str, int], _JsonConnectionSlot] = {}
         self._lock = threading.RLock()
         self._closed = False
+        self._last_response_bytes_local = threading.local()
+
+    def last_response_size_bytes(self) -> int:
+        """返回当前线程最近一次 HTTP JSON 请求解压后的原始字节数，避免二次 json.dumps 测长。"""
+        return int(getattr(self._last_response_bytes_local, "size", 0) or 0)
 
     @staticmethod
     def _origin(url: str) -> Tuple[Tuple[str, str, int], str]:
@@ -234,6 +239,7 @@ class _PersistentJsonClient:
 
             if response_will_close:
                 self._discard(slot_key, slot)
+            self._last_response_bytes_local.size = len(response_body)
             text = response_body.decode("utf-8", errors="replace")
             if response_status >= 400:
                 raise RuntimeError(text or response_reason or f"HTTP {response_status}")
@@ -792,16 +798,16 @@ def _calculation_snapshot_projection(
     return merged
 
 
-def _measurement_delta_signature(item: Mapping[str, Any]) -> str:
-    comparable = {
-        "value": item.get("value"),
-        "scada_value": item.get("scada_value"),
-        "valid": item.get("valid"),
-        "weight": item.get("weight"),
-        "status": item.get("status"),
-        "fixed_value": item.get("fixed_value"),
-    }
-    return json.dumps(comparable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def _measurement_delta_signature(item: Mapping[str, Any]) -> Tuple[Any, ...]:
+    """返回轻量 6 元组签名用于测点差量相等性比较，避免持锁热循环内高频 json.dumps。"""
+    return (
+        item.get("value"),
+        item.get("scada_value"),
+        item.get("valid"),
+        item.get("weight"),
+        item.get("status"),
+        item.get("fixed_value"),
+    )
 
 
 def _measurement_delta_items(
@@ -1475,6 +1481,8 @@ class TraineeRealtimeExchange:
                 except (TypeError, ValueError):
                     state.last_rejected_measurement_seq = 0
                 state.last_rejected_measurement_reason = str(error)
+            # 断连或校验失败同样推进 revision，防止 HTTP 帧缓存持续返回旧的“假在线”帧。
+            state.revision += 1
             return True
 
     def _record_refresh_phase_durations_for_service(
@@ -2052,18 +2060,18 @@ class TraineeRealtimeExchange:
             *CONTROL_STATIC_FIELDS,
         }
         payload = {
-            key: copy.deepcopy(value)
+            key: value
             for key, value in runtime.items()
             if key not in excluded and key not in deferred
         }
         if "model" in local:
-            payload["model"] = copy.deepcopy(local["model"])
+            payload["model"] = local["model"]
         if include_static_meta and "static_meta" in local:
-            payload["static_meta"] = copy.deepcopy(local["static_meta"])
+            payload["static_meta"] = local["static_meta"]
         if include_static:
             for key in CONTROL_STATIC_FIELDS:
                 if key in local:
-                    payload[key] = copy.deepcopy(local[key])
+                    payload[key] = local[key]
         if include_devices and "devices" in local:
             payload["devices"] = _merge_remote_runtime_devices(
                 local.get("devices"),
@@ -2077,12 +2085,12 @@ class TraineeRealtimeExchange:
         if include_commands and isinstance(runtime.get("commands"), Mapping):
             commands = runtime["commands"]
             payload["commands"] = {
-                key: copy.deepcopy(value)
+                key: value
                 for key, value in commands.items()
                 if key != "history"
             }
             payload["commands"]["history"] = (
-                copy.deepcopy(commands.get("history", []))
+                list(commands.get("history", []))
                 if include_command_history
                 else []
             )
@@ -2207,7 +2215,11 @@ class TraineeRealtimeExchange:
                     "frame": frame,
                     "count": len(definitions),
                     "definition_revision": self._definition_revision(service),
-                    "definition_signature": measurement_definition_signature(definitions),
+                    "definition_signature": self._measurement_definition_signature_for_service(
+                        service,
+                        state,
+                        definitions,
+                    ),
                 }
             )
         return (
@@ -2666,18 +2678,12 @@ class TraineeRealtimeExchange:
                     materialize_result=materialize_result,
                 )
             request_duration = max(0.0, time.monotonic() - request_started)
-            try:
-                response_size = len(
-                    json.dumps(
-                        current,
-                        ensure_ascii=False,
-                        default=str,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                )
-            except (TypeError, ValueError):
-                response_size = 0
-            current_payload = copy.deepcopy(dict(current))
+            response_size = (
+                self._request_client.last_response_size_bytes()
+                if self._request_client is not None
+                else 0
+            )
+            current_payload = dict(current)
             project_trainee_interstation_snapshot(current_payload)
             processing_started = time.monotonic()
             embedded_delta = current_payload.pop("measurement_delta", None)
@@ -3151,6 +3157,62 @@ class TraineeRealtimeExchange:
             wait_seconds = min(next_delays) if next_delays else 1.0
             self._wake_event.wait(max(0.01, min(wait_seconds, 1.0)))
             self._wake_event.clear()
+
+    def cache_version_token(self, model_id: str) -> Optional[Tuple[Any, ...]]:
+        """受锁返回用于 HTTP 帧缓存键的交换版本令牌，纳入断连错误与墙钟超时/冻结状态。"""
+        with self._states_lock:
+            state = self._states.get(model_id)
+        if state is None:
+            return None
+        now = time.time()
+        with state.lock:
+            runtime_snapshot = state.runtime_snapshot
+            ready = runtime_snapshot is not None
+            received_at = state.received_at
+            frame_changed_at = state.frame_changed_at
+            frame_identity = state.frame_identity
+            revision = state.revision
+            receive_epoch = state.receive_epoch
+            last_error = state.last_error
+            consecutive_failures = state.consecutive_failures
+            frame_age_limit = float(getattr(self, "frame_age_limit_seconds", 15.0) or 0.0)
+            same_frame_limit = float(getattr(self, "same_frame_limit_seconds", 30.0) or 0.0)
+        runtime_clock = (
+            runtime_snapshot.get("clock")
+            if (type(runtime_snapshot) is dict or isinstance(runtime_snapshot, Mapping))
+            and isinstance(runtime_snapshot.get("clock"), Mapping)
+            else {}
+        )
+        simulation_paused = bool(
+            ready and str(runtime_clock.get("state") or "").strip().casefold() == "paused"
+        )
+        age = max(0.0, now - received_at) if received_at else 0.0
+        same_frame_duration = max(0.0, now - frame_changed_at) if frame_changed_at else 0.0
+        frame_too_old = bool(
+            ready and not simulation_paused and frame_age_limit > 0.0 and age > frame_age_limit
+        )
+        frame_frozen = bool(
+            ready
+            and not simulation_paused
+            and frame_identity
+            and same_frame_limit > 0.0
+            and same_frame_duration > same_frame_limit
+        )
+        return (
+            revision,
+            receive_epoch,
+            frame_identity,
+            last_error,
+            consecutive_failures,
+            frame_too_old,
+            frame_frozen,
+            int(age) if ready else 0,
+        )
+
+    def abort_inflight_io(self) -> None:
+        """提前关闭底层 HTTP 连接池以中断阻塞中的网络 I/O，供优雅关停阶段先行调用。"""
+        if self._request_client is not None:
+            self._request_client.close()
 
     def close(self) -> None:
         with self._close_lock:

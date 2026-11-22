@@ -1,6 +1,10 @@
 """Run an independent scdfe_s Web/IEC104 process backed by simulator models."""
 
 import argparse
+from contextlib import closing
+import gzip
+import hashlib
+import http.client
 from ipaddress import ip_address
 import json
 import logging
@@ -8,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -60,12 +65,100 @@ def port_available(port):
     return True
 
 
+class _LoopbackKeepAlivePool:
+    """线程安全的本机 HTTP/1.1 Keep-Alive + gzip 连接池，消除 0.5s 轮询短连接握手与未压缩传输开销。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._slots: dict[tuple[str, int], tuple[threading.RLock, http.client.HTTPConnection]] = {}
+
+    def _get_slot(self, host: str, port: int, timeout: float):
+        key = (host, port)
+        with self._lock:
+            slot = self._slots.get(key)
+            if slot is None:
+                slot = (threading.RLock(), http.client.HTTPConnection(host, port, timeout=timeout))
+                self._slots[key] = slot
+            return slot
+
+    def _discard(self, host: str, port: int, conn: http.client.HTTPConnection) -> None:
+        key = (host, port)
+        with self._lock:
+            slot = self._slots.get(key)
+            if slot is not None and slot[1] is conn:
+                self._slots.pop(key, None)
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+    def request_json(self, base: str, path: str, payload=None, *, timeout: float = DEFAULT_HTTP_TIMEOUT):
+        parsed = urlsplit(base)
+        host = parsed.hostname or "127.0.0.1"
+        port = int(parsed.port or 80)
+        method = "GET" if payload is None else "POST"
+        body = None if payload is None else json.dumps(payload).encode("utf-8")
+        headers = {
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip",
+            "Connection": "keep-alive",
+        }
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            headers["Content-Length"] = str(len(body))
+        last_exc = None
+        for attempt in range(2):
+            slot_lock, conn = self._get_slot(host, port, timeout)
+            reused = False
+            try:
+                with slot_lock:
+                    conn.timeout = timeout
+                    sock = getattr(conn, "sock", None)
+                    reused = sock is not None
+                    if sock is not None:
+                        sock.settimeout(timeout)
+                    conn.request(method, path, body=body, headers=headers)
+                    resp = conn.getresponse()
+                    raw = resp.read()
+                    status = int(resp.status)
+                    reason = str(resp.reason or "")
+                    will_close = bool(getattr(resp, "will_close", False))
+                    is_gzip = str(resp.getheader("Content-Encoding", "")).lower() == "gzip"
+            except (OSError, http.client.HTTPException) as exc:
+                last_exc = exc
+                self._discard(host, port, conn)
+                if attempt == 0 and (method == "GET" or reused):
+                    continue
+                raise
+            if will_close:
+                self._discard(host, port, conn)
+            if is_gzip and raw:
+                raw = gzip.decompress(raw)
+            if status >= 400:
+                text = raw.decode("utf-8", errors="replace")
+                raise OSError(f"HTTP {status} {reason}: {text[:200]}")
+            return json.loads(raw.decode("utf-8")) if raw else {}
+        raise last_exc or OSError("HTTP request failed")
+
+    def close(self) -> None:
+        with self._lock:
+            slots = list(self._slots.values())
+            self._slots.clear()
+        for _slot_lock, conn in slots:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+
+_HTTP_POOL = _LoopbackKeepAlivePool()
+
+
 def request(base, path, payload=None, *, timeout=DEFAULT_HTTP_TIMEOUT):
-    body = None if payload is None else json.dumps(payload).encode()
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    req = Request(base + path, body, headers)
-    with LOCAL_HTTP.open(req, timeout=timeout) as response:
-        return json.load(response)
+    return _HTTP_POOL.request_json(base, path, payload=payload, timeout=timeout)
+
+
+_DEFAULT_REQUEST = request
 
 
 def read_points(base, model):
@@ -83,6 +176,55 @@ def read_points(base, model):
     return definitions
 
 
+def migrate_bridge_tables_out(scada_db_path: Path, bridge_db_path: Path) -> None:
+    """将旧版写入 scdfe_s.sqlite3 的 simulator104_* 表迁移到独立边车库，保持 SCADA 库纯净。"""
+    bridge_db_path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(bridge_db_path, timeout=15)) as bdb:
+        bdb.execute("PRAGMA journal_mode=WAL")
+        with bdb:
+            bdb.execute("""CREATE TABLE IF NOT EXISTS simulator104_models (
+                model TEXT PRIMARY KEY, rtu_id INTEGER UNIQUE NOT NULL)""")
+            bdb.execute("""CREATE TABLE IF NOT EXISTS simulator104_points (
+                rtu_id INTEGER NOT NULL, kind TEXT NOT NULL, source_name TEXT NOT NULL,
+                pnt_no INTEGER NOT NULL, active INTEGER NOT NULL,
+                PRIMARY KEY (rtu_id, kind, source_name), UNIQUE (rtu_id, kind, pnt_no))""")
+        if not scada_db_path.is_file() or scada_db_path.stat().st_size == 0:
+            return
+        with closing(sqlite3.connect(scada_db_path, timeout=15)) as sdb:
+            tables = {
+                r[0]
+                for r in sdb.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            if not ({"simulator104_models", "simulator104_points"} & tables):
+                return
+            models = (
+                sdb.execute("SELECT model, rtu_id FROM simulator104_models").fetchall()
+                if "simulator104_models" in tables
+                else []
+            )
+            points = (
+                sdb.execute(
+                    "SELECT rtu_id, kind, source_name, pnt_no, active FROM simulator104_points"
+                ).fetchall()
+                if "simulator104_points" in tables
+                else []
+            )
+            with bdb:
+                if models:
+                    bdb.executemany(
+                        "INSERT OR IGNORE INTO simulator104_models VALUES (?,?)", models
+                    )
+                if points:
+                    bdb.executemany(
+                        "INSERT OR IGNORE INTO simulator104_points VALUES (?,?,?,?,?)",
+                        points,
+                    )
+            with sdb:
+                sdb.execute("BEGIN IMMEDIATE")
+                sdb.execute("DROP TABLE IF EXISTS simulator104_points")
+                sdb.execute("DROP TABLE IF EXISTS simulator104_models")
+
+
 class Bridge:
     def __init__(
         self,
@@ -91,6 +233,7 @@ class Bridge:
         first_port,
         interval=1.0,
         *,
+        bridge_db_path=None,
         offline_failure_threshold=DEFAULT_OFFLINE_FAILURE_THRESHOLD,
     ):
         self.server = server
@@ -108,44 +251,81 @@ class Bridge:
         self._failure_counts = {}
         self._point_def_cache = {}
         self._last_samples = {}
-        with server.store.connection() as db, db:
-            db.execute("""CREATE TABLE IF NOT EXISTS simulator104_models (
-                model TEXT PRIMARY KEY, rtu_id INTEGER UNIQUE NOT NULL)""")
-            db.execute("""CREATE TABLE IF NOT EXISTS simulator104_points (
-                rtu_id INTEGER NOT NULL, kind TEXT NOT NULL, source_name TEXT NOT NULL,
-                pnt_no INTEGER NOT NULL, active INTEGER NOT NULL,
-                PRIMARY KEY (rtu_id, kind, source_name), UNIQUE (rtu_id, kind, pnt_no))""")
+        self._model_rtu_cache = {}
+        self._invalidated_rtus = set()
+        self._delta_sync_state = {}
+        self.bridge_db_path = Path(
+            bridge_db_path
+            or server.store.db_path.with_name(server.store.db_path.stem + "_bridge.sqlite3")
+        ).resolve()
+        migrate_bridge_tables_out(server.store.db_path, self.bridge_db_path)
+
+    def _bridge_con(self):
+        con = sqlite3.connect(self.bridge_db_path, timeout=15)
+        con.execute("PRAGMA busy_timeout=15000")
+        return con
+
+    def is_bound_rtu(self, rtu):
+        with closing(self._bridge_con()) as bdb:
+            return (
+                bdb.execute(
+                    "SELECT 1 FROM simulator104_models WHERE rtu_id=?", (int(rtu),)
+                ).fetchone()
+                is not None
+            )
 
     def channel(self, model):
-        store = self.server.store
-        with store.connection() as db, db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT rtu_id FROM simulator104_models WHERE model=?", (model,)).fetchone()
+        cached_rtu = self._model_rtu_cache.get(model)
+        if cached_rtu is not None:
+            return cached_rtu
+        # 优先普通只读查询，避免每轮 0.5s 触发无谓的 BEGIN IMMEDIATE 写锁。
+        with closing(self._bridge_con()) as bdb:
+            row = bdb.execute(
+                "SELECT rtu_id FROM simulator104_models WHERE model=?",
+                (model,),
+            ).fetchone()
             if row:
-                return int(row[0])
-            used = {int(value) for value, in db.execute(
-                "SELECT rtu_id FROM fes_rtu_define UNION SELECT channel_id FROM fes_rtu_define "
-                "UNION SELECT channel_id FROM fes_channel_iec104_define "
-                "UNION SELECT id FROM fes_channel_iec104_define "
-                "UNION SELECT rtu_id FROM simulator104_models"
-            ) if value is not None}
-            ports = {int(port) for port, in db.execute(
-                "SELECT remote_port FROM fes_channel_iec104_define WHERE remote_port IS NOT NULL")}
-            rtu = next((number for number in range(1, 65535) if number not in used), None)
-            if rtu is None:
-                raise RuntimeError("没有可分配的 IEC104 RTU 编号")
-            port = next(
-                (number for number in range(self.first_port, 65536)
-                 if number not in ports and port_available(number)),
-                None,
-            )
-            if port is None:
-                raise RuntimeError("没有可分配的本机 IEC104 监听端口")
-            db.execute("INSERT INTO fes_channel_iec104_define (id,name,channel_id,rtu_addr,remote_host,remote_port) "
-                       "VALUES (?,?,?,?,'127.0.0.1',?)", (rtu, model, rtu, rtu, port))
-            db.execute("INSERT INTO fes_rtu_define (rtu_id,channel_id,channel_type,name,process_enable) VALUES (?,?,'iec104',?,1)",
-                       (rtu, rtu, model))
-            db.execute("INSERT INTO simulator104_models VALUES (?,?)", (model, rtu))
+                rtu_id = int(row[0])
+                self._model_rtu_cache[model] = rtu_id
+                return rtu_id
+        store = self.server.store
+        with closing(self._bridge_con()) as bdb, bdb:
+            bdb.execute("BEGIN IMMEDIATE")
+            row = bdb.execute("SELECT rtu_id FROM simulator104_models WHERE model=?", (model,)).fetchone()
+            if row:
+                rtu_id = int(row[0])
+                self._model_rtu_cache[model] = rtu_id
+                return rtu_id
+            used_bridge = {
+                int(value)
+                for value, in bdb.execute("SELECT rtu_id FROM simulator104_models")
+                if value is not None
+            }
+            with store.connection() as db, db:
+                db.execute("BEGIN IMMEDIATE")
+                used = used_bridge | {int(value) for value, in db.execute(
+                    "SELECT rtu_id FROM fes_rtu_define UNION SELECT channel_id FROM fes_rtu_define "
+                    "UNION SELECT channel_id FROM fes_channel_iec104_define "
+                    "UNION SELECT id FROM fes_channel_iec104_define"
+                ) if value is not None}
+                ports = {int(port) for port, in db.execute(
+                    "SELECT remote_port FROM fes_channel_iec104_define WHERE remote_port IS NOT NULL")}
+                rtu = next((number for number in range(1, 65535) if number not in used), None)
+                if rtu is None:
+                    raise RuntimeError("没有可分配的 IEC104 RTU 编号")
+                port = next(
+                    (number for number in range(self.first_port, 65536)
+                     if number not in ports and port_available(number)),
+                    None,
+                )
+                if port is None:
+                    raise RuntimeError("没有可分配的本机 IEC104 监听端口")
+                db.execute("INSERT INTO fes_channel_iec104_define (id,name,channel_id,rtu_addr,remote_host,remote_port) "
+                           "VALUES (?,?,?,?,'127.0.0.1',?)", (rtu, model, rtu, rtu, port))
+                db.execute("INSERT INTO fes_rtu_define (rtu_id,channel_id,channel_type,name,process_enable) VALUES (?,?,'iec104',?,1)",
+                           (rtu, rtu, model))
+            bdb.execute("INSERT INTO simulator104_models VALUES (?,?)", (model, rtu))
+        self._model_rtu_cache[model] = rtu
         return rtu
 
     def sync_points(self, rtu, points):
@@ -194,18 +374,21 @@ class Bridge:
                             f"UPDATE {table} SET value=?,status=?,refresh_time=? WHERE rtu_id=? AND pnt_no=?",
                             (val, quality, now, rtu, no),
                         )
-                    last_samples[(kind, no)] = (val, quality)
+            # 仅在 SQLite 事务提交成功后更新内存缓存，防止回滚导致测点永久滞留旧值。
+            last_samples.update(sample_updates)
             return False
 
         now = time.time_ns() // 1_000_000
         changed = False
         known_cache = {}
-        last_samples = self._last_samples.setdefault(rtu, {})
-        with self.server.store.connection() as db, db:
+        pending_samples = {}
+        removed_samples = []
+        with closing(self._bridge_con()) as bdb, bdb, self.server.store.connection() as db, db:
+            bdb.execute("BEGIN IMMEDIATE")
             db.execute("BEGIN IMMEDIATE")
             for kind, current in points.items():
                 table = f"fes_{kind}_define"
-                known = {name: (no, active) for name, no, active in db.execute(
+                known = {name: (no, active) for name, no, active in bdb.execute(
                     "SELECT source_name,pnt_no,active FROM simulator104_points WHERE rtu_id=? AND kind=?",
                     (rtu, kind))}
                 existing = {no: (value, status) for no, value, status in db.execute(
@@ -216,14 +399,22 @@ class Bridge:
                         number += 1
                         db.execute(f"INSERT INTO {table} (rtu_id,pnt_no,name,value,status) VALUES (?,?,?,0,128)",
                                    (rtu, number, name))
-                        db.execute("INSERT INTO simulator104_points VALUES (?,?,?,?,1)", (rtu, kind, name, number))
+                        bdb.execute("INSERT INTO simulator104_points VALUES (?,?,?,?,1)", (rtu, kind, name, number))
                         known[name] = (number, True)
                         existing[number] = (0, 128)
                         changed = True
                     no, active = known[name]
+                    if no not in existing:
+                        # 若 SCADA 点表行被手工删除但边车仍有绑定，自动补插定义行避免永久跳过更新。
+                        db.execute(
+                            f"INSERT INTO {table} (rtu_id,pnt_no,name,value,status) VALUES (?,?,?,0,128)",
+                            (rtu, no, name),
+                        )
+                        existing[no] = (0, 128)
+                        changed = True
                     if not active:
-                        db.execute("UPDATE simulator104_points SET active=1 WHERE rtu_id=? AND kind=? AND source_name=?",
-                                   (rtu, kind, name))
+                        bdb.execute("UPDATE simulator104_points SET active=1 WHERE rtu_id=? AND kind=? AND source_name=?",
+                                    (rtu, kind, name))
                         changed = True
                     if kind in {"yc", "yx"} and no in existing:
                         value = row.get("value") if row else None
@@ -242,37 +433,50 @@ class Bridge:
                                 values += [value, quality, now]
                             db.execute(f"UPDATE {table} SET {fields} WHERE rtu_id=? AND pnt_no=?",
                                        (*values, rtu, no))
-                        last_samples[(kind, no)] = (value, quality)
+                        pending_samples[(kind, no)] = (value, quality)
                 for name, (no, active) in known.items():
                     if active and name not in current:
-                        db.execute("UPDATE simulator104_points SET active=0 WHERE rtu_id=? AND kind=? AND source_name=?",
-                                   (rtu, kind, name))
+                        bdb.execute("UPDATE simulator104_points SET active=0 WHERE rtu_id=? AND kind=? AND source_name=?",
+                                    (rtu, kind, name))
                         db.execute(f"UPDATE {table} SET status=128,refresh_time=? WHERE rtu_id=? AND pnt_no=?",
                                    (now, rtu, no))
-                        last_samples.pop((kind, no), None)
+                        removed_samples.append((kind, no))
                         changed = True
                 known_cache[kind] = {name: no for name, (no, _active) in known.items() if name in current}
+        # 双库事务全部提交成功后再更新内存状态缓存。
+        last_samples = self._last_samples.setdefault(rtu, {})
+        last_samples.update(pending_samples)
+        for sample_key in removed_samples:
+            last_samples.pop(sample_key, None)
         self._point_def_cache[rtu] = {"signature": def_signature, "known": known_cache}
         return changed
 
     def command_target(self, rtu, kind, number, value):
         if kind not in {"yk", "yt"}:
             raise ValueError("只允许遥控或遥调")
+        with closing(self._bridge_con()) as bdb:
+            brow = bdb.execute(
+                "SELECT source_name FROM simulator104_points "
+                "WHERE rtu_id=? AND kind=? AND pnt_no=? AND active=1",
+                (rtu, kind, number),
+            ).fetchone()
+        if brow is None:
+            raise ValueError("仿真控制点未绑定、已退役或模型离线")
         with self.server.store.connection() as db:
-            row = db.execute(
-                f"SELECT b.source_name,p.man_disable,p.auto_disable FROM simulator104_points b "
-                f"JOIN fes_{kind}_define p ON p.rtu_id=b.rtu_id AND p.pnt_no=b.pnt_no "
-                "WHERE b.rtu_id=? AND b.kind=? AND b.pnt_no=? AND b.active=1",
-                (rtu, kind, number)).fetchone()
+            prow = db.execute(
+                f"SELECT man_disable,auto_disable FROM fes_{kind}_define "
+                "WHERE rtu_id=? AND pnt_no=?",
+                (rtu, number),
+            ).fetchone()
         with self.lock:
             target = self.online.get(rtu)
-        if row is None or target is None:
+        if prow is None or target is None:
             raise ValueError("仿真控制点未绑定、已退役或模型离线")
-        if row[1] or row[2]:
+        if prow[0] or prow[1]:
             raise ValueError("控制点已禁止操作")
         if not isinstance(value, (int, float)) or not math.isfinite(value) or (kind == "yk" and value not in (0, 1)):
             raise ValueError("无效遥控或遥调值")
-        return target[0], target[1], row[0]
+        return target[0], target[1], brow[0]
 
     def execute(self, rtu, kind, number, value):
         base, model, name = self.command_target(rtu, kind, number, value)
@@ -286,18 +490,41 @@ class Bridge:
         LOG.info("模型 %s 已接受 RTU%s %s/%s=%s", model, rtu, kind.upper(), number, value)
 
     def invalidate_offline(self, seen):
-        with self.server.store.connection() as db, db:
-            offline = [int(rtu) for rtu, in db.execute("SELECT rtu_id FROM simulator104_models") if rtu not in seen]
+        with closing(self._bridge_con()) as bdb:
+            all_rtus = [int(rtu) for rtu, in bdb.execute("SELECT rtu_id FROM simulator104_models")]
+            offline = [rtu for rtu in all_rtus if rtu not in seen and rtu not in self._invalidated_rtus]
+            if not offline:
+                return
+            offline_points = {}
             for rtu in offline:
-                self._last_samples.pop(rtu, None)
-                self._point_def_cache.pop(rtu, None)
                 for kind in ("yc", "yx"):
+                    pts = [
+                        int(no)
+                        for no, in bdb.execute(
+                            "SELECT pnt_no FROM simulator104_points WHERE rtu_id=? AND kind=?",
+                            (rtu, kind),
+                        )
+                    ]
+                    if pts:
+                        offline_points[(rtu, kind)] = pts
+        now = time.time_ns() // 1_000_000
+        with self.server.store.connection() as db, db:
+            for rtu in offline:
+                for kind in ("yc", "yx"):
+                    pts = offline_points.get((rtu, kind))
+                    if not pts:
+                        continue
                     raw_status = ",raw_status=128" if kind == "yc" else ""
+                    placeholders = ",".join("?" for _ in pts)
                     db.execute(
                         f"UPDATE fes_{kind}_define SET status=128{raw_status},refresh_time=? "
-                        "WHERE rtu_id=? AND status IS NOT 128 AND pnt_no IN (SELECT pnt_no FROM simulator104_points "
-                        "WHERE rtu_id=? AND kind=?)", (time.time_ns() // 1_000_000, rtu, rtu, kind),
+                        f"WHERE rtu_id=? AND status IS NOT 128 AND pnt_no IN ({placeholders})",
+                        (now, rtu, *pts),
                     )
+        for rtu in offline:
+            self._last_samples.pop(rtu, None)
+            self._point_def_cache.pop(rtu, None)
+            self._invalidated_rtus.add(rtu)
 
     def status(self):
         with self.lock:
@@ -310,31 +537,107 @@ class Bridge:
         """查询指定 RTU 已绑定且活跃的遥控/遥调测点列表，供前端下拉选择。"""
         if kind not in {"yk", "yt"}:
             raise ValueError("控制点类型仅支持 yk 或 yt")
-        with self.server.store.connection() as db:
-            rows = db.execute(
-                f"SELECT b.pnt_no, COALESCE(NULLIF(p.name, ''), b.source_name), b.source_name, "
-                "p.man_disable, p.auto_disable, p.value "
-                f"FROM simulator104_points b "
-                f"JOIN fes_{kind}_define p ON p.rtu_id=b.rtu_id AND p.pnt_no=b.pnt_no "
-                "WHERE b.rtu_id=? AND b.kind=? AND b.active=1 ORDER BY b.pnt_no",
+        with closing(self._bridge_con()) as bdb:
+            bound = bdb.execute(
+                "SELECT pnt_no, source_name FROM simulator104_points "
+                "WHERE rtu_id=? AND kind=? AND active=1 ORDER BY pnt_no",
                 (int(rtu), kind),
             ).fetchall()
-        return [
-            {
-                "pnt_no": int(pnt_no),
-                "name": str(name or ""),
-                "source_name": str(source_name or ""),
-                "disabled": bool(man_disable or auto_disable),
-                "value": value,
+        if not bound:
+            return []
+        with self.server.store.connection() as db:
+            defs = {
+                int(pnt_no): (name, man_disable, auto_disable, value)
+                for pnt_no, name, man_disable, auto_disable, value in db.execute(
+                    f"SELECT pnt_no, name, man_disable, auto_disable, value FROM fes_{kind}_define WHERE rtu_id=?",
+                    (int(rtu),),
+                )
             }
-            for pnt_no, name, source_name, man_disable, auto_disable, value in rows
-        ]
+        items = []
+        for pnt_no, source_name in bound:
+            info = defs.get(int(pnt_no))
+            if info is None:
+                continue
+            name, man_disable, auto_disable, value = info
+            items.append(
+                {
+                    "pnt_no": int(pnt_no),
+                    "name": str(name or source_name or ""),
+                    "source_name": str(source_name or ""),
+                    "disabled": bool(man_disable or auto_disable),
+                    "value": value,
+                }
+            )
+        return items
+
+    def _read_points_for_model(self, base, name):
+        """优先使用增量 /api/measurements/delta（稳态单次轻量请求），首次或定义变更自动回退全量同步。"""
+        if request is not _DEFAULT_REQUEST:
+            return read_points(base, name)
+        sync_state = self._delta_sync_state.get(name)
+        if sync_state is not None and sync_state.get("base") == base:
+            try:
+                delta = request(
+                    base,
+                    f"/api/measurements/delta?after_seq={int(sync_state['seq'])}&compact=1&trainee_view=1",
+                )
+                delta_sig = str(delta.get("definition_signature") or "")
+                if (
+                    isinstance(delta, dict)
+                    and not delta.get("reset")
+                    and delta_sig
+                    and delta_sig == sync_state.get("definition_signature")
+                ):
+                    by_index = sync_state["index_meta"]
+                    points = sync_state["points"]
+                    for row in delta.get("rows") or ():
+                        if not isinstance(row, list) or len(row) < 3:
+                            continue
+                        try:
+                            idx = int(row[0])
+                        except (TypeError, ValueError):
+                            continue
+                        meta = by_index.get(idx)
+                        if meta is None:
+                            continue
+                        kind, pt_name = meta
+                        scada_val = row[2]
+                        valid_val = row[3] if len(row) > 3 else 1
+                        points[kind][pt_name] = {"name": pt_name, "value": scada_val, "valid": valid_val}
+                    sync_state["seq"] = int(delta.get("seq", sync_state["seq"]) or 0)
+                    return points
+            except Exception:
+                self._delta_sync_state.pop(name, None)
+
+        points = read_points(base, name)
+        # 尝试建立增量同步基线（静默容错，老版本服务自动回退全量）
+        try:
+            delta_init = request(base, "/api/measurements/delta?after_seq=0&compact=1&trainee_view=1")
+            if isinstance(delta_init, dict) and delta_init.get("definition_signature"):
+                meas_defs = request(base, "/api/measurements?trainee_view=1").get("definitions") or []
+                index_meta = {}
+                for idx, row in enumerate(meas_defs):
+                    pt_name = str(row.get("name", ""))
+                    kind = "yx" if str(row.get("meas_type", "")).upper() in {"RUN_STAT", "STATUS"} else "yc"
+                    index_meta[idx] = (kind, pt_name)
+                if len(index_meta) == int(delta_init.get("count", len(index_meta)) or 0):
+                    self._delta_sync_state[name] = {
+                        "base": base,
+                        "seq": int(delta_init.get("seq", 0) or 0),
+                        "definition_signature": str(delta_init.get("definition_signature") or ""),
+                        "index_meta": index_meta,
+                        "points": points,
+                    }
+        except Exception:
+            self._delta_sync_state.pop(name, None)
+        return points
 
     def _sync_single_model(self, name, base_url):
         base = loopback_url(base_url)
-        points = read_points(base, name)
+        points = self._read_points_for_model(base, name)
         rtu = self.channel(name)
         changed = self.sync_points(rtu, points)
+        self._invalidated_rtus.discard(rtu)
         with self.lock:
             self.online[rtu] = (base, name)
             self._failure_counts.pop(rtu, None)
@@ -422,9 +725,9 @@ class Bridge:
                     self._failure_counts.pop(rtu, None)
                     if rtu in self.models:
                         self.models[rtu]["online"] = False
+                keep_online = set(self.online.keys()) | seen
             if stale_rtus:
                 try:
-                    keep_online = set(self.online.keys()) | seen
                     self.invalidate_offline(keep_online)
                 except Exception as exc:
                     self.report_error("database", exc)
@@ -478,14 +781,8 @@ def main(argv=None):
     if not scada_root.is_dir():
         parser.error(f"SCADA 目录不存在: {scada_root}，请通过 --scada-root 或环境变量 SCADA_ROOT 指定")
     sys.path.insert(0, str(scada_root))
-    from scdfe_s.database import SimulatorStore
     from scdfe_s.web.iec104_service import IEC104Service, IEC104ServiceError
     from scdfe_s.web.server import ApiError, ScadaHandler, ScadaHTTPServer
-
-    if (not hasattr(ScadaHTTPServer, "iec104_service_class")
-            or not {"simulator104_models", "simulator104_points"}.issubset(
-                getattr(SimulatorStore, "extra_metadata_tables", ()))):
-        parser.error("当前 SCADA 缺少联动扩展。请按 simulator/README.md 应用 scada104-dependency.patch")
 
     class ModelIEC104Service(IEC104Service):
         def _on_command(self, event, rtu_id=None):
@@ -500,13 +797,24 @@ def main(argv=None):
             return super()._on_command(event, rtu_id)
 
         def simulate_command(self, kind, point_no, value):
+            # 释放通道锁后再执行 5s 网络请求，避免模拟台短暂抖动冻结整个 IEC104 通道锁。
             with self._lock:
                 if self._server is None or kind not in {"yk", "yt"}:
                     raise IEC104ServiceError("请启动模型 IEC104 通道并选择遥控或遥调点")
                 try:
+                    rtu_id = self._server.rtu_id
                     actual = self._server.prepare_value(kind, int(point_no), value)
-                    bridge.execute(self._server.rtu_id, kind, int(point_no), actual)
-                    table, key, fields = self._point_update(kind, int(point_no), actual, self._server.rtu_id)
+                except Exception as exc:
+                    raise IEC104ServiceError(str(exc)) from exc
+            try:
+                bridge.execute(rtu_id, kind, int(point_no), actual)
+            except Exception as exc:
+                raise IEC104ServiceError(str(exc)) from exc
+            with self._lock:
+                if self._server is None:
+                    raise IEC104ServiceError("指令发送期间模型 IEC104 通道已停止")
+                try:
+                    table, key, fields = self._point_update(kind, int(point_no), actual, rtu_id)
                     fields["cmd_handle_time"] = fields["refresh_time"]
                     item = self.store.update_row(table, key, fields)
                     self._server.set_value(kind, int(point_no), value)
@@ -516,9 +824,37 @@ def main(argv=None):
                 return {"kind": kind, "pnt_no": int(point_no), "value": actual,
                         "item": item, "applied_to_simulator": True}
 
+    _asset_cache = {}
+    _asset_cache_lock = threading.Lock()
+
+    def _load_cached_asset(file_name):
+        target = APP_ROOT / "simu/web/simulator" / file_name
+        stat = target.stat()
+        with _asset_cache_lock:
+            cached = _asset_cache.get(file_name)
+            if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
+                return cached[2], cached[3]
+        content = target.read_bytes()
+        etag = f'W/"{hashlib.blake2b(content, digest_size=8).hexdigest()}"'
+        with _asset_cache_lock:
+            _asset_cache[file_name] = (stat.st_mtime_ns, stat.st_size, content, etag)
+        return content, etag
+
     class BridgeHandler(ScadaHandler):
         def _dispatch(self):
             parts, query = self._path()
+            if (
+                self.command == "POST"
+                and not query
+                and len(parts) == 6
+                and parts[:2] == ["api", "rtus"]
+                and parts[3] == "commands"
+            ):
+                self._prepare_request()
+                rtu_id = self._rtu_id(parts[2])
+                result = self.server.simulator_command(rtu_id, parts[4], parts[5], self._body())
+                if result is not None:
+                    return self._json(200, {"item": result, "command_status": "applied"})
             if self.command == "GET" and parts == ["api", "simulator104", "points"]:
                 self._prepare_request()
                 raw_rtu = (query.get("rtu_id") or [""])[0]
@@ -530,23 +866,35 @@ def main(argv=None):
                 except ValueError as exc:
                     return self._json(400, {"error": str(exc)})
                 return self._json(200, {"rtu_id": int(raw_rtu), "kind": raw_kind, "items": items})
-            if self.command == "GET" and not query:
-                if parts == ["api", "simulator104", "status"]:
-                    self._prepare_request()
-                    return self._json(200, bridge.status())
+            if self.command in ("GET", "HEAD"):
                 assets = {"simulator104": ("scada104.html", "text/html"),
                           "scada104.js": ("scada104.js", "application/javascript"),
                           "scada104.css": ("scada104.css", "text/css")}
                 if len(parts) == 1 and parts[0] in assets:
                     self._prepare_request()
                     file, media = assets[parts[0]]
-                    content = (APP_ROOT / "simu/web/simulator" / file).read_bytes()
-                    return self._send(200, media + "; charset=utf-8", content)
+                    content, etag = _load_cached_asset(file)
+                    if str(self.headers.get("If-None-Match", "")).strip() == etag:
+                        self.send_response(304)
+                        self.send_header("ETag", etag)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", media + "; charset=utf-8")
+                    self.send_header("ETag", etag)
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Content-Length", str(len(content)))
+                    self.end_headers()
+                    if self.command == "GET":
+                        self.wfile.write(content)
+                    return
+                if not query and parts == ["api", "simulator104", "status"]:
+                    self._prepare_request()
+                    return self._json(200, bridge.status())
             return super()._dispatch()
 
     class ModelScadaServer(ScadaHTTPServer):
-        iec104_service_class = ModelIEC104Service
-
         def __init__(self, address, **kwargs):
             super().__init__(address, **kwargs)
             self.RequestHandlerClass = BridgeHandler
@@ -556,13 +904,49 @@ def main(argv=None):
             )
             self._resources.callback(self.iec104_service.close)
 
+        def channel_services(self, *, rtu_id=None):
+            """在自身子类中直接为 IEC104 通道注入 ModelIEC104Service，无需修改 scada 源码。"""
+            with self._channel_service_lock:
+                with self.store.connection() as con:
+                    where = " WHERE r.channel_type='iec104'"
+                    params = ()
+                    if rtu_id is not None:
+                        where += " AND r.rtu_id=?"
+                        params = (int(rtu_id),)
+                    rows = con.execute(
+                        "SELECT r.rtu_id, p.remote_port "
+                        "FROM fes_rtu_define r LEFT JOIN fes_channel_iec104_define p "
+                        "ON p.channel_id=r.channel_id" + where + " ORDER BY r.rtu_id",
+                        params,
+                    ).fetchall()
+                for row in rows:
+                    rid = int(row[0])
+                    slug = f"iec104-rtu-{rid}"
+                    if slug in self._channel_service_cache:
+                        continue
+                    config_path = self.store.db_path.with_name(f".scdfe_s_iec104_rtu_{rid}.json")
+                    service = ModelIEC104Service(
+                        self.store,
+                        config_path=config_path,
+                        startup_catalog=self._channel_service_history,
+                    )
+                    service._config["rtu_id"] = rid
+                    if hasattr(service, "_configured_fields"):
+                        service._configured_fields.add("rtu_id")
+                    if row[1]:
+                        try:
+                            service._config["port"] = int(row[1])
+                        except (TypeError, ValueError):
+                            pass
+                    self._channel_service_cache[slug] = service
+                    self._resources.callback(service.close)
+            return super().channel_services(rtu_id=rtu_id)
+
         def switch_database(self, body):
             raise ApiError(409, "此进程绑定仿真专库，切换路径请使用 --db 重新启动")
 
         def simulator_command(self, rtu, kind, number, body):
-            with self.store.connection() as db:
-                bound = db.execute("SELECT 1 FROM simulator104_models WHERE rtu_id=?", (rtu,)).fetchone()
-            if bound is None:
+            if not bridge.is_bound_rtu(rtu):
                 return None
             if kind not in {"yk", "yt"} or "value" not in body:
                 raise IEC104ServiceError("请选择遥控或遥调点并填写值")
@@ -574,9 +958,17 @@ def main(argv=None):
     workspace_root = args.workspace_root or (WORKSPACE_ROOT if database.is_relative_to(WORKSPACE_ROOT) else database.parent)
     if not database.is_relative_to(workspace_root.resolve()):
         parser.error("仿真点库必须位于工作区根目录内")
+    bridge_db_path = database.with_name(database.stem + "_bridge.sqlite3")
+    migrate_bridge_tables_out(database, bridge_db_path)
     with ModelScadaServer(("127.0.0.1", args.web_port), db_path=database,
                           workspace_root=workspace_root) as server:
-        bridge = Bridge(server, simulator_url, args.first_iec104_port, args.interval)
+        bridge = Bridge(
+            server,
+            simulator_url,
+            args.first_iec104_port,
+            args.interval,
+            bridge_db_path=bridge_db_path,
+        )
         worker = threading.Thread(target=bridge.poll, name="simulator104", daemon=True)
         worker.start()
         LOG.info("scdfe_s Web http://127.0.0.1:%s, SQLite %s", args.web_port, database)
@@ -586,7 +978,8 @@ def main(argv=None):
             pass
         finally:
             bridge.stop.set()
-            worker.join()
+            worker.join(timeout=3.0)
+            _HTTP_POOL.close()
 
 
 if __name__ == "__main__":

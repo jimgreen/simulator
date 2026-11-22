@@ -780,11 +780,12 @@ function drawCurveDisplayCursor(ctx, canvas, plot, metas, seriesByKey, snapshot 
   ctx.stroke();
   ctx.setLineDash([]);
 
+  const palette = chartThemePalette();
   tooltipMetas.forEach((meta) => {
     const values = seriesByKey.get(meta.key) || [];
     if (!values.length) return;
     const markerY = curveDisplayValueToY(values[index], meta, canvas);
-    ctx.fillStyle = "#ffffff";
+    ctx.fillStyle = palette.markerFill;
     ctx.strokeStyle = meta.color;
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -808,14 +809,14 @@ function drawCurveDisplayCursor(ctx, canvas, plot, metas, seriesByKey, snapshot 
   if (tooltipY + tooltipHeight > bottom - 6) tooltipY = y - tooltipHeight - 14;
   tooltipX = clamp(tooltipX, left + 6, right - tooltipWidth - 6);
   tooltipY = clamp(tooltipY, top + 6, bottom - tooltipHeight - 6);
-  ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
-  ctx.strokeStyle = "rgba(171, 190, 198, 0.9)";
+  ctx.fillStyle = palette.tooltipBg;
+  ctx.strokeStyle = palette.tooltipBorder;
   ctx.beginPath();
   ctx.roundRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight, 8);
   ctx.fill();
   ctx.stroke();
   lines.forEach((line, lineIndex) => {
-    ctx.fillStyle = lineIndex < 2 ? "#1f3037" : "#314850";
+    ctx.fillStyle = lineIndex < 2 ? palette.tooltipTitle : palette.tooltipText;
     ctx.fillText(line, tooltipX + 10, tooltipY + 18 + lineIndex * 18);
   });
   ctx.restore();
@@ -827,6 +828,7 @@ function drawCurveDisplay(snapshot = state.snapshot || {}, preparedSeries = null
   resizeCurveDisplayCanvas();
   const { ctx, width, height } = prepareCanvas2D(canvas, 900, 260);
   if (!ctx) return;
+  const palette = chartThemePalette();
   const plot = curveDisplayPlot(canvas);
   const left = plot.left;
   const right = width - plot.right;
@@ -841,9 +843,9 @@ function drawCurveDisplay(snapshot = state.snapshot || {}, preparedSeries = null
   const legendColumnWidth = (right - left) / legendColumns;
   state.curveDisplayLegendHitBoxes = [];
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#fcfeff";
+  ctx.fillStyle = palette.bg;
   ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = "#d8e1e5";
+  ctx.strokeStyle = palette.grid;
   ctx.lineWidth = 1;
   ctx.font = "12px Microsoft YaHei, Arial";
   for (let i = 0; i <= 5; i += 1) {

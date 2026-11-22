@@ -260,7 +260,12 @@ function refreshSchedulerIntervalMs() {
 }
 
 function scheduleNextRefresh(delayMs = refreshSchedulerIntervalMs()) {
-  if (state.frontendRefreshTimerId) clearTimeout(state.frontendRefreshTimerId);
+  if (state.frontendRefreshTimerId) {
+    clearTimeout(state.frontendRefreshTimerId);
+    state.frontendRefreshTimerId = null;
+  }
+  // 标签页后台不可见时暂停前端轮询，切回前台由 visibilitychange 立即刷新。
+  if (pageIsHidden()) return;
   state.frontendRefreshTimerId = setTimeout(runRefreshScheduler, Math.max(0, delayMs));
 }
 
@@ -271,13 +276,16 @@ function restartRefreshScheduler() {
 
 async function runRefreshScheduler() {
   state.frontendRefreshTimerId = null;
+  if (pageIsHidden()) return;
   const startedAtMs = Date.now();
   try {
     await refreshServiceCatalog();
     if (activeModelServiceRunning()) await refresh();
   } finally {
-    const elapsedMs = Date.now() - startedAtMs;
-    scheduleNextRefresh(Math.max(0, refreshSchedulerIntervalMs() - elapsedMs));
+    if (!pageIsHidden()) {
+      const elapsedMs = Date.now() - startedAtMs;
+      scheduleNextRefresh(Math.max(0, refreshSchedulerIntervalMs() - elapsedMs));
+    }
   }
 }
 
@@ -722,8 +730,9 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
   ctx.stroke();
   ctx.setLineDash([]);
 
+  const palette = chartThemePalette();
   samples.forEach(({ series, point }) => {
-    ctx.fillStyle = "#ffffff";
+    ctx.fillStyle = palette.markerFill;
     ctx.strokeStyle = series.color;
     ctx.lineWidth = 2 * (options.ratio || 1);
     ctx.beginPath();
@@ -748,14 +757,14 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
   if (tooltipY + tooltipHeight > bottom - 6 * ratio) tooltipY = y - tooltipHeight - 14 * ratio;
   tooltipX = clamp(tooltipX, left + 6 * ratio, right - tooltipWidth - 6 * ratio);
   tooltipY = clamp(tooltipY, top + 6 * ratio, bottom - tooltipHeight - 6 * ratio);
-  ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
-  ctx.strokeStyle = "rgba(171, 190, 198, 0.9)";
+  ctx.fillStyle = palette.tooltipBg;
+  ctx.strokeStyle = palette.tooltipBorder;
   ctx.beginPath();
   ctx.roundRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight, 8 * ratio);
   ctx.fill();
   ctx.stroke();
   lines.forEach((line, lineIndex) => {
-    ctx.fillStyle = lineIndex === 0 ? "#1f3037" : "#314850";
+    ctx.fillStyle = lineIndex === 0 ? palette.tooltipTitle : palette.tooltipText;
     ctx.fillText(line, tooltipX + 10 * ratio, tooltipY + 18 * ratio + lineIndex * 18 * ratio);
   });
   ctx.restore();
@@ -1219,6 +1228,7 @@ function confirmDangerousAction({
   if (!dialog || !cancelBtn || !okBtn || typeof dialog.showModal !== "function") {
     return Promise.resolve(window.confirm(`${title}\n${target ? `${target}\n` : ""}${message}`));
   }
+  if (dialog.open) return Promise.resolve(false);
   if (titleNode) titleNode.textContent = title;
   if (targetNode) {
     targetNode.textContent = target;
@@ -1252,7 +1262,53 @@ function confirmDangerousAction({
   });
 }
 
+function chartThemePalette() {
+  const dark = document.documentElement.dataset.theme === "dark";
+  if (dark) {
+    return {
+      bg: "#0f172a",
+      grid: "rgba(148, 163, 184, 0.16)",
+      gridSubtle: "rgba(148, 163, 184, 0.1)",
+      axis: "rgba(148, 163, 184, 0.34)",
+      text: "#94a3b8",
+      markerFill: "#0f172a",
+      tooltipBg: "rgba(15, 23, 42, 0.96)",
+      tooltipBorder: "rgba(148, 163, 184, 0.35)",
+      tooltipTitle: "#f1f5f9",
+      tooltipText: "#cbd5e1",
+    };
+  }
+  return {
+    bg: "#fcfeff",
+    grid: "#d8e1e5",
+    gridSubtle: "#e7eef1",
+    axis: "#c9d6dc",
+    text: "#63717a",
+    markerFill: "#ffffff",
+    tooltipBg: "rgba(255, 255, 255, 0.96)",
+    tooltipBorder: "rgba(171, 190, 198, 0.9)",
+    tooltipTitle: "#1f3037",
+    tooltipText: "#314850",
+  };
+}
+
+function redrawActiveSimulatorCharts() {
+  const page = typeof currentPageName === "function" ? currentPageName() : "";
+  if (page === "curves" && typeof drawCurveEditor === "function") {
+    drawCurveEditor();
+  } else if (page === "runtime" && typeof drawRuntimeTraceChart === "function") {
+    drawRuntimeTraceChart();
+  } else if (page === "measurements" && typeof drawMeasurementTraceChart === "function") {
+    drawMeasurementTraceChart();
+  }
+}
+
 function initPrecisionUiChrome() {
+  // 动态修正 IEC104 联动导航主机名，支持局域网跨机访问。
+  const scadaLink = document.querySelector(".scada104-link");
+  if (scadaLink && window.location.hostname) {
+    scadaLink.href = `${window.location.protocol}//${window.location.hostname}:8878/simulator104`;
+  }
   const themeBtn = $("themeToggleButton");
   if (themeBtn) {
     themeBtn.addEventListener("click", () => {
@@ -1262,9 +1318,26 @@ function initPrecisionUiChrome() {
       try {
         localStorage.setItem("polarUiTheme", next);
       } catch (_e) {}
+      redrawActiveSimulatorCharts();
       showUiToast(next === "dark" ? "已切换至控制室深色模式" : "已切换至日间浅色模式", "info", 2200);
     });
   }
+  // 为所有左侧设备树面板注入一键折叠/展开按钮，最大化表格与曲线可视空间。
+  document.querySelectorAll(".device-tree-panel").forEach((aside) => {
+    const head = aside.querySelector(".panel-head");
+    if (!head || head.querySelector(".tree-collapse-btn")) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tree-collapse-btn";
+    btn.textContent = "收起";
+    btn.title = "折叠/展开左侧设备树面板";
+    btn.addEventListener("click", () => {
+      const collapsed = aside.classList.toggle("is-collapsed");
+      btn.textContent = collapsed ? "展开" : "收起";
+      requestAnimationFrame(redrawActiveSimulatorCharts);
+    });
+    head.appendChild(btn);
+  });
   const dismissBtn = $("powerFlowFailureDismiss");
   const badgeBtn = $("topbarAlertBadge");
   if (dismissBtn) {
@@ -1825,13 +1898,26 @@ async function startSimulationFromDialog() {
   }
 }
 
-function handleClockAction(action) {
+async function handleClockAction(action) {
   const currentState = state.snapshot?.clock?.state || $("simState")?.textContent || "stopped";
   if (action === "start" && currentState === "stopped") {
     openStartSimulationDialog();
     return;
   }
-  controlClock(action);
+  if (action === "stop" && (currentState === "running" || currentState === "paused")) {
+    const confirmed = await confirmDangerousAction({
+      title: "确认停止当前仿真？",
+      target: `模型：${state.activeModelId || "当前模型"}（状态：${currentState === "running" ? "运行中" : "已暂停"}）`,
+      message: "停止仿真将中止当前时钟并重置本轮仿真过程状态，确认后执行。",
+      confirmLabel: "确认停止",
+    });
+    if (!confirmed) return;
+  }
+  try {
+    await controlClock(action);
+  } catch (error) {
+    showUiToast(`时钟操作失败：${apiErrorText(error)}`, "error", 3600);
+  }
 }
 
 function setNewModelMessage(text, kind = "") {
@@ -2532,11 +2618,17 @@ async function openUpdateModelDialog(modelId = selectedManagementModelId()) {
   let refreshedTarget = target;
   const serviceBase = String(target?.service?.base_url || "").replace(/\/$/, "");
   if (String(target?.service?.state || "") === "running" && serviceBase) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
     try {
-      const response = await fetch(`${serviceBase}/api/snapshot`, {
-        headers: { Accept: "application/json" },
-        cache: "no-store",
-      });
+      const response = await fetch(
+        `${serviceBase}/api/snapshot?lite=1&static=0&static_meta=0&measurements=0&devices=0&device_states=0&logs=0&commands=0`,
+        {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          signal: controller.signal,
+        },
+      );
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const snapshot = await response.json();
       refreshedTarget = {
@@ -2549,6 +2641,8 @@ async function openUpdateModelDialog(modelId = selectedManagementModelId()) {
     } catch (error) {
       setModelManagementMessage(`无法核实模型仿真时钟状态：${apiErrorText(error)}`, "error");
       return;
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
   if (modelClockState(refreshedTarget) !== "stopped") {

@@ -205,6 +205,10 @@ class _DefinitionsMixin:
         return []
 
     def devices(self) -> List[Dict[str, Any]]:
+        with self.lock:
+            return self._devices_locked()
+
+    def _devices_locked(self) -> List[Dict[str, Any]]:
         definition_snapshot = self.definition_snapshot
         model_book = definition_snapshot.model_book
         run_stats, cb_status, set_values, soc_values = self._stat_maps()
@@ -350,6 +354,10 @@ class _DefinitionsMixin:
 
     def device_states(self) -> List[Dict[str, Any]]:
         """Return the compact state needed by the live SVG diagram."""
+        with self.lock:
+            return self._device_states_locked()
+
+    def _device_states_locked(self) -> List[Dict[str, Any]]:
         definition_snapshot = self.definition_snapshot
         model_blocks_by_key = {
             (str(block_name), str(row.get("name", "")).strip()): str(block_name)

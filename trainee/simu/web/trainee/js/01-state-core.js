@@ -597,7 +597,12 @@ function refreshSchedulerIntervalMs() {
 }
 
 function scheduleNextRefresh(delayMs = refreshSchedulerIntervalMs()) {
-  if (state.frontendRefreshTimerId) clearTimeout(state.frontendRefreshTimerId);
+  if (state.frontendRefreshTimerId) {
+    clearTimeout(state.frontendRefreshTimerId);
+    state.frontendRefreshTimerId = null;
+  }
+  // 页面处于后台不可见状态时暂停前端 UI 轮询，切回前台由 visibilitychange 立即刷新。
+  if (pageIsHidden()) return;
   state.frontendRefreshTimerId = setTimeout(runRefreshScheduler, Math.max(0, delayMs));
 }
 
@@ -607,12 +612,15 @@ function restartRefreshScheduler() {
 
 async function runRefreshScheduler() {
   state.frontendRefreshTimerId = null;
+  if (pageIsHidden()) return;
   const startedAtMs = Date.now();
   try {
     await refresh();
   } finally {
-    const elapsedMs = Date.now() - startedAtMs;
-    scheduleNextRefresh(Math.max(0, refreshSchedulerIntervalMs() - elapsedMs));
+    if (!pageIsHidden()) {
+      const elapsedMs = Date.now() - startedAtMs;
+      scheduleNextRefresh(Math.max(0, refreshSchedulerIntervalMs() - elapsedMs));
+    }
   }
 }
 
@@ -879,6 +887,8 @@ async function syncActiveReceiveStateFromBackend(modelId = state.activeModelId) 
 async function syncActiveReceiveStateBeforeRefresh(force = false) {
   if (!state.activeModelId || state.receiveStateSyncActive) return;
   if (!force && Date.now() - state.lastReceiveStateSyncAtMs < receiveStateSyncIntervalMs()) return;
+  const requestedModelId = state.activeModelId;
+  const switchEpoch = Number(state.modelSwitchEpoch || 0);
   state.receiveStateSyncActive = true;
   state.lastReceiveStateSyncAtMs = Date.now();
   const previousReceiveMode = state.receiveMode;
@@ -886,7 +896,14 @@ async function syncActiveReceiveStateBeforeRefresh(force = false) {
   const previousInitialized = state.modelInitialized;
   const previousInitializedAt = state.modelInitializedAt;
   try {
-    await syncActiveReceiveStateFromBackend(state.activeModelId);
+    await syncActiveReceiveStateFromBackend(requestedModelId);
+    // 防止切换模型期间旧模型异步返回覆盖新模型上下文与缓存。
+    if (
+      state.activeModelId !== requestedModelId
+      || Number(state.modelSwitchEpoch || 0) !== switchEpoch
+    ) {
+      return;
+    }
     if (
       state.modelInitialized !== previousInitialized
       || state.modelInitializedAt !== previousInitializedAt
@@ -896,7 +913,7 @@ async function syncActiveReceiveStateBeforeRefresh(force = false) {
       state.snapshot = null;
       state.measurementDeltaSeq = 0;
       invalidateManualDefinitionChanges();
-      clearStaticSnapshotCacheForModel(state.activeModelId);
+      clearStaticSnapshotCacheForModel(requestedModelId);
     }
     if (state.receiveMode !== previousReceiveMode || state.interactionLink !== previousLink) {
       state.receiveEpoch += 1;
@@ -1462,8 +1479,9 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
   ctx.stroke();
   ctx.setLineDash([]);
 
+  const palette = chartThemePalette();
   samples.forEach(({ series, point }) => {
-    ctx.fillStyle = "#ffffff";
+    ctx.fillStyle = palette.markerFill;
     ctx.strokeStyle = series.color;
     ctx.lineWidth = 2 * ratio;
     ctx.beginPath();
@@ -1497,14 +1515,14 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
   if (tooltipY + tooltipHeight > bottom - 6 * ratio) tooltipY = y - tooltipHeight - 14 * ratio;
   tooltipX = clamp(tooltipX, left + 6 * ratio, right - tooltipWidth - 6 * ratio);
   tooltipY = clamp(tooltipY, top + 6 * ratio, bottom - tooltipHeight - 6 * ratio);
-  ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
-  ctx.strokeStyle = "rgba(171, 190, 198, 0.9)";
+  ctx.fillStyle = palette.tooltipBg;
+  ctx.strokeStyle = palette.tooltipBorder;
   ctx.beginPath();
   ctx.roundRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight, 8 * ratio);
   ctx.fill();
   ctx.stroke();
   lines.forEach((line, lineIndex) => {
-    ctx.fillStyle = lineIndex === 0 ? "#1f3037" : "#314850";
+    ctx.fillStyle = lineIndex === 0 ? palette.tooltipTitle : palette.tooltipText;
     ctx.fillText(line, tooltipX + 10 * ratio, tooltipY + 18 * ratio + lineIndex * 18 * ratio);
   });
   ctx.restore();
@@ -1923,6 +1941,49 @@ function showUiToast(message, level = "info", durationMs = 3600) {
   }
 }
 
+function chartThemePalette() {
+  const dark = document.documentElement.dataset.theme === "dark";
+  if (dark) {
+    return {
+      bg: "#0f172a",
+      grid: "rgba(148, 163, 184, 0.16)",
+      gridSubtle: "rgba(148, 163, 184, 0.1)",
+      axis: "rgba(148, 163, 184, 0.34)",
+      text: "#94a3b8",
+      markerFill: "#0f172a",
+      tooltipBg: "rgba(15, 23, 42, 0.96)",
+      tooltipBorder: "rgba(148, 163, 184, 0.35)",
+      tooltipTitle: "#f1f5f9",
+      tooltipText: "#cbd5e1",
+    };
+  }
+  return {
+    bg: "#fcfeff",
+    grid: "#d8e1e5",
+    gridSubtle: "#e7eef1",
+    axis: "#c9d6dc",
+    text: "#63717a",
+    markerFill: "#ffffff",
+    tooltipBg: "rgba(255, 255, 255, 0.96)",
+    tooltipBorder: "rgba(171, 190, 198, 0.9)",
+    tooltipTitle: "#1f3037",
+    tooltipText: "#314850",
+  };
+}
+
+function redrawActiveTraineeCharts() {
+  const page = typeof currentPageName === "function" ? currentPageName() : "";
+  if (page === "measurements" && typeof drawMeasurementTraceChart === "function") {
+    drawMeasurementTraceChart();
+  } else if (page === "controls" && typeof drawCommandTraceChart === "function") {
+    drawCommandTraceChart();
+  } else if (page === "renewable" && typeof drawRenewableTrendChart === "function") {
+    drawRenewableTrendChart();
+  } else if (page === "curves" && typeof drawCurveDisplay === "function") {
+    drawCurveDisplay(state.snapshot || {});
+  }
+}
+
 function confirmDangerousAction({
   title = "确认执行此操作？",
   target = "",
@@ -1938,6 +1999,7 @@ function confirmDangerousAction({
   if (!dialog || !cancelBtn || !okBtn || typeof dialog.showModal !== "function") {
     return Promise.resolve(window.confirm(`${title}\n${target ? `${target}\n` : ""}${message}`));
   }
+  if (dialog.open) return Promise.resolve(false);
   if (titleNode) titleNode.textContent = title;
   if (targetNode) {
     targetNode.textContent = target;
@@ -1981,9 +2043,26 @@ function initPrecisionUiChrome() {
       try {
         localStorage.setItem("polarUiTheme", next);
       } catch (_e) {}
+      redrawActiveTraineeCharts();
       showUiToast(next === "dark" ? "已切换至控制室深色模式" : "已切换至日间浅色模式", "info", 2200);
     });
   }
+  // 为所有含左侧设备树的页面注入一键折叠/展开按钮，扩大表格与曲线主可视区。
+  document.querySelectorAll(".device-tree-panel").forEach((aside) => {
+    const head = aside.querySelector(".panel-head");
+    if (!head || head.querySelector(".tree-collapse-btn")) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tree-collapse-btn";
+    btn.textContent = "收起";
+    btn.title = "折叠/展开左侧设备树面板";
+    btn.addEventListener("click", () => {
+      const collapsed = aside.classList.toggle("is-collapsed");
+      btn.textContent = collapsed ? "展开" : "收起";
+      requestAnimationFrame(redrawActiveTraineeCharts);
+    });
+    head.appendChild(btn);
+  });
   const dismissBtn = $("powerFlowFailureDismiss");
   const badgeBtn = $("topbarAlertBadge");
   if (dismissBtn) {

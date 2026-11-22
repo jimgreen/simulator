@@ -2541,9 +2541,24 @@ function renderModelDiagramPage(snapshot = state.snapshot || {}) {
     }
   }
   initDiagramInteractions(canvas);
-  applyDiagramDisplayPreferences(canvas, diagramDisplayPreferences);
+  const prefKey = JSON.stringify(diagramDisplayPreferences || {});
+  const bindingKey = [
+    diagramChanged ? "changed" : "same",
+    prefKey,
+    Number(state.measurementDeltaSeq || 0),
+    String(state.deviceRuntimeSignature || ""),
+    String(activeSnapshot?.clock?.step_count ?? ""),
+    String(activeSnapshot?.clock?.state ?? ""),
+  ].join("|");
+  if (diagramChanged || canvas.dataset.lastDiagramPrefKey !== prefKey) {
+    canvas.dataset.lastDiagramPrefKey = prefKey;
+    applyDiagramDisplayPreferences(canvas, diagramDisplayPreferences);
+  }
   if (summary) summary.textContent = `${modelName} · ${diagram.filename || "diagram.svg"}`;
-  updateDiagramRealtimeBindings(canvas, activeSnapshot);
+  if (diagramChanged || canvas.dataset.lastDiagramBindingKey !== bindingKey) {
+    canvas.dataset.lastDiagramBindingKey = bindingKey;
+    updateDiagramRealtimeBindings(canvas, activeSnapshot);
+  }
   if (diagramChanged) fitDiagramViewport(diagramViewportState(canvas));
 }
 
@@ -2603,14 +2618,14 @@ async function populateReceiveLinkPresets(preferredUrl = "") {
   };
 
   try {
-    const discovered = await fetchJson("/api/trainee/discover-simulator-services");
+    const discovered = await api("/api/trainee/discover-simulator-services", { modelScoped: false });
     const services = Array.isArray(discovered?.services) ? discovered.services : [];
     for (const item of services) {
       const statusLabel = item.healthy ? "运行中" : "已停止";
       pushOption(item.base_url, `${item.name || item.model_id} · ${item.base_url}（${statusLabel}）`);
     }
-  } catch (_error) {
-    // 发现失败时静默回退到历史地址与自定义输入
+  } catch (error) {
+    console.warn("自动发现本地模拟服务失败：", error);
   }
   if (preferredUrl) {
     pushOption(preferredUrl, `上次连接 · ${preferredUrl}`);

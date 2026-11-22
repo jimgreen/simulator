@@ -888,6 +888,9 @@ function renderModelSelector() {
 async function setActiveModel(modelId, shouldRefresh = true) {
   persistActiveModelContext({}, true);
   const nextId = modelId || state.models[0]?.id || "";
+  state.modelSwitchEpoch = Number(state.modelSwitchEpoch || 0) + 1;
+  state.refreshRequestActive = false;
+  state.receiveRequestActive = false;
   state.activeModelId = nextId;
   state.deviceRuntimeSignature = "";
   state.deviceRuntimeNeedsFullRefresh = false;
@@ -998,7 +1001,12 @@ async function refreshLocalSnapshotPayload(page = currentPageName()) {
 }
 
 async function refresh() {
+  const requestedModelId = state.activeModelId;
+  const switchEpoch = Number(state.modelSwitchEpoch || 0);
   if (!state.receiveMode) await syncActiveReceiveStateBeforeRefresh();
+  if (state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
+    return;
+  }
   if (state.receiveMode) {
     await refreshFromTeacher(state.receiveEpoch);
     return;
@@ -1014,12 +1022,18 @@ async function refresh() {
   state.refreshRequestActive = true;
   try {
     const snapshot = await refreshLocalSnapshotPayload(page);
+    if (state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
+      return;
+    }
     if (
       !bootstrapFrozenSnapshot
       && pageNeedsMeasurementDelta(page)
       && !state.embeddedMeasurementDeltaReceived
     ) {
       await refreshMeasurementDelta(false);
+    }
+    if (state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
+      return;
     }
     state.refreshConsecutiveFailures = 0;
     $("connectionDot").className = "ok";
@@ -1030,23 +1044,36 @@ async function refresh() {
     }
     renderSnapshot(snapshot);
   } catch (_error) {
+    if (state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
+      return;
+    }
     state.refreshConsecutiveFailures = Math.min(10, (state.refreshConsecutiveFailures || 0) + 1);
     const retrySec = Math.max(1, Math.round(refreshSchedulerIntervalMs() / 1000));
     $("connectionDot").className = "off";
     $("connectionText").textContent = `离线（${retrySec}s 后重试）`;
     if (page === "renewable") await refreshRenewableControlState({ preview: false });
   } finally {
-    state.refreshRequestActive = false;
+    if (Number(state.modelSwitchEpoch || 0) === switchEpoch) {
+      state.refreshRequestActive = false;
+    }
   }
 }
 
 async function refreshFromTeacher(epoch = state.receiveEpoch) {
   if (state.receiveRequestActive) return;
+  const requestedModelId = state.activeModelId;
+  const switchEpoch = Number(state.modelSwitchEpoch || 0);
   state.receiveRequestActive = true;
   try {
     const page = currentPageName();
-    await ensureLocalDefinitionSnapshot(state.activeModelId);
+    await ensureLocalDefinitionSnapshot(requestedModelId);
+    if (state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
+      return;
+    }
     const uiFrame = await api(traineeUiFramePath(page));
+    if (state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
+      return;
+    }
     const frameSnapshot = applyTraineeUiFrame(uiFrame);
     if (!state.receiveMode || epoch !== state.receiveEpoch || !frameSnapshot) {
       renderReceiveMode();
@@ -1060,7 +1087,14 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
     const embeddedMeasurementDelta = remoteSnapshot?.measurement_delta || null;
     if (remoteSnapshot?.measurement_delta) delete remoteSnapshot.measurement_delta;
     const snapshot = mergeTeacherSnapshotWithLocalDefinitions(state.snapshot, remoteSnapshot);
-    if (!state.receiveMode || epoch !== state.receiveEpoch) return;
+    if (
+      !state.receiveMode
+      || epoch !== state.receiveEpoch
+      || state.activeModelId !== requestedModelId
+      || Number(state.modelSwitchEpoch || 0) !== switchEpoch
+    ) {
+      return;
+    }
     state.snapshot = snapshot;
     if (embeddedMeasurementDelta) {
       snapshot.measurement_delta = embeddedMeasurementDelta;
@@ -1072,10 +1106,20 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
     if (page === "renewable") {
       await ensureRenewableTrendHistoryForVisibleSeries({ render: false });
     }
+    if (state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
+      return;
+    }
     state.refreshConsecutiveFailures = 0;
     acceptTeacherSnapshot(state.snapshot, epoch);
   } catch (_error) {
-    if (!state.receiveMode || epoch !== state.receiveEpoch) return;
+    if (
+      !state.receiveMode
+      || epoch !== state.receiveEpoch
+      || state.activeModelId !== requestedModelId
+      || Number(state.modelSwitchEpoch || 0) !== switchEpoch
+    ) {
+      return;
+    }
     state.refreshConsecutiveFailures = Math.min(10, (state.refreshConsecutiveFailures || 0) + 1);
     const retrySec = Math.max(1, Math.round(refreshSchedulerIntervalMs() / 1000));
     $("connectionDot").className = "off";
@@ -1093,7 +1137,9 @@ async function refreshFromTeacher(epoch = state.receiveEpoch) {
     );
     if (shouldContinue) await attemptTeacherReconnect(epoch);
   } finally {
-    state.receiveRequestActive = false;
+    if (Number(state.modelSwitchEpoch || 0) === switchEpoch) {
+      state.receiveRequestActive = false;
+    }
   }
 }
 
@@ -1101,7 +1147,8 @@ function renderSnapshot(snapshot) {
   state.frontendDiagnostics.snapshotRenderCount += 1;
   applyTraineeObservedRuntimeSignals(snapshot);
   state.snapshot = snapshot;
-  if (state.snapshotSource !== "teacher" && snapshot.model?.id && snapshot.model.id !== state.activeModelId) {
+  // 仅在 activeModelId 尚未初始化时兜底，禁止用异步迟到的旧模型快照反写当前选中模型。
+  if (!state.activeModelId && state.snapshotSource !== "teacher" && snapshot.model?.id) {
     state.activeModelId = snapshot.model.id;
   }
   renderModelSelector();

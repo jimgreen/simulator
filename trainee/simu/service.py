@@ -345,6 +345,9 @@ class PolarMicrogridSimulator(
         self._trainee_receive_cache_signature: Optional[Tuple[int, int, int]] = None
         self._trainee_receive_cache_value: Optional[Dict[str, Any]] = None
         self._trainee_receive_cache_next_stat_monotonic = 0.0
+        self._trainee_receive_revision = 0
+        self._device_runtime_supplement_cache: Optional[Tuple[Any, Dict[str, Any]]] = None
+        self._command_signature_cache: Optional[Tuple[Any, str]] = None
         # SVG definition edits are runtime overrides.  The source E files stay
         # immutable so an operator can always restore the model defaults.
         self.manual_definition_changes_file = self.runtime_dir / MANUAL_DEFINITION_CHANGES_FILE
@@ -480,9 +483,17 @@ class PolarMicrogridSimulator(
             if not (type(raw) is dict or isinstance(raw, Mapping)):
                 raw = {}
             normalized = self._normalize_trainee_receive_state(raw)
+            if self._trainee_receive_cache_value != normalized:
+                self._trainee_receive_revision += 1
             self._trainee_receive_cache_signature = signature
             self._trainee_receive_cache_value = normalized
             return dict(normalized)
+
+    def trainee_receive_revision(self) -> int:
+        """返回学员端接收状态单调整型版本号，供 HTTP 帧缓存键零序列化复用。"""
+        self.trainee_receive_state()
+        with self._trainee_receive_cache_lock:
+            return int(self._trainee_receive_revision)
 
     def set_trainee_receive_state(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
         with self.lock:
@@ -507,6 +518,7 @@ class PolarMicrogridSimulator(
                 self._trainee_receive_cache_signature = signature
                 self._trainee_receive_cache_value = normalized
                 self._trainee_receive_cache_next_stat_monotonic = time.monotonic() + 0.25
+                self._trainee_receive_revision += 1
             return dict(normalized)
 
     def _apply_stored_system_parameters(self) -> None:

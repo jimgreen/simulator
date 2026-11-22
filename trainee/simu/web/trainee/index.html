@@ -10,7 +10,7 @@
         if (savedTheme === "dark") document.documentElement.dataset.theme = "dark";
       } catch (_e) {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20261122-precision-ui" />
+    <link rel="stylesheet" href="/styles.css?v=20261123-opt" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -614,6 +614,11 @@
                       <option value="all">全部类型</option>
                     </select>
                   </label>
+                  <label class="inline-check-filter">
+                    <input id="measurementOnlyAbnormalFilter" type="checkbox" />
+                    仅看异常/无效
+                  </label>
+                  <button id="exportMeasurementsCsvButton" type="button" class="compact-action-btn" title="导出当前筛选的量测数据为 CSV">导出 CSV</button>
                 </div>
                 <div id="measurementTable" class="measurement-compare-wrap"></div>
               </section>
@@ -1152,10 +1157,17 @@
               <h2>运行日志</h2>
               <div class="runtime-log-toolbar">
                 <span id="historyCount">0</span>
+                <label class="compact-field">搜索
+                  <input id="traineeRuntimeLogKeywordFilter" type="search" placeholder="筛选对象/结果/概要" autocomplete="off" />
+                </label>
                 <label class="compact-field">日志类型
                   <select id="traineeRuntimeLogTypeFilter">
                     <option value="all">全部类型</option>
                   </select>
+                </label>
+                <label class="inline-check-filter">
+                  <input id="traineeRuntimeLogOnlyAlertFilter" type="checkbox" />
+                  仅看告警
                 </label>
                 <button id="clearRuntimeLogs" type="button">清空日志</button>
               </div>
@@ -1653,13 +1665,13 @@
       </div>
     </dialog>
     <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
-    <script defer src="/js/01-state-core.js?v=20261122-precision-ui"></script>
-    <script defer src="/js/02-diagram-core.js?v=20261122-precision-ui"></script>
-    <script defer src="/js/03-diagram-editor.js?v=20261122-precision-ui"></script>
-    <script defer src="/js/04-receive-models.js?v=20261122-precision-ui"></script>
-    <script defer src="/js/05-curves.js?v=20261122-precision-ui"></script>
-    <script defer src="/js/06-renewable-control.js?v=20261122-precision-ui"></script>
-    <script defer src="/js/07-measurements-commands.js?v=20261122-precision-ui"></script>
-    <script defer src="/js/08-bootstrap.js?v=20261122-precision-ui"></script>
+    <script defer src="/js/01-state-core.js?v=20261123-opt"></script>
+    <script defer src="/js/02-diagram-core.js?v=20261123-opt"></script>
+    <script defer src="/js/03-diagram-editor.js?v=20261123-opt"></script>
+    <script defer src="/js/04-receive-models.js?v=20261123-opt"></script>
+    <script defer src="/js/05-curves.js?v=20261123-opt"></script>
+    <script defer src="/js/06-renewable-control.js?v=20261123-opt"></script>
+    <script defer src="/js/07-measurements-commands.js?v=20261123-opt"></script>
+    <script defer src="/js/08-bootstrap.js?v=20261123-opt"></script>
   </body>
 </html>

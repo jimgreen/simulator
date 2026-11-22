@@ -169,6 +169,12 @@ class SimulatorClusterManager:
         self._model_op_locks: dict[str, threading.RLock] = {}
         self._health_cache: dict[str, tuple[float, HealthResult]] = {}
         self._inflight_probes: dict[str, threading.Event] = {}
+        self._probe_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=8,
+            thread_name_prefix="cluster-probe",
+        )
+        self._models_sync_next_at = 0.0
+        self._custom_clock_state_checker = clock_state_checker is not None
         self.models_root.mkdir(parents=True, exist_ok=True)
         self.runtime_root.mkdir(parents=True, exist_ok=True)
         self.cluster_runtime_dir = self.runtime_root / ".cluster"
@@ -283,7 +289,11 @@ class SimulatorClusterManager:
             raise ValueError("没有可分配的模拟服务端口")
         return port
 
-    def _sync_models_locked(self) -> None:
+    def _sync_models_locked(self, *, force: bool = True) -> None:
+        now = time.monotonic()
+        if not force and now < self._models_sync_next_at and self._registry.get("services"):
+            return
+        self._models_sync_next_at = now + 1.5
         services = self._registry.setdefault("services", {})
         model_dirs = self._model_dirs_locked()
         model_ids = [path.name for path in model_dirs]
@@ -380,7 +390,10 @@ class SimulatorClusterManager:
     @staticmethod
     def _fetch_snapshot(host: str, port: int, model_id: str, timeout: float) -> Mapping[str, Any]:
         request = Request(
-            f"http://{host}:{port}/api/snapshot",
+            (
+                f"http://{host}:{port}/api/snapshot"
+                "?lite=1&measurements=0&devices=0&device_states=0&commands=0&logs=0&static=0&static_meta=0"
+            ),
             headers={"Accept": "application/json"},
         )
         try:
@@ -598,17 +611,33 @@ class SimulatorClusterManager:
             return self._format_model_info_locked(target_id, entry, health)
 
     def models(self) -> list[dict[str, Any]]:
+        now = time.monotonic()
         with self.lock:
-            self._sync_models_locked()
+            self._sync_models_locked(force=False)
             model_ids = list(self._registry["services"])
-        if len(model_ids) <= 1:
-            health_map = {mid: self._reconcile_model(mid) for mid in model_ids}
-        else:
-            # 锁外并发探测多模型，避免慢模型线性放大 catalog 延迟。
-            max_workers = min(8, len(model_ids))
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = {pool.submit(self._reconcile_model, mid): mid for mid in model_ids}
-                health_map = {futures[f]: f.result() for f in futures}
+            health_map: dict[str, HealthResult] = {}
+            pending_ids: list[str] = []
+            for mid in model_ids:
+                cached = self._health_cache.get(mid)
+                if (
+                    cached is not None
+                    and self.health_cache_ttl_seconds > 0.0
+                    and (now - cached[0]) < self.health_cache_ttl_seconds
+                ):
+                    health_map[mid] = cached[1]
+                else:
+                    pending_ids.append(mid)
+        if len(pending_ids) == 1:
+            mid = pending_ids[0]
+            health_map[mid] = self._reconcile_model(mid)
+        elif len(pending_ids) > 1:
+            # 复用类级常驻线程池，仅对未命中 TTL 缓存的模型并发探测，避免每秒反复建毁线程。
+            futures = {
+                self._probe_executor.submit(self._reconcile_model, mid): mid
+                for mid in pending_ids
+            }
+            for fut, mid in futures.items():
+                health_map[mid] = fut.result()
         with self.lock:
             result: list[dict[str, Any]] = []
             services = self._registry["services"]
@@ -961,9 +990,13 @@ class SimulatorClusterManager:
             host = str(entry["host"])
             port = int(entry["port"])
             timeout = min(2.0, self.startup_timeout_seconds)
-        healthy, _payload, error = self._reconcile_model(target_id, force_probe=True)
+        healthy, payload, error = self._reconcile_model(target_id, force_probe=True)
         if not healthy:
             raise RuntimeError(error or f"模型 {target_id} 的模拟服务未运行，无法核实仿真时钟状态")
+        if not self._custom_clock_state_checker:
+            clock_state = self._clock_state_from_payload(payload, target_id)
+            if clock_state:
+                return clock_state
         return self.clock_state_checker(host, port, target_id, timeout)
 
     def validate_new_model_name(self, new_model_id: Any) -> str:
@@ -1050,3 +1083,4 @@ class SimulatorClusterManager:
                 self.stop(model_id)
             except (KeyError, OSError, RuntimeError, ValueError):
                 pass
+        self._probe_executor.shutdown(wait=False, cancel_futures=True)

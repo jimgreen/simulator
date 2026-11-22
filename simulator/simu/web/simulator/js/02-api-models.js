@@ -1787,7 +1787,7 @@ async function exportDefinitionsArchive(modelId = state.activeModelId, actionBut
     }
   } catch (error) {
     if (error?.name === "AbortError") return;
-    alert(apiErrorText(error));
+    showUiToast(`导出定义包失败：${apiErrorText(error)}`, "error", 3600);
   } finally {
     if (button) {
       button.disabled = false;
@@ -2084,6 +2084,8 @@ async function setActiveModel(modelId, shouldRefresh = true) {
     return;
   }
   cancelCurveRequests();
+  state.modelSwitchEpoch = Number(state.modelSwitchEpoch || 0) + 1;
+  state.refreshRequestActive = false;
   state.activeModelId = nextId;
   state.selectedManagementModelId = nextId;
   state.deviceRuntimeSignature = "";

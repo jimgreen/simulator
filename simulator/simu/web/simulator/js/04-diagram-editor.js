@@ -3283,9 +3283,24 @@ function renderModelDiagramPage(snapshot = state.snapshot || {}) {
     }
   }
   initDiagramInteractions(canvas);
-  applyDiagramDisplayPreferences(canvas, diagramDisplayPreferences);
+  const prefKey = JSON.stringify(diagramDisplayPreferences || {});
+  const bindingKey = [
+    diagramChanged ? "changed" : "same",
+    prefKey,
+    Number(state.measurementDeltaSeq || 0),
+    String(state.deviceRuntimeSignature || ""),
+    String(activeSnapshot?.clock?.step_count ?? ""),
+    String(activeSnapshot?.clock?.state ?? ""),
+  ].join("|");
+  if (diagramChanged || canvas.dataset.lastDiagramPrefKey !== prefKey) {
+    canvas.dataset.lastDiagramPrefKey = prefKey;
+    applyDiagramDisplayPreferences(canvas, diagramDisplayPreferences);
+  }
   if (summary) summary.textContent = `${modelName} · ${diagram.filename || "diagram.svg"}`;
-  updateDiagramRealtimeBindings(canvas, activeSnapshot);
+  if (diagramChanged || canvas.dataset.lastDiagramBindingKey !== bindingKey) {
+    canvas.dataset.lastDiagramBindingKey = bindingKey;
+    updateDiagramRealtimeBindings(canvas, activeSnapshot);
+  }
   if (diagramChanged) fitDiagramViewport(diagramViewportState(canvas));
 }
 

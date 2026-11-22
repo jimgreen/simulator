@@ -11,6 +11,7 @@ import os
 import random
 import re
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -119,6 +120,31 @@ GENERIC_CURRENT_BRANCH_TYPES = {
     "DCZeroBranch",
 }
 LOGGER = logging.getLogger("SimulationLoop")
+_THROTTLED_WARN_LOCK = threading.Lock()
+_THROTTLED_WARN_STATE: dict[tuple[Any, ...], tuple[float, int]] = {}
+
+
+def _warn_throttled(
+    key: tuple[Any, ...],
+    msg: str,
+    *args: Any,
+    interval_seconds: float = 60.0,
+) -> None:
+    """对同设备同类仿真步进告警按时间窗去重限流，首次立即输出，后续按窗口汇总抑制次数。"""
+    now = time.monotonic()
+    with _THROTTLED_WARN_LOCK:
+        prev = _THROTTLED_WARN_STATE.get(key)
+        if prev is not None and (now - prev[0]) < interval_seconds:
+            _THROTTLED_WARN_STATE[key] = (prev[0], prev[1] + 1)
+            return
+        suppressed = prev[1] if prev is not None else 0
+        if len(_THROTTLED_WARN_STATE) > 512:
+            _THROTTLED_WARN_STATE.clear()
+        _THROTTLED_WARN_STATE[key] = (now, 0)
+    if suppressed > 0:
+        LOGGER.warning(msg + "（最近 60s 内已合并同类告警 %d 次）", *args, suppressed)
+    else:
+        LOGGER.warning(msg, *args)
 
 
 @dataclass(frozen=True)
@@ -1478,7 +1504,8 @@ def update_hydrogen_storage_state_book(
         if gas_quantity is None:
             gas_quantity = _hydrogen_storage_initial_quantity(model_row)
         if gas_quantity is None or not math.isfinite(gas_quantity):
-            LOGGER.warning(
+            _warn_throttled(
+                ("hydro_gas_qty", name),
                 "HydroStorage %s has no valid gas quantity; dynamic state update skipped",
                 name,
             )
@@ -1493,7 +1520,8 @@ def update_hydrogen_storage_state_book(
         rated_capacity = _hydrogen_storage_rated_capacity(model_row)
         water_volume = _hydrogen_storage_water_volume(model_row)
         if water_volume is None or water_volume <= 0.0:
-            LOGGER.warning(
+            _warn_throttled(
+                ("hydro_water_vol", name),
                 "HydroStorage %s has invalid water_volume=%r; pressure update skipped",
                 name,
                 model_row.get("water_volume"),
@@ -1503,7 +1531,8 @@ def update_hydrogen_storage_state_book(
             changed += _set_row_value(state, "pressure", format_number(next_pressure))
         next_soc = _hydrogen_storage_soc(model_row, next_quantity)
         if next_soc is None:
-            LOGGER.warning(
+            _warn_throttled(
+                ("hydro_rated_cap", name),
                 "HydroStorage %s has invalid rated capacity=%r; SOC update skipped",
                 name,
                 rated_capacity,
@@ -3200,7 +3229,8 @@ def update_storage_soc_book(
         raw_next_soc = bounded_soc - soc_power * float(period_seconds) / 3600.0 / max(capacity, 1e-9)
         next_soc = _clamp(raw_next_soc, soc_min, soc_max)
         if soc > soc_max + 1e-9 or soc < soc_min - 1e-9:
-            LOGGER.warning(
+            _warn_throttled(
+                ("storage_soc_init", _dev_type, source.get("name", "")),
                 "Storage %s.%s SOC %.6f is outside model limits [%.6f, %.6f]; state integration starts from the nearest limit",
                 _dev_type,
                 source.get("name", ""),
@@ -3209,7 +3239,8 @@ def update_storage_soc_book(
                 soc_max,
             )
         if raw_next_soc > soc_max + 1e-9 or raw_next_soc < soc_min - 1e-9:
-            LOGGER.warning(
+            _warn_throttled(
+                ("storage_soc_clamp", _dev_type, source.get("name", "")),
                 "Storage %s.%s solved power %.6f kW would move SOC to %.6f outside model limits [%.6f, %.6f]; SOC state was clamped",
                 _dev_type,
                 source.get("name", ""),
@@ -3389,7 +3420,8 @@ def _read_lf_network_from_book(model_book: EBook, source: Path) -> object:
 def repair_fixed_boundary_setpoints(model_book: EBook) -> List[dict]:
     corrections = _repair_fixed_boundary_setpoints(model_book)
     for item in corrections:
-        LOGGER.warning(
+        _warn_throttled(
+            ("fixed_boundary", item["device_type"], item["name"], item["field"]),
             "固定边界已修正 %s.%s.%s: %r -> %s (%s)",
             item["device_type"],
             item["name"],

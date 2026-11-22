@@ -309,10 +309,9 @@ class TraineeRenewableControlManager:
             self._stop_event.set()
             self._wake_worker()
             if self._worker and self._worker.is_alive():
-                self._worker.join()
-            # Provider/transport calls have finite timeouts and run without broad
-            # locks; waiting here guarantees no control task outlives its provider.
-            self._executor.shutdown(wait=True, cancel_futures=True)
+                self._worker.join(timeout=3.0)
+            # 配合 server_close 提前中断 exchange 在途 I/O，此处可快速回收工作线程。
+            self._executor.shutdown(wait=False, cancel_futures=True)
             with self._states_lock:
                 states_by_identity = {
                     id(state): state
@@ -456,6 +455,27 @@ class TraineeRenewableControlManager:
         )
         try:
             with self._trend_persistence_lock:
+                if not hasattr(self, "_trend_last_written_order"):
+                    self._trend_last_written_order: Dict[Path, Tuple[Any, int, float]] = {}
+                point_ref = candidate.persistence_point
+                run_key = point_ref.get("runId")
+                try:
+                    step_key = int(point_ref.get("stepCount", 0) or 0)
+                except (TypeError, ValueError):
+                    step_key = 0
+                try:
+                    minute_key = float(point_ref.get("minute", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    minute_key = 0.0
+                prev_order = self._trend_last_written_order.get(path)
+                # 防止并发轮次交错落盘将旧步数写入新步数之后，导致重启加载误判周期重置而清空历史。
+                if (
+                    not candidate.persistence_reset
+                    and prev_order is not None
+                    and prev_order[0] == run_key
+                    and (step_key < prev_order[1] or (step_key == prev_order[1] and minute_key < prev_order[2] - 1e-9))
+                ):
+                    return
                 path.parent.mkdir(parents=True, exist_ok=True)
                 if candidate.persistence_reset:
                     path.write_text(payload, encoding="utf-8")
@@ -464,10 +484,28 @@ class TraineeRenewableControlManager:
                 else:
                     with path.open("a", encoding="utf-8") as stream:
                         stream.write(payload)
+                self._trend_last_written_order[path] = (run_key, step_key, minute_key)
         except OSError:
             # Trend persistence must not interrupt realtime control. The complete
             # in-memory history remains available for the current WEB process.
             return
+
+    def cache_version_token(self, model_id: str) -> Optional[Tuple[Any, ...]]:
+        """受锁返回用于 HTTP 帧缓存键的新能源控制版本令牌，避免无锁读取私有 _states。"""
+        with self._states_lock:
+            state = self._states.get(model_id)
+        if state is None:
+            return None
+        with state.lock:
+            return (
+                state.revision,
+                state.plan_revision,
+                state.settings_revision,
+                state.enabled,
+                state.loop_mode,
+                state.sending,
+                state.status,
+            )
 
     def _persistence_path(self, model_id: Optional[str]) -> Optional[Path]:
         return self._persistence_path_for_service(self._service_for(model_id))

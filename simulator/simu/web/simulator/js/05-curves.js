@@ -1002,12 +1002,13 @@ function drawCurveLoading(message = "正在加载曲线...") {
   if (!canvas) return;
   resizeCurveCanvas();
   const { ctx, width, height } = prepareCanvas2D(canvas, 900, 260);
+  const palette = chartThemePalette();
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#fcfeff";
+  ctx.fillStyle = palette.bg;
   ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = "#d8e1e5";
+  ctx.strokeStyle = palette.grid;
   ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
-  ctx.fillStyle = "#63717a";
+  ctx.fillStyle = palette.text;
   ctx.font = "14px Microsoft YaHei, Arial";
   ctx.textAlign = "center";
   ctx.fillText(message, width / 2, height / 2);
@@ -1693,14 +1694,15 @@ function drawCurves() {
   const axisMeta = curveYAxisMeta(metas, editKey || state.activeCurveKey);
   const legendColumns = width < 560 ? 2 : Math.max(1, allMetas.length);
   const legendColumnWidth = (right - left) / legendColumns;
+  const palette = chartThemePalette();
   state.curveLegendHitBoxes = [];
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#fcfeff";
+  ctx.fillStyle = palette.bg;
   ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = "#d8e1e5";
+  ctx.strokeStyle = palette.grid;
   ctx.lineWidth = 1;
   ctx.font = "12px Microsoft YaHei, Arial";
-  ctx.fillStyle = "#63717a";
+  ctx.fillStyle = palette.text;
   for (let i = 0; i <= 5; i += 1) {
     const y = top + i * ((bottom - top) / 5);
     ctx.beginPath();
@@ -1866,11 +1868,12 @@ function drawCurveCursor(ctx, canvas, plot, metas) {
   ctx.stroke();
   ctx.setLineDash([]);
 
+  const palette = chartThemePalette();
   tooltipMetas.forEach((meta) => {
     const values = state.curveSeries[meta.key] || [];
     if (!values.length) return;
     const markerY = valueToY(values[index], meta, canvas);
-    ctx.fillStyle = "#ffffff";
+    ctx.fillStyle = palette.markerFill;
     ctx.strokeStyle = meta.color;
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -1896,11 +1899,11 @@ function drawCurveCursor(ctx, canvas, plot, metas) {
   ctx.shadowColor = "rgba(28, 45, 52, 0.18)";
   ctx.shadowBlur = 12;
   ctx.shadowOffsetY = 3;
-  ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
+  ctx.fillStyle = palette.tooltipBg;
   drawCurveTooltipBox(ctx, tooltipX, tooltipY, tooltipWidth, tooltipHeight);
   ctx.fill();
   ctx.shadowColor = "transparent";
-  ctx.strokeStyle = "rgba(171, 190, 198, 0.9)";
+  ctx.strokeStyle = palette.tooltipBorder;
   ctx.stroke();
 
   ctx.fillStyle = "#1f3037";
@@ -2178,7 +2181,14 @@ function initMeasurementMonitor() {
   }
   initChartPeriodNavigation("measurementTrace", measurementTraceWindowRange, drawMeasurementTraceChart);
   initTraceChartInteractions("measurementTrace", "measurementTraceChart", drawMeasurementTraceChart);
-  window.addEventListener("resize", drawMeasurementTraceChart);
+  let measResizeTimer = null;
+  window.addEventListener("resize", () => {
+    if (measResizeTimer !== null) clearTimeout(measResizeTimer);
+    measResizeTimer = setTimeout(() => {
+      measResizeTimer = null;
+      if (currentPageName() === "measurements") drawMeasurementTraceChart();
+    }, 120);
+  });
 }
 
 async function refresh() {
@@ -2189,10 +2199,15 @@ async function refresh() {
     if (solverInfo) solverInfo.textContent = "模拟服务已停止";
     return;
   }
+  const requestedModelId = state.activeModelId;
+  const switchEpoch = Number(state.modelSwitchEpoch || 0);
   state.refreshRequestActive = true;
   try {
     const activePage = currentPageName();
     const snapshot = await refreshSnapshotPayload(activePage);
+    if (state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
+      return;
+    }
     const deltaRequests = [];
     if (pageNeedsRuntimeLogDelta(activePage) && !state.embeddedRuntimeLogDeltaReceived) {
       deltaRequests.push(refreshRuntimeLogs(false));
@@ -2201,9 +2216,15 @@ async function refresh() {
       deltaRequests.push(refreshMeasurementDelta(false));
     }
     await Promise.all(deltaRequests);
+    if (state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
+      return;
+    }
     state.refreshConsecutiveFailures = 0;
     renderSnapshot(snapshot);
   } catch (error) {
+    if (state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
+      return;
+    }
     state.refreshConsecutiveFailures = (Number(state.refreshConsecutiveFailures || 0)) + 1;
     const retrySec = Math.round(refreshSchedulerIntervalMs() / 1000);
     console.error("模拟台快照刷新失败", error);
@@ -2211,7 +2232,9 @@ async function refresh() {
     const solverInfo = $("solverInfo");
     if (solverInfo) solverInfo.textContent = `连接中断（${retrySec}s 后重试）`;
   } finally {
-    state.refreshRequestActive = false;
+    if (Number(state.modelSwitchEpoch || 0) === switchEpoch) {
+      state.refreshRequestActive = false;
+    }
   }
 }
 
