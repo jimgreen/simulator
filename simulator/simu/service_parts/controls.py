@@ -2091,6 +2091,9 @@ class _ControlsMixin:
     def _append_command_history_entry(self, entry: Dict[str, Any]) -> None:
         self._ensure_strategy_generation_index()
         self.command_history.append(entry)
+        self._command_mutation_seq = int(getattr(self, "_command_mutation_seq", 0) or 0) + 1
+        self._command_signature_cache = None
+        self._device_runtime_supplement_cache = None
         strategy_id, include = self._entry_belongs_in_strategy_generation_index(entry)
         if include:
             self._strategy_generation_entries.setdefault(strategy_id, []).append(entry)
@@ -2437,6 +2440,10 @@ class _ControlsMixin:
                         )
                     )
 
+            if deleted_keys:
+                self._command_mutation_seq = int(getattr(self, "_command_mutation_seq", 0) or 0) + 1
+                self._command_signature_cache = None
+                self._device_runtime_supplement_cache = None
             deleted_remote = sum(1 for key in deleted_keys if key[0] == "remote_control")
             deleted_adjustment = sum(1 for key in deleted_keys if key[0] == "remote_adjustment")
             ignored = 0 if eligible_source else len(targets)

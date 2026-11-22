@@ -127,7 +127,15 @@ class _LoopbackKeepAlivePool:
             except (OSError, http.client.HTTPException) as exc:
                 last_exc = exc
                 self._discard(host, port, conn)
-                if attempt == 0 and (method == "GET" or reused):
+                # 非幂等 POST 绝不在 TimeoutError 时重发；仅在复用连接发生零字节断连时安全重试一次
+                safe_post_retry = (
+                    reused
+                    and isinstance(
+                        exc,
+                        (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError),
+                    )
+                )
+                if attempt == 0 and (method == "GET" or safe_post_retry):
                     continue
                 raise
             if will_close:
@@ -249,13 +257,18 @@ class Bridge:
         self.models = {}
         self.initialized = set()
         self.pending_reload = set()
+        self.manual_stopped = set()
         self.last_errors = {}
         self._failure_counts = {}
         self._point_def_cache = {}
         self._last_samples = {}
         self._model_rtu_cache = {}
+        self._known_rtus = None
         self._invalidated_rtus = set()
         self._delta_sync_state = {}
+        self._cached_catalog_models = None
+        self._cached_catalog_ts = 0.0
+        self._catalog_ttl_seconds = 2.5
         self.bridge_db_path = Path(
             bridge_db_path
             or server.store.db_path.with_name(server.store.db_path.stem + "_bridge.sqlite3")
@@ -492,11 +505,20 @@ class Bridge:
         LOG.info("模型 %s 已接受 RTU%s %s/%s=%s", model, rtu, kind.upper(), number, value)
 
     def invalidate_offline(self, seen):
+        if self._known_rtus is None:
+            with closing(self._bridge_con()) as bdb:
+                self._known_rtus = {
+                    int(rtu) for rtu, in bdb.execute("SELECT rtu_id FROM simulator104_models")
+                }
+        self._known_rtus.update(int(r) for r in seen)
+        offline = [
+            rtu
+            for rtu in self._known_rtus
+            if rtu not in seen and rtu not in self._invalidated_rtus
+        ]
+        if not offline:
+            return
         with closing(self._bridge_con()) as bdb:
-            all_rtus = [int(rtu) for rtu, in bdb.execute("SELECT rtu_id FROM simulator104_models")]
-            offline = [rtu for rtu in all_rtus if rtu not in seen and rtu not in self._invalidated_rtus]
-            if not offline:
-                return
             offline_points = {}
             for rtu in offline:
                 for kind in ("yc", "yx"):
@@ -607,9 +629,11 @@ class Bridge:
         return self.list_points(rtu, kind)
 
     def _read_points_for_model(self, base, name):
-        """优先使用增量 /api/measurements/delta（稳态单次轻量请求），首次或定义变更自动回退全量同步。"""
+        """优先使用增量 /api/measurements/delta（稳态单次轻量请求），首次或定义变更自动回退全量同步。
+        返回 (points, changed_hint)，当增量帧声明 frame=False 时可直接跳过下游全表比对。
+        """
         if request is not _DEFAULT_REQUEST:
-            return read_points(base, name)
+            return read_points(base, name), True
         sync_state = self._delta_sync_state.get(name)
         if sync_state is not None and sync_state.get("base") == base:
             try:
@@ -626,36 +650,90 @@ class Bridge:
                 ):
                     by_index = sync_state["index_meta"]
                     points = sync_state["points"]
-                    for row in delta.get("rows") or ():
-                        if not isinstance(row, list) or len(row) < 3:
-                            continue
-                        try:
-                            idx = int(row[0])
-                        except (TypeError, ValueError):
-                            continue
-                        meta = by_index.get(idx)
-                        if meta is None:
-                            continue
-                        kind, pt_name = meta
-                        scada_val = row[2]
-                        valid_val = row[3] if len(row) > 3 else 1
-                        points[kind][pt_name] = {"name": pt_name, "value": scada_val, "valid": valid_val}
-                    sync_state["seq"] = int(delta.get("seq", sync_state["seq"]) or 0)
-                    return points
+                    dirty = False
+                    if delta.get("encoding") == "measurement-arrays-v1":
+                        # 紧凑数组协议：frame=False 表示本轮零变更；frame=True 携带全量按索引对齐的 scada/valid 数组
+                        if delta.get("frame") is False:
+                            sync_state["seq"] = int(delta.get("seq", sync_state["seq"]) or 0)
+                            return points, False
+                        scada_vals = delta.get("scada_values")
+                        valid_vals = delta.get("valid_values")
+                        if isinstance(scada_vals, list) and len(scada_vals) == len(by_index):
+                            has_valid = isinstance(valid_vals, list) and len(valid_vals) == len(by_index)
+                            for idx, scada_val in enumerate(scada_vals):
+                                meta = by_index.get(idx)
+                                if meta is None:
+                                    continue
+                                kind, pt_name = meta
+                                valid_val = valid_vals[idx] if has_valid else 1
+                                prev = points[kind].get(pt_name)
+                                if (
+                                    prev is None
+                                    or prev.get("value") != scada_val
+                                    or prev.get("valid") != valid_val
+                                ):
+                                    points[kind][pt_name] = {
+                                        "name": pt_name,
+                                        "value": scada_val,
+                                        "valid": valid_val,
+                                    }
+                                    dirty = True
+                            sync_state["seq"] = int(delta.get("seq", sync_state["seq"]) or 0)
+                            return points, dirty
+                    elif "rows" in delta:
+                        for row in delta.get("rows") or ():
+                            if not isinstance(row, list) or len(row) < 3:
+                                continue
+                            try:
+                                idx = int(row[0])
+                            except (TypeError, ValueError):
+                                continue
+                            meta = by_index.get(idx)
+                            if meta is None:
+                                continue
+                            kind, pt_name = meta
+                            scada_val = row[2]
+                            valid_val = row[3] if len(row) > 3 else 1
+                            prev = points[kind].get(pt_name)
+                            if (
+                                prev is None
+                                or prev.get("value") != scada_val
+                                or prev.get("valid") != valid_val
+                            ):
+                                points[kind][pt_name] = {"name": pt_name, "value": scada_val, "valid": valid_val}
+                                dirty = True
+                        sync_state["seq"] = int(delta.get("seq", sync_state["seq"]) or 0)
+                        return points, dirty
             except Exception:
                 self._delta_sync_state.pop(name, None)
 
-        points = read_points(base, name)
+        # 全量建基线：一次拉取 measurements + controls，复用同一份 definitions 构建 index_meta
+        m = request(base, "/api/measurements?trainee_view=1")
+        c = request(base, "/api/controls")
+        points = {"yc": {}, "yx": {}, "yk": {}, "yt": {}}
+        index_meta = {}
+        meas_defs = m.get("definitions") or []
+        scada = {row["name"]: row for row in m.get("scada", [])}
+        for idx, row in enumerate(meas_defs):
+            pt_name = str(row.get("name", ""))
+            kind = "yx" if str(row.get("meas_type", "")).upper() in {"RUN_STAT", "STATUS"} else "yc"
+            index_meta[idx] = (kind, pt_name)
+            cur = scada.get(pt_name, {})
+            points[kind][pt_name] = {
+                "name": pt_name,
+                "value": cur.get("value", 0),
+                "valid": cur.get("valid", 0),
+            }
+        for row in c.get("remote_controls", []):
+            pt_name = str(row.get("name", ""))
+            points["yk"][pt_name] = {"name": pt_name}
+        for row in c.get("remote_adjustments", []):
+            pt_name = str(row.get("name", ""))
+            points["yt"][pt_name] = {"name": pt_name}
         # 尝试建立增量同步基线（静默容错，老版本服务自动回退全量）
         try:
             delta_init = request(base, "/api/measurements/delta?after_seq=0&compact=1&trainee_view=1")
             if isinstance(delta_init, dict) and delta_init.get("definition_signature"):
-                meas_defs = request(base, "/api/measurements?trainee_view=1").get("definitions") or []
-                index_meta = {}
-                for idx, row in enumerate(meas_defs):
-                    pt_name = str(row.get("name", ""))
-                    kind = "yx" if str(row.get("meas_type", "")).upper() in {"RUN_STAT", "STATUS"} else "yc"
-                    index_meta[idx] = (kind, pt_name)
                 if len(index_meta) == int(delta_init.get("count", len(index_meta)) or 0):
                     self._delta_sync_state[name] = {
                         "base": base,
@@ -666,28 +744,32 @@ class Bridge:
                     }
         except Exception:
             self._delta_sync_state.pop(name, None)
-        return points
+        return points, True
 
     def _sync_single_model(self, name, base_url):
         base = loopback_url(base_url)
-        points = self._read_points_for_model(base, name)
+        points, dirty = self._read_points_for_model(base, name)
         rtu = self.channel(name)
-        changed = self.sync_points(rtu, points)
+        if self._known_rtus is not None:
+            self._known_rtus.add(rtu)
+        changed = False
+        if dirty or rtu not in self.initialized or rtu in self._invalidated_rtus:
+            changed = self.sync_points(rtu, points)
         self._invalidated_rtus.discard(rtu)
         with self.lock:
             self.online[rtu] = (base, name)
             self._failure_counts.pop(rtu, None)
-        channel = self.server.channel_services(rtu_id=rtu)[f"iec104-rtu-{rtu}"]
-        if rtu not in self.initialized or (changed and channel.status()["running"]):
-            self.pending_reload.add(rtu)
-        if rtu in self.pending_reload:
-            if channel.status()["running"]:
-                channel.stop()
-            channel.start()
-            self.pending_reload.remove(rtu)
-            self.initialized.add(rtu)
-        channel_status = channel.status()
-        with self.lock:
+            channel = self.server.channel_services(rtu_id=rtu)[f"iec104-rtu-{rtu}"]
+            manual_stopped = rtu in self.manual_stopped
+            if not manual_stopped and (rtu not in self.initialized or (changed and channel.status()["running"])):
+                self.pending_reload.add(rtu)
+            if not manual_stopped and rtu in self.pending_reload:
+                if channel.status()["running"]:
+                    channel.stop()
+                channel.start()
+                self.pending_reload.remove(rtu)
+                self.initialized.add(rtu)
+            channel_status = channel.status()
             self.models[rtu] = {"model": name, "rtu_id": rtu, "model_url": base,
                                 "online": True, "running": channel_status["running"],
                                 "endpoint": channel_status.get("endpoint"),
@@ -696,21 +778,33 @@ class Bridge:
             self.last_errors.pop(name, None)
         return rtu
 
-    def poll_once(self):
+    def poll_once(self, *, force_catalog=True):
         """执行单轮目录发现与点表同步；目录瞬时超时不误将全站测点置为无效。"""
         seen = set()
         catalog_ok = False
         catalog_models = None
-        try:
-            if callable(self.catalog_provider):
-                catalog_models = self.catalog_provider()
-            else:
-                catalog_models = request(self.simulator_url, "/api/models")["models"]
+        now = time.monotonic()
+        use_cached_catalog = (
+            not force_catalog
+            and self._cached_catalog_models is not None
+            and (now - self._cached_catalog_ts) < self._catalog_ttl_seconds
+        )
+        if use_cached_catalog:
+            catalog_models = self._cached_catalog_models
             catalog_ok = True
-            with self.lock:
-                self.last_errors.pop("catalog", None)
-        except Exception as exc:
-            self.report_error("catalog", exc)
+        else:
+            try:
+                if callable(self.catalog_provider):
+                    catalog_models = self.catalog_provider()
+                else:
+                    catalog_models = request(self.simulator_url, "/api/models")["models"]
+                catalog_ok = True
+                self._cached_catalog_models = catalog_models
+                self._cached_catalog_ts = now
+                with self.lock:
+                    self.last_errors.pop("catalog", None)
+            except Exception as exc:
+                self.report_error("catalog", exc)
 
         if catalog_ok and isinstance(catalog_models, list):
             healthy_targets = []
@@ -788,7 +882,7 @@ class Bridge:
 
     def poll(self):
         while not self.stop.is_set():
-            self.poll_once()
+            self.poll_once(force_catalog=False)
             self.stop.wait(self.interval)
 
     def report_error(self, name, exc):
@@ -1172,6 +1266,11 @@ class EmbeddedScada104Host:
 
     def channel_services(self, *, rtu_id=None) -> dict:
         with self._channel_lock:
+            if rtu_id is not None:
+                slug = f"iec104-rtu-{int(rtu_id)}"
+                cached = self._channel_cache.get(slug)
+                if cached is not None:
+                    return {slug: cached}
             with self.store.connection() as con:
                 where = " WHERE r.channel_type='iec104'"
                 params = ()
@@ -1237,19 +1336,25 @@ class EmbeddedScada104Host:
         act = str(action or "").strip().lower()
         if act not in {"start", "stop", "restart"}:
             raise ValueError("通道操作仅支持 start、stop 或 restart")
-        channels = self.channel_services(rtu_id=rid)
-        channel = channels.get(f"iec104-rtu-{rid}")
-        if channel is None:
-            raise ValueError(f"未找到 RTU {rid} 的 IEC104 通道")
-        if act == "start":
-            ch_status = channel.start()
-        elif act == "stop":
-            ch_status = channel.stop()
-        else:
-            if channel.status().get("running"):
-                channel.stop()
-            ch_status = channel.start()
         with self.bridge.lock:
+            channels = self.channel_services(rtu_id=rid)
+            channel = channels.get(f"iec104-rtu-{rid}")
+            if channel is None:
+                raise ValueError(f"未找到 RTU {rid} 的 IEC104 通道")
+            if act == "start":
+                self.bridge.manual_stopped.discard(rid)
+                ch_status = channel.start()
+                self.bridge.initialized.add(rid)
+            elif act == "stop":
+                self.bridge.manual_stopped.add(rid)
+                self.bridge.pending_reload.discard(rid)
+                ch_status = channel.stop()
+            else:
+                self.bridge.manual_stopped.discard(rid)
+                if channel.status().get("running"):
+                    channel.stop()
+                ch_status = channel.start()
+                self.bridge.initialized.add(rid)
             if rid in self.bridge.models:
                 self.bridge.models[rid]["running"] = bool(ch_status.get("running"))
                 self.bridge.models[rid]["endpoint"] = ch_status.get("endpoint")

@@ -1999,6 +1999,7 @@ class _ClockStepMixin:
                         self.latest_measurements,
                         definition_revision=self.definition_snapshot.revision,
                         definition_signature=definition_signature,
+                        limit=3600,
                     )
                 if return_snapshot:
                     return self.snapshot()

@@ -279,17 +279,47 @@ async function loadControlPoints(force = false) {
   }
 }
 
+let pointsTableAbortController = null;
+let logsAbortController = null;
+let pointsTableReqSeq = 0;
+let logsReqSeq = 0;
+let pendingManualRefresh = false;
+let pointsSortState = { col: "pnt_no", dir: "none" };
+let loadedChannelLogItems = [];
+let scadaImeComposing = false;
+
+function formatTelemetryValue(val, kind) {
+  if (val === null || val === undefined || val === "") return "—";
+  const num = Number(val);
+  if (!Number.isFinite(num)) return String(val);
+  if (kind === "yx" || kind === "yk") return String(Math.round(num));
+  if (Number.isInteger(num)) return String(num);
+  return num.toFixed(2);
+}
+
 function renderPointsTableRows() {
   const tbody = get("pointsTableBody");
   if (!tbody) return;
   const kind = get("pointsKindSelect")?.value || "yc";
   const rtu = Number(get("pointsRtuSelect")?.value || 0);
   const keyword = String(get("pointsTableSearch")?.value || "").trim().toLowerCase();
-  const filtered = keyword
+  const filtered = (keyword
     ? loadedPointsTableItems.filter((item) => (
       `${item.pnt_no} ${item.name || ""} ${item.source_name || ""}`.toLowerCase().includes(keyword)
     ))
-    : loadedPointsTableItems;
+    : loadedPointsTableItems.slice());
+  if (pointsSortState.dir !== "none") {
+    const dir = pointsSortState.dir === "ascending" ? 1 : -1;
+    const col = pointsSortState.col;
+    filtered.sort((a, b) => {
+      if (col === "pnt_no" || col === "value") {
+        const na = Number(a[col] ?? -Infinity);
+        const nb = Number(b[col] ?? -Infinity);
+        return (na - nb) * dir;
+      }
+      return String(a[col] || "").localeCompare(String(b[col] || ""), "zh-CN") * dir;
+    });
+  }
   if (!filtered.length) {
     const cell = text("td", loadedPointsTableItems.length ? "无匹配测点" : "暂无测点数据", "empty");
     cell.colSpan = 6;
@@ -300,11 +330,22 @@ function renderPointsTableRows() {
   }
   const rows = filtered.map((item) => {
     const tr = document.createElement("tr");
-    tr.append(text("td", String(item.pnt_no), "num"));
+    const noTd = text("td", String(item.pnt_no), "num");
+    noTd.title = "点击复制点号";
+    noTd.style.cursor = "pointer";
+    noTd.addEventListener("click", () => {
+      navigator.clipboard?.writeText(String(item.pnt_no)).catch(() => {});
+    });
+    tr.append(noTd);
     tr.append(text("td", item.name || item.source_name || ""));
-    tr.append(text("td", item.source_name || "", "mono"));
-    const valStr = item.value === null || item.value === undefined ? "—" : String(item.value);
-    tr.append(text("td", valStr, "num"));
+    const srcTd = text("td", item.source_name || "", "mono");
+    srcTd.title = "点击复制仿真源名";
+    srcTd.style.cursor = "pointer";
+    srcTd.addEventListener("click", () => {
+      if (item.source_name) navigator.clipboard?.writeText(String(item.source_name)).catch(() => {});
+    });
+    tr.append(srcTd);
+    tr.append(text("td", formatTelemetryValue(item.value, kind), "num"));
 
     const statusTd = document.createElement("td");
     const isValid = Number(item.status) === 0;
@@ -314,6 +355,23 @@ function renderPointsTableRows() {
 
     const opTd = document.createElement("td");
     if (kind === "yk" || kind === "yt") {
+      const wrap = document.createElement("div");
+      wrap.className = "row-actions";
+      const sendBtn = text("button", "去下发", "row-btn");
+      sendBtn.type = "button";
+      sendBtn.disabled = Boolean(item.disabled);
+      sendBtn.addEventListener("click", async () => {
+        if (get("rtu")) get("rtu").value = String(rtu);
+        if (get("kind")) get("kind").value = kind;
+        syncValueInputMode();
+        setActiveViewTab("channels");
+        await loadControlPoints(true);
+        if (get("point")) {
+          get("point").value = String(item.pnt_no);
+          updateSelectedPointMeta(true);
+          get("point").focus();
+        }
+      });
       const btn = text("button", item.disabled ? "恢复操作" : "禁止操作", item.disabled ? "row-btn" : "row-btn is-danger");
       btn.type = "button";
       btn.addEventListener("click", async () => {
@@ -333,7 +391,8 @@ function renderPointsTableRows() {
           btn.disabled = false;
         }
       });
-      opTd.append(btn);
+      wrap.append(sendBtn, btn);
+      opTd.append(wrap);
     } else {
       opTd.append(text("span", "只读", "pill is-off"));
     }
@@ -353,11 +412,20 @@ async function loadPointsTable() {
     renderPointsTableRows();
     return;
   }
+  const reqSeq = ++pointsTableReqSeq;
+  if (pointsTableAbortController) pointsTableAbortController.abort();
+  pointsTableAbortController = new AbortController();
   try {
-    const data = await api(`/api/simulator104/points?rtu_id=${encodeURIComponent(rtu)}&kind=${encodeURIComponent(kind)}`);
+    const data = await api(
+      `/api/simulator104/points?rtu_id=${encodeURIComponent(rtu)}&kind=${encodeURIComponent(kind)}`,
+      undefined,
+      { signal: pointsTableAbortController.signal },
+    );
+    if (reqSeq !== pointsTableReqSeq) return;
     loadedPointsTableItems = Array.isArray(data.items) ? data.items : [];
     renderPointsTableRows();
   } catch (err) {
+    if (err?.name === "AbortError" || reqSeq !== pointsTableReqSeq) return;
     loadedPointsTableItems = [];
     const cell = text("td", `加载点表失败：${err.message}`, "empty");
     cell.colSpan = 6;
@@ -367,11 +435,45 @@ async function loadPointsTable() {
   }
 }
 
+function renderChannelLogRows() {
+  const tbody = get("logsTableBody");
+  if (!tbody) return;
+  const levelFilter = String(get("logsLevelSelect")?.value || "all").toUpperCase();
+  const keyword = String(get("logsSearchInput")?.value || "").trim().toLowerCase();
+  const filtered = loadedChannelLogItems.filter((item) => {
+    const lvl = String(item.level || "INFO").toUpperCase();
+    if (levelFilter !== "ALL" && lvl !== levelFilter) return false;
+    if (keyword && !`${item.time || ""} ${lvl} ${item.message || ""}`.toLowerCase().includes(keyword)) return false;
+    return true;
+  });
+  if (!filtered.length) {
+    const cell = text("td", loadedChannelLogItems.length ? "无匹配通信日志" : "暂无通道通信日志", "empty");
+    cell.colSpan = 3;
+    const tr = document.createElement("tr");
+    tr.append(cell);
+    tbody.replaceChildren(tr);
+    return;
+  }
+  const rows = filtered.map((item) => {
+    const tr = document.createElement("tr");
+    tr.append(text("td", String(item.time || ""), "mono"));
+    const lvl = String(item.level || "INFO").toUpperCase();
+    const lvlTd = document.createElement("td");
+    const cls = lvl === "ERROR" ? "pill is-danger" : (lvl === "WARN" || lvl === "WARNING" ? "pill is-warn" : (lvl === "INFO" ? "pill is-ok" : "pill is-off"));
+    lvlTd.append(text("span", lvl, cls));
+    tr.append(lvlTd);
+    tr.append(text("td", String(item.message || ""), "log-msg"));
+    return tr;
+  });
+  tbody.replaceChildren(...rows);
+}
+
 async function loadChannelLogs() {
   const rtu = get("logsRtuSelect")?.value || "";
   const tbody = get("logsTableBody");
   if (!tbody) return;
   if (!rtu) {
+    loadedChannelLogItems = [];
     const cell = text("td", "请选择模型查看通信日志", "empty");
     cell.colSpan = 3;
     const tr = document.createElement("tr");
@@ -379,30 +481,21 @@ async function loadChannelLogs() {
     tbody.replaceChildren(tr);
     return;
   }
+  const reqSeq = ++logsReqSeq;
+  if (logsAbortController) logsAbortController.abort();
+  logsAbortController = new AbortController();
   try {
-    const data = await api(`/api/simulator104/logs?rtu_id=${encodeURIComponent(rtu)}&limit=120`);
-    const items = Array.isArray(data.items) ? data.items : [];
-    if (!items.length) {
-      const cell = text("td", "暂无通道通信日志", "empty");
-      cell.colSpan = 3;
-      const tr = document.createElement("tr");
-      tr.append(cell);
-      tbody.replaceChildren(tr);
-      return;
-    }
-    const rows = items.map((item) => {
-      const tr = document.createElement("tr");
-      tr.append(text("td", String(item.time || ""), "mono"));
-      const lvl = String(item.level || "INFO").toUpperCase();
-      const lvlTd = document.createElement("td");
-      const cls = lvl === "ERROR" ? "pill is-warn" : (lvl === "INFO" ? "pill is-ok" : "pill is-off");
-      lvlTd.append(text("span", lvl, cls));
-      tr.append(lvlTd);
-      tr.append(text("td", String(item.message || ""), "log-msg"));
-      return tr;
-    });
-    tbody.replaceChildren(...rows);
+    const data = await api(
+      `/api/simulator104/logs?rtu_id=${encodeURIComponent(rtu)}&limit=120`,
+      undefined,
+      { signal: logsAbortController.signal },
+    );
+    if (reqSeq !== logsReqSeq) return;
+    loadedChannelLogItems = Array.isArray(data.items) ? data.items : [];
+    renderChannelLogRows();
   } catch (err) {
+    if (err?.name === "AbortError" || reqSeq !== logsReqSeq) return;
+    loadedChannelLogItems = [];
     const cell = text("td", `加载通信日志失败：${err.message}`, "empty");
     cell.colSpan = 3;
     const tr = document.createElement("tr");
@@ -485,7 +578,10 @@ function syncAuxiliaryRtuSelects(models) {
 
 async function refresh(manual = false) {
   if (document.hidden && !manual) return;
-  if (refreshInFlight) return;
+  if (refreshInFlight) {
+    if (manual) pendingManualRefresh = true;
+    return;
+  }
   refreshInFlight = true;
   if (statusAbortController) statusAbortController.abort();
   statusAbortController = new AbortController();
@@ -619,15 +715,21 @@ async function refresh(manual = false) {
       syncSelectedModelRowHighlight();
     }
     await loadControlPoints(false);
-    if (activeViewTab === "points" && manual) await loadPointsTable();
-    else if (activeViewTab === "logs" && manual) await loadChannelLogs();
+    const pausedPoints = Boolean(get("pauseAutoRefreshPoints")?.checked);
+    if (activeViewTab === "points" && (manual || !pausedPoints)) await loadPointsTable();
+    else if (activeViewTab === "logs") await loadChannelLogs();
   } catch (error) {
     if (error?.name !== "AbortError") {
       get("bridgeError").textContent = error.message;
     }
   } finally {
     refreshInFlight = false;
-    scheduleNextRefresh(REFRESH_INTERVAL_MS);
+    if (pendingManualRefresh) {
+      pendingManualRefresh = false;
+      refresh(true);
+    } else {
+      scheduleNextRefresh(REFRESH_INTERVAL_MS);
+    }
   }
 }
 
@@ -662,9 +764,24 @@ get("point").addEventListener("change", () => {
   updateSelectedPointMeta(true);
 });
 
-get("pointSearch")?.addEventListener("input", () => {
-  renderPointOptions();
-});
+function bindDebouncedSearch(inputId, handler, delayMs = 150) {
+  const el = get(inputId);
+  if (!el) return;
+  let timer = null;
+  el.addEventListener("compositionstart", () => { scadaImeComposing = true; });
+  el.addEventListener("compositionend", () => {
+    scadaImeComposing = false;
+    clearTimeout(timer);
+    handler();
+  });
+  el.addEventListener("input", () => {
+    if (scadaImeComposing) return;
+    clearTimeout(timer);
+    timer = setTimeout(handler, delayMs);
+  });
+}
+
+bindDebouncedSearch("pointSearch", () => renderPointOptions(), 150);
 
 get("refreshStatusBtn")?.addEventListener("click", () => {
   refresh(true);
@@ -676,10 +793,45 @@ get("refreshPointsBtn")?.addEventListener("click", () => {
 
 get("pointsRtuSelect")?.addEventListener("change", () => loadPointsTable());
 get("pointsKindSelect")?.addEventListener("change", () => loadPointsTable());
-get("pointsTableSearch")?.addEventListener("input", () => renderPointsTableRows());
+bindDebouncedSearch("pointsTableSearch", () => renderPointsTableRows(), 150);
 get("reloadPointsTableBtn")?.addEventListener("click", () => loadPointsTable());
 get("logsRtuSelect")?.addEventListener("change", () => loadChannelLogs());
+get("logsLevelSelect")?.addEventListener("change", () => renderChannelLogRows());
+bindDebouncedSearch("logsSearchInput", () => renderChannelLogRows(), 150);
 get("reloadLogsBtn")?.addEventListener("click", () => loadChannelLogs());
+
+document.querySelectorAll("th.is-sortable[data-sort-col]").forEach((th) => {
+  th.addEventListener("click", () => {
+    const col = th.dataset.sortCol;
+    const nextDir = pointsSortState.col !== col
+      ? "ascending"
+      : (pointsSortState.dir === "ascending" ? "descending" : (pointsSortState.dir === "descending" ? "none" : "ascending"));
+    pointsSortState = { col, dir: nextDir };
+    document.querySelectorAll("th.is-sortable[data-sort-col]").forEach((node) => {
+      node.setAttribute("aria-sort", node === th ? nextDir : "none");
+    });
+    renderPointsTableRows();
+  });
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.altKey && !event.ctrlKey && !event.metaKey) {
+    const map = { "1": "channels", "2": "points", "3": "logs" };
+    if (map[event.key]) {
+      event.preventDefault();
+      setActiveViewTab(map[event.key]);
+    }
+  } else if (event.key === "/" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    const tag = document.activeElement?.tagName;
+    if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") {
+      event.preventDefault();
+      const target = activeViewTab === "points" ? get("pointsTableSearch")
+        : activeViewTab === "logs" ? get("logsSearchInput")
+        : get("pointSearch");
+      target?.focus();
+    }
+  }
+});
 
 get("commandForm").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -692,17 +844,32 @@ get("commandForm").addEventListener("submit", async (event) => {
   const receipt = get("receipt");
   get("send").disabled = true;
   try {
-    if (!rtu || !Number.isSafeInteger(point) || point <= 0) {
-      throw new Error("请选择有效模型与控制点。");
+    ["rtu", "point", "value", "valueSelect"].forEach((id) => get(id)?.removeAttribute("aria-invalid"));
+    if (!rtu) {
+      get("rtu")?.setAttribute("aria-invalid", "true");
+      get("rtu")?.focus();
+      throw new Error("请选择有效模型。");
+    }
+    if (!Number.isSafeInteger(point) || point <= 0) {
+      get("point")?.setAttribute("aria-invalid", "true");
+      get("point")?.focus();
+      throw new Error("请选择有效控制点。");
     }
     if (!rawValueText) {
+      const el = kind === "yk" ? get("valueSelect") : get("value");
+      el?.setAttribute("aria-invalid", "true");
+      el?.focus();
       throw new Error("请填写指令值（不能为空）。");
     }
     const value = Number(rawValueText);
     if (!Number.isFinite(value)) {
+      get("value")?.setAttribute("aria-invalid", "true");
+      get("value")?.focus();
       throw new Error("指令值必须为有效数字。");
     }
     if (kind === "yk" && value !== 0 && value !== 1) {
+      get("valueSelect")?.setAttribute("aria-invalid", "true");
+      get("valueSelect")?.focus();
       throw new Error("遥控指令值只能为 0 或 1。");
     }
     const cached = pointItemsByNo.get(String(point));
@@ -746,6 +913,9 @@ document.addEventListener("visibilitychange", () => {
       clearTimeout(refreshTimerId);
       refreshTimerId = null;
     }
+    if (statusAbortController) statusAbortController.abort();
+    if (pointsTableAbortController) pointsTableAbortController.abort();
+    if (logsAbortController) logsAbortController.abort();
     return;
   }
   refresh(true);

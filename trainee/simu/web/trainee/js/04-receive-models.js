@@ -969,20 +969,27 @@ async function loadModels() {
 }
 
 async function refreshLocalSnapshotPayload(page = currentPageName()) {
+  const reqModelId = state.activeModelId;
+  const reqEpoch = Number(state.modelSwitchEpoch || 0);
   state.embeddedMeasurementDeltaReceived = false;
+  const rawResponse = await api(snapshotPollPath(page));
+  if (state.activeModelId !== reqModelId || Number(state.modelSwitchEpoch || 0) !== reqEpoch) {
+    return null;
+  }
   let snapshot = mergeSnapshot(
     state.snapshot,
-    applyDeviceRuntimePayload(state.snapshot, await api(snapshotPollPath(page))),
+    applyDeviceRuntimePayload(state.snapshot, rawResponse),
   );
   let embeddedMeasurementDelta = snapshot?.measurement_delta || null;
   if (snapshot?.measurement_delta) delete snapshot.measurement_delta;
   snapshot = restoreStaticSnapshotCache(snapshot, page);
   let missingStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
   if (missingStaticKeys.length) {
-    const staticIncoming = applyDeviceRuntimePayload(
-      snapshot,
-      await api(snapshotPollPath(page, missingStaticKeys)),
-    );
+    const rawStatic = await api(snapshotPollPath(page, missingStaticKeys));
+    if (state.activeModelId !== reqModelId || Number(state.modelSwitchEpoch || 0) !== reqEpoch) {
+      return null;
+    }
+    const staticIncoming = applyDeviceRuntimePayload(snapshot, rawStatic);
     if (staticIncoming?.measurement_delta) {
       embeddedMeasurementDelta = staticIncoming.measurement_delta;
       delete staticIncoming.measurement_delta;
@@ -1022,7 +1029,7 @@ async function refresh() {
   state.refreshRequestActive = true;
   try {
     const snapshot = await refreshLocalSnapshotPayload(page);
-    if (state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
+    if (!snapshot || state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
       return;
     }
     if (
@@ -1178,7 +1185,9 @@ function renderSnapshot(snapshot) {
   syncCommandHistoryLogs(snapshot.commands?.history || []);
   updatePendingCount();
   renderActiveTraineePage(snapshot);
-  ensureSelectedMeasurementHistory();
+  if (currentPageName() === "measurements") {
+    ensureSelectedMeasurementHistory();
+  }
   refreshDiagramDeviceCommandDialog(snapshot);
   refreshRemoteControlDialog(snapshot);
   refreshRemoteAdjustmentDialog(snapshot);
@@ -1961,9 +1970,9 @@ function handleOverviewBottomSplitterKeydown(event) {
 function initOverviewBottomSplitter() {
   const splitter = $("overviewBottomSplitter");
   if (!splitter) return;
-  applyOverviewBottomHeight(state.overviewBottomHeight);
   if (splitter.dataset.splitterReady === "true") return;
   splitter.dataset.splitterReady = "true";
+  applyOverviewBottomHeight(state.overviewBottomHeight);
   splitter.addEventListener("pointerdown", beginOverviewBottomSplitterDrag);
   splitter.addEventListener("keydown", handleOverviewBottomSplitterKeydown);
   window.addEventListener("pointermove", handleOverviewBottomSplitterDrag);
@@ -2077,9 +2086,9 @@ function handleOverviewBottomColumnSplitterKeydown(event) {
 function initOverviewBottomColumnSplitter() {
   const splitter = $("overviewBottomColumnSplitter");
   if (!splitter) return;
-  applyOverviewBottomColumnRatio(state.overviewBottomColumnRatio);
   if (splitter.dataset.splitterReady === "true") return;
   splitter.dataset.splitterReady = "true";
+  applyOverviewBottomColumnRatio(state.overviewBottomColumnRatio);
   splitter.addEventListener("pointerdown", beginOverviewBottomColumnSplitterDrag);
   splitter.addEventListener("keydown", handleOverviewBottomColumnSplitterKeydown);
   window.addEventListener("pointermove", handleOverviewBottomColumnSplitterDrag);

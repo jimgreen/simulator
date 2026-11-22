@@ -2009,7 +2009,8 @@ def _apply_real_bus_node_constraints(model_book: EBook) -> int:
             node_idx = _safe_int(busbar.get("node"), -1)
             node = node_by_idx.get(node_idx)
             if node is None:
-                LOGGER.warning(
+                _warn_throttled(
+                    ("real_bus_missing_node", str(real_bus_type), str(busbar.get("idx", "")), str(busbar.get("node", ""))),
                     "%s.%s references missing %s[%s]",
                     real_bus_type,
                     busbar.get("name", busbar.get("idx", "")),

@@ -370,10 +370,11 @@ async function ensureMeasurementHistoryForRow(row) {
 }
 
 function ensureSelectedMeasurementHistory() {
+  if (currentPageName() !== "measurements") return;
   const row = selectedMeasurementRow();
   if (!row) return;
   ensureMeasurementHistoryForRow(row).then((changed) => {
-    if (changed && measurementKey(row) === state.selectedMeasurementKey) {
+    if (changed && measurementKey(row) === state.selectedMeasurementKey && currentPageName() === "measurements") {
       drawMeasurementTraceChart();
     }
   });
@@ -397,7 +398,6 @@ function selectedMeasurementRow(rows = measurementCompareRows()) {
 function setSelectedMeasurementKey(key) {
   state.selectedMeasurementKey = key || "";
   renderMeasurementCompareTable();
-  drawMeasurementTraceChart();
   ensureSelectedMeasurementHistory();
 }
 
@@ -895,10 +895,10 @@ function renderMeasurementCompareTable() {
           <th>量测名称</th>
           <th>设备</th>
           <th>量测类型</th>
-          <th>真值</th>
-          <th>量测值</th>
-          <th>偏差</th>
-          <th>权重</th>
+          <th class="numeric-cell">真值</th>
+          <th class="numeric-cell">量测值</th>
+          <th class="numeric-cell">偏差</th>
+          <th class="numeric-cell">权重</th>
           <th>状态</th>
         </tr>
       </thead>

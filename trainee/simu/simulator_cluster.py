@@ -625,8 +625,25 @@ class SimulatorClusterManager:
                     and (now - cached[0]) < self.health_cache_ttl_seconds
                 ):
                     health_map[mid] = cached[1]
-                else:
-                    pending_ids.append(mid)
+                    continue
+                entry = self._registry["services"].get(mid)
+                process = self._processes.get(mid)
+                state = self._states.get(mid, "stopped")
+                if (
+                    isinstance(entry, Mapping)
+                    and process is None
+                    and not entry.get("pid")
+                    and state in {"stopped", "failed"}
+                    and self._adoption_deadlines.get(mid, 0.0) <= now
+                ):
+                    # 稳定停止且过领养期的模型直接快速返回，无需提交探测线程池。
+                    self._adoption_deadlines.pop(mid, None)
+                    self._adoption_next_probe_at.pop(mid, None)
+                    res: HealthResult = (False, {}, self._errors.get(mid, ""))
+                    self._health_cache[mid] = (now, res)
+                    health_map[mid] = res
+                    continue
+                pending_ids.append(mid)
         if len(pending_ids) == 1:
             mid = pending_ids[0]
             health_map[mid] = self._reconcile_model(mid)

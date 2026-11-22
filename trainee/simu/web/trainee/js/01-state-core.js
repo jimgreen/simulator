@@ -1182,8 +1182,13 @@ function sampleCurvePointsForCanvas(values, canvasWidth, density = 1.5) {
     .map(([index, value]) => ({ index, value }));
 }
 
-function compactTraceHistory(history) {
-  return Array.isArray(history) ? history : [];
+const TRACE_HISTORY_MAX_POINTS = 3600;
+
+function compactTraceHistory(history, maxPoints = TRACE_HISTORY_MAX_POINTS) {
+  if (!Array.isArray(history)) return [];
+  const cap = Math.max(200, Number(maxPoints) || TRACE_HISTORY_MAX_POINTS);
+  if (history.length <= cap) return history;
+  return history.slice(history.length - cap);
 }
 
 function virtualTableWindow(key, rows, options = {}) {
@@ -1277,6 +1282,16 @@ function handleVirtualTableScroll(event) {
   scheduleVirtualTableRender(key);
 }
 
+function scheduleChartCursorDraw(chartKey, drawFn) {
+  if (typeof drawFn !== "function") return;
+  state.chartCursorRaf = state.chartCursorRaf || {};
+  if (state.chartCursorRaf[chartKey]) return;
+  state.chartCursorRaf[chartKey] = requestAnimationFrame(() => {
+    delete state.chartCursorRaf[chartKey];
+    drawFn();
+  });
+}
+
 function setChartCursorFromEvent(chartKey, canvas, plot, event, drawFn) {
   if (!canvas || !plot) return;
   const pos = canvasPointerPosition(canvas, event);
@@ -1285,15 +1300,21 @@ function setChartCursorFromEvent(chartKey, canvas, plot, event, drawFn) {
   const top = plot.top;
   const bottom = canvas.height - plot.bottom;
   const visible = pos.x >= left && pos.x <= right && pos.y >= top && pos.y <= bottom;
+  const nextX = clamp(pos.x, left, right);
+  const nextY = clamp(pos.y, top, bottom);
+  const prev = state.chartCursors?.[chartKey];
+  if (
+    prev
+    && prev.visible === visible
+    && (!visible || (Math.abs(prev.x - nextX) < 0.5 && Math.abs(prev.y - nextY) < 0.5))
+  ) {
+    return;
+  }
   state.chartCursors = {
     ...(state.chartCursors || {}),
-    [chartKey]: {
-      visible,
-      x: clamp(pos.x, left, right),
-      y: clamp(pos.y, top, bottom),
-    },
+    [chartKey]: { visible, x: nextX, y: nextY },
   };
-  if (typeof drawFn === "function") drawFn();
+  scheduleChartCursorDraw(chartKey, drawFn);
 }
 
 function hideChartCursor(chartKey, drawFn) {
@@ -1573,10 +1594,9 @@ function initTraceChartInteractions(chartKey, canvasId, drawFn) {
   const handleMove = (event) => {
     setChartCursorFromEvent(chartKey, canvas, state.chartPlotInfo?.[chartKey], event, drawFn);
   };
-  canvas.addEventListener("pointermove", handleMove);
-  canvas.addEventListener("mousemove", handleMove);
-  canvas.addEventListener("pointerleave", () => hideChartCursor(chartKey, drawFn));
-  canvas.addEventListener("mouseleave", () => hideChartCursor(chartKey, drawFn));
+  const hasPointer = typeof window !== "undefined" && "PointerEvent" in window;
+  canvas.addEventListener(hasPointer ? "pointermove" : "mousemove", handleMove);
+  canvas.addEventListener(hasPointer ? "pointerleave" : "mouseleave", () => hideChartCursor(chartKey, drawFn));
   canvas.addEventListener("click", (event) => {
     if (selectChartSeriesAtPointer(chartKey, canvas, event, drawFn)) event.preventDefault();
   });

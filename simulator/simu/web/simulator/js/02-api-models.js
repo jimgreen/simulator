@@ -1664,15 +1664,23 @@ function applyEmbeddedMeasurementDelta(snapshot) {
 
 async function refreshMeasurementDelta(renderNow = false) {
   if (state.measurementDeltaRequestActive || !state.snapshot) return false;
+  const reqModelId = state.activeModelId;
+  const reqEpoch = Number(state.modelSwitchEpoch || 0);
   state.measurementDeltaRequestActive = true;
   try {
     const payload = await api(`/api/measurements/delta?after_seq=${state.measurementDeltaSeq}&compact=1`);
+    if (state.activeModelId !== reqModelId || Number(state.modelSwitchEpoch || 0) !== reqEpoch) {
+      return false;
+    }
     const changed = applyMeasurementDelta(payload);
     if (changed) hydrateMeasurementBackedDeviceRuntime(state.snapshot);
     if (changed && renderNow && currentPageName() === "measurements") renderMeasurementCompareTable();
     return changed;
   } catch (error) {
-    console.error("量测增量刷新失败", error);
+    if (!state._lastMeasDeltaErr) {
+      console.error("量测增量刷新失败", error);
+      state._lastMeasDeltaErr = String(error?.message || error);
+    }
     return false;
   } finally {
     state.measurementDeltaRequestActive = false;
@@ -1680,9 +1688,15 @@ async function refreshMeasurementDelta(renderNow = false) {
 }
 
 async function refreshSnapshotPayload(page = currentPageName()) {
+  const reqModelId = state.activeModelId;
+  const reqEpoch = Number(state.modelSwitchEpoch || 0);
   state.embeddedMeasurementDeltaReceived = false;
   state.embeddedRuntimeLogDeltaReceived = false;
   const response = await api(snapshotPollPath(page));
+  // 切换模型后丢弃迟到的旧模型响应，绝不污染新模型快照、日志与缓存。
+  if (state.activeModelId !== reqModelId || Number(state.modelSwitchEpoch || 0) !== reqEpoch) {
+    return null;
+  }
   applyEmbeddedRuntimeLogDelta(response);
   const incoming = applyDeviceRuntimePayload(state.snapshot, response);
   let embeddedMeasurementDelta = incoming?.measurement_delta || null;
@@ -1692,6 +1706,9 @@ async function refreshSnapshotPayload(page = currentPageName()) {
   let requiredStaticKeys = staticSnapshotMissingKeys(snapshot, staticSnapshotKeysForPage(page));
   if (requiredStaticKeys.length) {
     const staticResponse = await api(snapshotPollPath(page, requiredStaticKeys));
+    if (state.activeModelId !== reqModelId || Number(state.modelSwitchEpoch || 0) !== reqEpoch) {
+      return null;
+    }
     const staticIncoming = applyDeviceRuntimePayload(snapshot, staticResponse);
     if (staticIncoming?.measurement_delta) {
       embeddedMeasurementDelta = staticIncoming.measurement_delta;
@@ -1703,6 +1720,7 @@ async function refreshSnapshotPayload(page = currentPageName()) {
   }
   if (!requiredStaticKeys.length) persistStaticSnapshotCache(snapshot, page);
   state.snapshot = snapshot;
+  state._lastMeasDeltaErr = "";
   if (embeddedMeasurementDelta) {
     snapshot.measurement_delta = embeddedMeasurementDelta;
     applyEmbeddedMeasurementDelta(snapshot);
@@ -2232,7 +2250,11 @@ async function loadDirectSimulatorServiceModel() {
 
 async function refreshServiceCatalog(force = false) {
   if (directSimulatorServiceMode) return state.models;
-  if (!force && Date.now() - state.serviceCatalogLastLoadedAt < 3000) return state.models;
+  const modalOpen = Boolean($("modelManagementModal") && !$("modelManagementModal").hidden);
+  const minIntervalMs = modalOpen ? 3000 : 10000;
+  if (!force && Date.now() - state.serviceCatalogLastLoadedAt < minIntervalMs) return state.models;
+  if (state.serviceCatalogRequestActive) return state.models;
+  state.serviceCatalogRequestActive = true;
   try {
     const catalog = await api("/api/simulator-services", {
       modelScoped: false,
@@ -2240,13 +2262,27 @@ async function refreshServiceCatalog(force = false) {
       timeoutMs: 3000,
     });
     captureServiceSuggestion(catalog);
-    state.models = normalizeModels(Array.isArray(catalog.models) ? catalog.models : []);
+    const nextModels = normalizeModels(Array.isArray(catalog.models) ? catalog.models : []);
+    const nextKey = nextModels
+      .map((m) => `${m.id}:${m.name}:${m.service?.state || ""}:${m.service?.healthy ? 1 : 0}:${m.service?.port || ""}`)
+      .join("|");
+    state.models = nextModels;
     state.serviceCatalogLastLoadedAt = Date.now();
-    renderModelSelector();
+    state._lastCatalogError = "";
+    if (force || nextKey !== state._lastCatalogRenderKey) {
+      state._lastCatalogRenderKey = nextKey;
+      renderModelSelector();
+    }
     return state.models;
   } catch (error) {
-    console.error("模拟服务目录刷新失败", error);
+    const msg = String(error?.message || error);
+    if (state._lastCatalogError !== msg) {
+      state._lastCatalogError = msg;
+      console.error("模拟服务目录刷新失败", error);
+    }
     return state.models;
+  } finally {
+    state.serviceCatalogRequestActive = false;
   }
 }
 

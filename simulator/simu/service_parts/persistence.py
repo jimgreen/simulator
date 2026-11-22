@@ -549,10 +549,12 @@ class _PersistenceMixin:
         except (TypeError, ValueError):
             before = None
 
-        rows = list(self.runtime_logs)
+        with self._runtime_log_persistence_lock:
+            all_rows = list(self.runtime_logs)
+        rows = all_rows
         if log_type and log_type != "all":
             rows = [row for row in rows if str(row.get("type", "")) == log_type]
-        latest_seq = max((int(_to_float(row.get("seq"), 0) or 0) for row in self.runtime_logs), default=0)
+        latest_seq = max((int(_to_float(row.get("seq"), 0) or 0) for row in all_rows), default=0)
         reset = bool(after > latest_seq and latest_seq >= 0)
 
         if before is not None:

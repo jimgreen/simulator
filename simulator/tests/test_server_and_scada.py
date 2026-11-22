@@ -436,6 +436,97 @@ class ServerAndScadaTests(unittest.TestCase):
             finally:
                 srv.server_close()
 
+    def test_scada104_compact_array_delta_updates_points_across_rounds(self):
+        """验证 IEC104 桥接器对 measurement-arrays-v1 紧凑数组增量与无变化帧(frame=False)的精确解析。"""
+        import scada104 as scada104_mod
+
+        bridge = scada104_mod.Bridge.__new__(scada104_mod.Bridge)
+        bridge._delta_sync_state = {}
+
+        responses = [
+            # 第 1 轮全量建基线：/api/measurements?trainee_view=1
+            {
+                "definitions": [
+                    {"name": "M1", "meas_type": "P"},
+                    {"name": "M2", "meas_type": "RUN_STAT"},
+                ],
+                "scada": [
+                    {"name": "M1", "value": 12.5, "valid": 1},
+                    {"name": "M2", "value": 1.0, "valid": 1},
+                ],
+            },
+            # 第 1 轮全量建基线：/api/controls
+            {"remote_controls": [{"name": "YK1"}], "remote_adjustments": [{"name": "YT1"}]},
+            # 第 1 轮建立 delta 基线：/api/measurements/delta?after_seq=0&compact=1&trainee_view=1
+            {"seq": 10, "definition_signature": "sig-v1", "count": 2},
+            # 第 2 轮增量无变化帧（encoding="measurement-arrays-v1", frame=False）
+            {"seq": 10, "definition_signature": "sig-v1", "encoding": "measurement-arrays-v1", "frame": False},
+            # 第 3 轮增量紧凑数组帧（encoding="measurement-arrays-v1", frame=True）
+            {
+                "seq": 11,
+                "definition_signature": "sig-v1",
+                "encoding": "measurement-arrays-v1",
+                "frame": True,
+                "scada_values": [88.25, 0.0],
+                "valid_values": [1, 0],
+            },
+        ]
+
+        def _fake_pool_request(base, path, payload=None, timeout=None):
+            return responses.pop(0)
+
+        with patch.object(scada104_mod._HTTP_POOL, "request_json", side_effect=_fake_pool_request):
+            points1, changed1 = bridge._read_points_for_model("http://127.0.0.1:18716", "m1")
+            self.assertTrue(changed1)
+            self.assertAlmostEqual(points1["yc"]["M1"]["value"], 12.5)
+            self.assertEqual(points1["yx"]["M2"]["valid"], 1)
+
+            points2, changed2 = bridge._read_points_for_model("http://127.0.0.1:18716", "m1")
+            self.assertFalse(changed2, "frame=False 无变化帧必须跳过下游全表同步")
+            self.assertAlmostEqual(points2["yc"]["M1"]["value"], 12.5)
+
+            points3, changed3 = bridge._read_points_for_model("http://127.0.0.1:18716", "m1")
+            self.assertTrue(changed3, "measurement-arrays-v1 增量帧必须触发点值更新")
+            self.assertAlmostEqual(points3["yc"]["M1"]["value"], 88.25)
+            self.assertEqual(points3["yc"]["M1"]["valid"], 1)
+            self.assertAlmostEqual(points3["yx"]["M2"]["value"], 0.0)
+            self.assertEqual(points3["yx"]["M2"]["valid"], 0)
+            self.assertEqual(len(responses), 0)
+
+    def test_command_mutation_seq_invalidates_cache_when_length_unchanged(self):
+        """验证控制历史满容量裁剪或原位删除有效指令时 _command_mutation_seq 仍递增，不会返回陈旧快照。"""
+        from simu.service_parts import controls as controls_mod
+        from simu.service_parts.controls import _ControlsMixin
+
+        class _DummyCtrl(_ControlsMixin):
+            def __init__(self):
+                self.clock = type("C", (), {"absolute_minute": 100.0})()
+                self.command_history = []
+                self._strategy_generation_entries = {}
+                self._strategy_generation_index_token = None
+                self._command_mutation_seq = 0
+                self._command_signature_cache = ("stale", "sig")
+                self._device_runtime_supplement_cache = ("stale", {"x": 1})
+
+            def _command_entry_is_active(self, entry, minute):
+                return bool(entry.get("active"))
+
+        ctrl = _DummyCtrl()
+        with (
+            patch.object(controls_mod, "COMMAND_HISTORY_RECENT_LIMIT", 5),
+            patch.object(controls_mod, "COMMAND_HISTORY_MEMORY_LIMIT", 5),
+        ):
+            for i in range(5):
+                ctrl._append_command_history_entry({"id": f"c-{i}", "active": False})
+            seq_before = ctrl._command_mutation_seq
+            self.assertEqual(len(ctrl.command_history), 5)
+            # 再追加 1 条触发裁剪，长度维持 5 但 seq 必须递增且清理缓存
+            ctrl._command_signature_cache = ("k", "v")
+            ctrl._append_command_history_entry({"id": "c-5", "active": True})
+            self.assertEqual(len(ctrl.command_history), 5)
+            self.assertGreater(ctrl._command_mutation_seq, seq_before)
+            self.assertIsNone(ctrl._command_signature_cache)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -37,10 +37,16 @@ HIGH_FREQUENCY_POLL_GET_PATHS = frozenset(
         "/api/measurements/delta",
         "/api/runtime-logs",
         "/api/trainee/ui-frame",
+        "/api/trainee/snapshot",
+        "/api/trainee/measurements/delta",
+        "/api/trainee/diagnostics",
         "/api/trainee/renewable-control",
         "/api/trainee/receive-state",
+        "/api/trainee/receive-states",
         "/api/external/controls/names",
         "/api/simulator104/status",
+        "/api/simulator104/points",
+        "/api/simulator104/logs",
     }
 )
 

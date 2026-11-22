@@ -725,6 +725,15 @@ const PHRASE_TRANSLATIONS = {
   "暂无测点跟踪数据": ["No measurement trace data", "Нет данных тренда точки"],
   "暂无指令跟踪数据": ["No command trace data", "Нет данных тренда команды"],
   "请选择控制指令": ["Select a control command", "Выберите команду управления"],
+  "快速跳转或搜索命令、页签与设备…": ["Jump to page, device, theme or action...", "Поиск раздела, устройства, темы или команды..."],
+  "快捷命令": ["Quick Palette", "Команды"],
+  "定位接线图": ["Locate on Diagram", "На схеме"],
+  "复制文本": ["Copy", "Копировать"],
+  "已复制到剪贴板": ["Copied to clipboard", "Скопировано в буфер"],
+  "去下发": ["Send", "Отправить"],
+  "暂停自动刷新": ["Pause Auto-Refresh", "Пауза автообновления"],
+  "全部级别": ["All Levels", "Все уровни"],
+  "筛选日志内容…": ["Filter log messages...", "Фильтр сообщений журнала..."],
 };
 
 /**
@@ -887,6 +896,11 @@ function translateElementNode(el, lang) {
   }
 }
 
+const SKIP_SVG_TAGS = new Set([
+  "SVG", "PATH", "LINE", "CIRCLE", "ELLIPSE", "RECT", "POLYGON", "POLYLINE", "DEFS", "SYMBOL", "USE", "G", "CANVAS",
+]);
+let pendingDirtyNodes = new Set();
+
 function translateUiTree(root = document.body, lang = getUiLang()) {
   if (!root || isApplyingTranslation) return;
   isApplyingTranslation = true;
@@ -895,10 +909,52 @@ function translateUiTree(root = document.body, lang = getUiLang()) {
     if (typeof root.querySelectorAll === "function") {
       const nodes = root.querySelectorAll("*");
       for (let i = 0; i < nodes.length; i += 1) {
-        translateElementNode(nodes[i], lang);
+        const node = nodes[i];
+        if (SKIP_SVG_TAGS.has(node.tagName)) continue;
+        if (node.classList && node.classList.contains("numeric-cell")) continue;
+        translateElementNode(node, lang);
       }
     }
   } finally {
+    // 清空翻译自身触发的 DOM 变更队列，彻底消除微任务自触发死循环。
+    if (i18nObserver && typeof i18nObserver.takeRecords === "function") {
+      i18nObserver.takeRecords();
+    }
+    isApplyingTranslation = false;
+  }
+}
+
+function flushDirtyI18nNodes() {
+  pendingObserverFlush = false;
+  const lang = getUiLang();
+  if (lang === "zh-CN") {
+    pendingDirtyNodes.clear();
+    return;
+  }
+  const batch = Array.from(pendingDirtyNodes);
+  pendingDirtyNodes.clear();
+  if (!batch.length || isApplyingTranslation) return;
+  isApplyingTranslation = true;
+  try {
+    for (let i = 0; i < batch.length; i += 1) {
+      const target = batch[i];
+      if (!target || (target.isConnected === false)) continue;
+      if (SKIP_SVG_TAGS.has(target.tagName)) continue;
+      translateElementNode(target, lang);
+      if (typeof target.querySelectorAll === "function" && target.childElementCount > 0) {
+        const sub = target.querySelectorAll("*");
+        for (let j = 0; j < sub.length; j += 1) {
+          const child = sub[j];
+          if (SKIP_SVG_TAGS.has(child.tagName)) continue;
+          if (child.classList && child.classList.contains("numeric-cell")) continue;
+          translateElementNode(child, lang);
+        }
+      }
+    }
+  } finally {
+    if (i18nObserver && typeof i18nObserver.takeRecords === "function") {
+      i18nObserver.takeRecords();
+    }
     isApplyingTranslation = false;
   }
 }
@@ -915,18 +971,50 @@ function updateDocumentTitle(lang) {
 }
 
 function ensureI18nObserver() {
-  if (i18nObserver || typeof MutationObserver !== "function" || !document.body) return;
-  i18nObserver = new MutationObserver(() => {
-    if (isApplyingTranslation || getUiLang() === "zh-CN" || pendingObserverFlush) return;
+  if (typeof MutationObserver !== "function" || !document.body) return;
+  const lang = getUiLang();
+  // 简体中文模式下无需挂载 DOM 观察器，彻底零开销。
+  if (lang === "zh-CN") {
+    if (i18nObserver) {
+      i18nObserver.disconnect();
+      i18nObserver = null;
+    }
+    pendingDirtyNodes.clear();
+    pendingObserverFlush = false;
+    return;
+  }
+  if (i18nObserver) return;
+  i18nObserver = new MutationObserver((records) => {
+    if (isApplyingTranslation || getUiLang() === "zh-CN") return;
+    let added = false;
+    for (let i = 0; i < records.length; i += 1) {
+      const rec = records[i];
+      if (rec.type === "characterData") {
+        const parent = rec.target && rec.target.parentElement;
+        if (parent && !SKIP_SVG_TAGS.has(parent.tagName)) {
+          pendingDirtyNodes.add(parent);
+          added = true;
+        }
+      } else if (rec.type === "childList" && rec.addedNodes && rec.addedNodes.length) {
+        for (let j = 0; j < rec.addedNodes.length; j += 1) {
+          const node = rec.addedNodes[j];
+          if (!node) continue;
+          if (node.nodeType === 1 && !SKIP_SVG_TAGS.has(node.tagName)) {
+            pendingDirtyNodes.add(node);
+            added = true;
+          } else if (node.nodeType === 3 && node.parentElement && !SKIP_SVG_TAGS.has(node.parentElement.tagName)) {
+            pendingDirtyNodes.add(node.parentElement);
+            added = true;
+          }
+        }
+      }
+    }
+    if (!added || pendingObserverFlush) return;
     pendingObserverFlush = true;
-    const flush = () => {
-      pendingObserverFlush = false;
-      translateUiTree(document.body, getUiLang());
-    };
     if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(flush);
+      requestAnimationFrame(flushDirtyI18nNodes);
     } else {
-      setTimeout(flush, 16);
+      setTimeout(flushDirtyI18nNodes, 16);
     }
   });
   try {

@@ -555,6 +555,7 @@ class TraineeFrontendStructureTests(unittest.TestCase):
             "06-renewable-control.js",
             "07-measurements-commands.js",
             "08-bootstrap.js",
+            "09-ux-enhancements.js",
         ]
         for mod in expected_modules:
             self.assertTrue((web_dir / "js" / mod).is_file(), f"缺少模块文件：{mod}")
@@ -826,6 +827,65 @@ if (translatePhrase("12 台设备", "ru-RU") !== "12 устр.") {
                     continue
                 missing.append(f"{hf.name}: {item}")
         self.assertEqual(missing, [], f"存在未映射 i18n 的静态 HTML 中文文案：{missing[:20]}")
+
+    def test_trainee_cache_version_token_stable_across_seconds_when_paused(self) -> None:
+        """验证学员端暂停态下跨秒调用 cache_version_token 不随墙钟抖动，避免 HTTP 帧缓存失效。"""
+        from unittest.mock import patch
+
+        exchange = trainee_exchange.TraineeRealtimeExchange.__new__(trainee_exchange.TraineeRealtimeExchange)
+        exchange._states_lock = threading.RLock()
+        exchange.frame_age_limit_seconds = 15.0
+        exchange.same_frame_limit_seconds = 30.0
+
+        state = trainee_exchange._ExchangeState(model_id="m1")
+        state.runtime_snapshot = {"clock": {"state": "paused", "absolute_minute": 42.0}}
+        state.received_at = 1000.0
+        state.frame_changed_at = 1000.0
+        state.frame_identity = "frame-42"
+        state.revision = 7
+        state.receive_epoch = 2
+        state.last_error = ""
+        state.consecutive_failures = 0
+        exchange._states = {"m1": state}
+
+        with patch.object(trainee_exchange.time, "time", return_value=1010.0):
+            tok1 = exchange.cache_version_token("m1")
+        with patch.object(trainee_exchange.time, "time", return_value=1060.0):
+            tok2 = exchange.cache_version_token("m1")
+        self.assertIsNotNone(tok1)
+        self.assertEqual(tok1, tok2, "暂停态跨秒不应因 last_frame_age 改变 cache_version_token")
+
+    def test_frontend_trace_history_compaction_bounded(self) -> None:
+        """验证双端 compactTraceHistory 真实执行有界裁剪，避免长时运行内存膨胀。"""
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not available")
+        for rel in (
+            "simulator/simu/web/simulator/js/01-state-core.js",
+            "trainee/simu/web/trainee/js/01-state-core.js",
+        ):
+            src = (REPO_ROOT / rel).read_text(encoding="utf-8")
+            self.assertIn("TRACE_HISTORY_MAX_POINTS", src, f"{rel} 缺少 TRACE_HISTORY_MAX_POINTS 常量")
+            probe = f"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync({str(REPO_ROOT / rel)!r}, "utf8");
+const m = code.match(/const TRACE_HISTORY_MAX_POINTS[\\s\\S]*?function compactTraceHistory\\([\\s\\S]*?\\n\\}}/);
+if (!m) throw new Error("compactTraceHistory not found");
+const ctx = {{ Number, Math, Array, Set }};
+vm.runInNewContext(m[0] + "; globalThis.__res = compactTraceHistory;", ctx);
+const fn = ctx.__res;
+const arr = [];
+for (let i = 0; i < 4200; i += 1) arr.push({{ minute: i, value: i * 0.1 }});
+const out = fn(arr);
+if (out.length > 3600) throw new Error("exceeded bound: " + out.length);
+if (out[out.length - 1].minute !== 4199) throw new Error("tail lost");
+"""
+            res = subprocess.run([node, "-e", probe], capture_output=True, text=True, check=False)
+            self.assertEqual(res.returncode, 0, f"{rel} 裁剪验证失败：{res.stderr}")
 
 
 if __name__ == "__main__":

@@ -343,7 +343,8 @@ function mergeRenewableTrendDelta(current = [], incoming = [], reset = false) {
       merged.push(point);
     }
   });
-  return latestRenewableTrendSegment(merged);
+  const result = latestRenewableTrendSegment(merged);
+  return result.length > 4320 ? result.slice(result.length - 4320) : result;
 }
 
 function mergeRenewableControlLogDelta(current = [], incoming = [], reset = false) {

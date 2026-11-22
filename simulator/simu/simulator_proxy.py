@@ -356,7 +356,7 @@ def make_simulator_proxy_server(
                 source_label=str(payload.get("filename") or "model.e"),
             )
             artifacts = preflight["artifacts"]
-            with manager.lock:
+            with manager.model_operation_lock(name):
                 recovered_dir = helpers._recover_incomplete_model_directory(manager, name)
                 target_id = manager.validate_new_model_name(name)
                 target_dir = manager.models_root / target_id

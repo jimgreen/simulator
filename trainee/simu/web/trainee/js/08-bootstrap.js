@@ -1117,12 +1117,10 @@ if (curveDisplayChart) {
       lastCurveDisplayHandledAt = Date.now();
     }
   };
-  curveDisplayChart.addEventListener("pointermove", (event) => setCurveDisplayCursorFromEvent(event));
-  curveDisplayChart.addEventListener("mousemove", (event) => setCurveDisplayCursorFromEvent(event));
-  curveDisplayChart.addEventListener("pointerleave", hideCurveDisplayCursor);
-  curveDisplayChart.addEventListener("mouseleave", hideCurveDisplayCursor);
-  curveDisplayChart.addEventListener("pointerdown", handleCurveDisplayPointerDown);
-  curveDisplayChart.addEventListener("mousedown", handleCurveDisplayPointerDown);
+  const hasPointer = typeof window !== "undefined" && "PointerEvent" in window;
+  curveDisplayChart.addEventListener(hasPointer ? "pointermove" : "mousemove", (event) => setCurveDisplayCursorFromEvent(event));
+  curveDisplayChart.addEventListener(hasPointer ? "pointerleave" : "mouseleave", hideCurveDisplayCursor);
+  curveDisplayChart.addEventListener(hasPointer ? "pointerdown" : "mousedown", handleCurveDisplayPointerDown);
   curveDisplayChart.addEventListener("click", (event) => {
     if (Date.now() - lastCurveDisplayHandledAt < 160) return;
     handleCurveDisplaySelection(event);

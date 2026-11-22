@@ -521,9 +521,17 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 status=500,
             )
         finally:
-            # 仅在写操作成功返回后清空响应缓存，避免只读 query POST 或失败请求击穿热点缓存。
+            # 仅在写操作成功返回后清空响应缓存与指令/设备补充帧缓存，避免只读 query POST 或失败请求击穿热点缓存。
             if mutated_successfully and path not in _READONLY_POST_PATHS:
                 self._ctx.response_cache.clear()
+                try:
+                    for svc in (self._ctx.manager.list_services() if hasattr(self._ctx.manager, "list_services") else ()):
+                        if hasattr(svc, "_command_signature_cache"):
+                            svc._command_signature_cache = None
+                        if hasattr(svc, "_device_runtime_supplement_cache"):
+                            svc._device_runtime_supplement_cache = None
+                except Exception:
+                    pass
 
     def do_PUT(self) -> None:
         self.do_POST()
@@ -1157,6 +1165,7 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
             getattr(target, "_measurement_delta_seq", 0),
             getattr(target, "_runtime_log_seq", 0),
             getattr(target, "_curve_revision", 0),
+            getattr(target, "_command_mutation_seq", 0),
             len(getattr(target, "command_history", ())),
             bool(getattr(target, "_automatic_runtime_state_invalidated", False)),
             getattr(target, "_remote_adjustment_cycle_seq", 0),
@@ -1394,6 +1403,7 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 cmd_cache_key = (
                     getattr(target.clock, "run_id", 0),
                     getattr(target.clock, "step_count", 0),
+                    getattr(target, "_command_mutation_seq", 0),
                     len(getattr(target, "command_history", ())),
                     getattr(target, "_remote_adjustment_cycle_seq", 0),
                     not self._falsey_query("command_history"),
@@ -1414,7 +1424,8 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                         getattr(target.clock, "run_id", 0),
                         getattr(target.clock, "step_count", 0),
                         target.definition_snapshot.revision,
-                        id(getattr(target, "runtime_stat_book", None)),
+                        getattr(target, "_measurement_delta_seq", 0),
+                        getattr(target, "_command_mutation_seq", 0),
                         len(getattr(target, "command_history", ())),
                         getattr(target, "_remote_adjustment_cycle_seq", 0),
                         bool(periodic_trainee_frame),
@@ -1467,13 +1478,16 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 )
             self._send_cached_json(meas_cache_key, measurements_payload)
         elif path == "/api/measurements/delta":
+            delta_cache_key = self._frame_cache_key(target, "measurements-delta")
+            if self._try_send_cached_json(delta_cache_key):
+                return
             delta_payload = target.measurement_delta(
                 after_seq=self._int_query("after_seq", 0, 0, 2_000_000_000),
                 compact=self._truthy_query("compact"),
             )
             if self._ctx.role == "trainee" or self._truthy_query("trainee_view"):
                 delta_payload = strip_trainee_truth_from_measurement_delta(delta_payload)
-            self._send_json(delta_payload)
+            self._send_cached_json(delta_cache_key, delta_payload)
         elif path == "/api/measurement-history":
             history_payload = target.measurement_history(
                 indices=self._measurement_indices_query(),

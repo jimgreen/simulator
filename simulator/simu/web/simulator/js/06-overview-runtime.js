@@ -340,9 +340,9 @@ function handleOverviewBottomSplitterKeydown(event) {
 function initOverviewBottomSplitter() {
   const splitter = $("overviewBottomSplitter");
   if (!splitter) return;
-  applyOverviewBottomHeight(state.overviewBottomHeight);
   if (splitter.dataset.splitterReady === "true") return;
   splitter.dataset.splitterReady = "true";
+  applyOverviewBottomHeight(state.overviewBottomHeight);
   splitter.addEventListener("pointerdown", beginOverviewBottomSplitterDrag);
   splitter.addEventListener("keydown", handleOverviewBottomSplitterKeydown);
   window.addEventListener("pointermove", handleOverviewBottomSplitterDrag);
@@ -456,9 +456,9 @@ function handleOverviewBottomColumnSplitterKeydown(event) {
 function initOverviewBottomColumnSplitter() {
   const splitter = $("overviewBottomColumnSplitter");
   if (!splitter) return;
-  applyOverviewBottomColumnRatio(state.overviewBottomColumnRatio);
   if (splitter.dataset.splitterReady === "true") return;
   splitter.dataset.splitterReady = "true";
+  applyOverviewBottomColumnRatio(state.overviewBottomColumnRatio);
   splitter.addEventListener("pointerdown", beginOverviewBottomColumnSplitterDrag);
   splitter.addEventListener("keydown", handleOverviewBottomColumnSplitterKeydown);
   window.addEventListener("pointermove", handleOverviewBottomColumnSplitterDrag);
@@ -691,11 +691,11 @@ function renderOverviewActiveCommands(snapshot) {
           <th>本机时刻</th>
           <th>设备</th>
           <th>指令项</th>
-          <th>控制指令</th>
+          <th class="numeric-cell">控制指令</th>
           <th>仿真时刻</th>
           <th>处理状态</th>
-          <th>实时值</th>
-          <th>量测值</th>
+          <th class="numeric-cell">实时值</th>
+          <th class="numeric-cell">量测值</th>
         </tr>
       </thead>
       <tbody>
@@ -887,12 +887,17 @@ function renderSnapshot(snapshot) {
     state.measurementFaults = [...(snapshot.settings?.measurement_faults || [])];
     state.settingsLoaded = true;
   }
-  state.modes = syncModesFromDevices(snapshot.devices || [], [
-    ...(snapshot.settings?.modes || []),
-    ...state.modes,
-  ]);
+  const activePage = currentPageName();
+  if (activePage === "modes" || !state.modes.length) {
+    state.modes = syncModesFromDevices(snapshot.devices || [], [
+      ...(snapshot.settings?.modes || []),
+      ...state.modes,
+    ]);
+  }
   renderActiveSimulatorPage(snapshot);
-  ensureSelectedMeasurementHistory();
+  if (activePage === "measurements") {
+    ensureSelectedMeasurementHistory();
+  }
 }
 
 function appendRuntimeLog(snapshot) {
@@ -1428,6 +1433,11 @@ function renderGridModelParamTable() {
   const container = $("modelParamTable");
   if (!container) return;
   const devices = gridModelDevices();
+  const rev = state.snapshot?.definitions?.revision ?? state.snapshot?.definition_revision ?? 0;
+  const renderKey = `${state.activeModelId}|${rev}|${devices.length}|${state.selectedModelGroup}|${state.selectedModelDevice}|${state.modelSearch}|${state.activeModelParamTab}`;
+  if (container.dataset.renderKey === renderKey && container.childElementCount > 0) {
+    return;
+  }
   const rows = filteredGridModelDevices(devices).map(modelAttributeRecordForDevice);
   const groups = groupedModelAttributeRecords(rows);
   const availableTabs = groups.map(([devType]) => devType);
@@ -1439,6 +1449,7 @@ function renderGridModelParamTable() {
   $("modelParamSummary").textContent = groups.length > 1
     ? `${gridModelFilterLabel()} · ${rows.length}/${devices.length} 台 · ${groups.length} 个分页`
     : `${gridModelFilterLabel()} · ${rows.length}/${devices.length} 台 · ${activeColumnCount} 列属性`;
+  container.dataset.renderKey = `${state.activeModelId}|${rev}|${devices.length}|${state.selectedModelGroup}|${state.selectedModelDevice}|${state.modelSearch}|${state.activeModelParamTab}`;
   if (!devices.length) {
     container.innerHTML = '<div class="empty-state">暂无电网模型数据</div>';
     return;
@@ -2469,13 +2480,13 @@ function renderRuntimeCommandTable(rows, emptyText, virtualRows = { beforeHeight
           <th>设备类型</th>
           <th>模式</th>
           <th>指令项</th>
-          <th>控制指令</th>
+          <th class="numeric-cell">控制指令</th>
           <th>指令来源</th>
           <th>接收本机时刻</th>
           <th>接收仿真时刻</th>
           <th>处理状态</th>
-          <th>实时值</th>
-          <th>量测值</th>
+          <th class="numeric-cell">实时值</th>
+          <th class="numeric-cell">量测值</th>
           <th>操作</th>
         </tr>
       </thead>

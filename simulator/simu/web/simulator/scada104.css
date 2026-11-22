@@ -479,12 +479,17 @@ td.empty {
 
 .pill.is-ok {
   color: var(--green);
-  background: rgba(5, 150, 105, 0.12);
+  background: var(--ok-soft);
 }
 
 .pill.is-warn {
   color: var(--amber);
-  background: rgba(217, 119, 6, 0.14);
+  background: var(--warn-soft);
+}
+
+.pill.is-danger {
+  color: var(--red);
+  background: var(--danger-soft);
 }
 
 .pill.is-off {
@@ -676,7 +681,90 @@ tbody tr.is-selectable {
 }
 
 tbody tr.is-selected {
-  background: rgba(13, 148, 136, 0.1);
+  background: var(--teal-soft);
+}
+
+tbody tr.is-selected td:first-child {
+  box-shadow: inset 3px 0 0 var(--teal);
+}
+
+.tab-btn.is-active {
+  background: var(--teal-soft);
+  border-color: var(--teal);
+  color: var(--teal);
+  font-weight: 600;
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.inline-check input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--teal);
+}
+
+th.is-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+th.is-sortable:hover {
+  color: var(--ink);
+}
+
+th.is-sortable[aria-sort="ascending"]::after {
+  content: " ▲";
+  font-size: 10px;
+  color: var(--teal);
+}
+
+th.is-sortable[aria-sort="descending"]::after {
+  content: " ▼";
+  font-size: 10px;
+  color: var(--teal);
+}
+
+[aria-invalid="true"] {
+  border-color: var(--red) !important;
+  box-shadow: 0 0 0 2px var(--danger-soft);
+}
+
+@media (max-width: 900px) {
+  .card-head {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .search-input {
+    flex: 1 1 160px;
+    width: auto;
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .topbar-inner,
+  main {
+    padding: 10px 12px;
+  }
+  form label {
+    flex: 1 1 100%;
+  }
+  form input,
+  form select,
+  form button.primary {
+    width: 100%;
+  }
 }
 
 .point-meta {

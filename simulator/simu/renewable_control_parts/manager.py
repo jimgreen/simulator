@@ -1777,6 +1777,12 @@ class TraineeRenewableControlManager:
                 trend_normalized=state.trend_normalized,
             )
         self._update_trend(candidate, plan, snapshot)
+        # 限制趋势内存与落盘上限（最多保留 4320 点），防止长时连续仿真内存与 JSONL 无限膨胀。
+        max_trend_points = 4320
+        trimmed_for_cap = False
+        if len(candidate.trend) > max_trend_points:
+            candidate.trend = candidate.trend[-max_trend_points:]
+            trimmed_for_cap = True
         current_last = candidate.trend[-1] if candidate.trend else None
         lifecycle_reset = bool(
             previous_last is not None
@@ -1790,8 +1796,9 @@ class TraineeRenewableControlManager:
         changed = bool(
             len(candidate.trend) != previous_length
             or previous_last != current_last
+            or trimmed_for_cap
         )
-        candidate.persistence_reset = lifecycle_reset or normalized_reset
+        candidate.persistence_reset = lifecycle_reset or normalized_reset or trimmed_for_cap
         candidate.persistence_replace_last = bool(
             changed
             and not candidate.persistence_reset

@@ -543,16 +543,31 @@ class _MeasurementsMixin:
         row["valid"] = 1
         row.setdefault("weight", 1.0)
 
-    def _with_weather_measurements(self, measurements: Mapping[str, Sequence[Mapping[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
+    def _with_weather_measurements(
+        self,
+        measurements: Mapping[str, Sequence[Mapping[str, Any]]],
+        *,
+        in_place: bool = False,
+    ) -> Dict[str, List[Dict[str, Any]]]:
         weather = self._current_weather_values()
         weather_values = {
             meas_type: _to_float(weather.get(weather_key), None)
             for weather_key, _name_suffix, meas_type in WEATHER_MEASUREMENTS
         }
-        normalized: Dict[str, List[Dict[str, Any]]] = {
-            channel: [dict(row) for row in measurements.get(channel, [])]
-            for channel in ("definitions", "real", "scada")
-        }
+        if in_place:
+            normalized = {
+                channel: (
+                    measurements[channel]
+                    if isinstance(measurements.get(channel), list)
+                    else list(measurements.get(channel, []))
+                )
+                for channel in ("definitions", "real", "scada")
+            }
+        else:
+            normalized = {
+                channel: [dict(row) for row in measurements.get(channel, [])]
+                for channel in ("definitions", "real", "scada")
+            }
 
         max_idx = -1
         for rows in normalized.values():
@@ -592,12 +607,27 @@ class _MeasurementsMixin:
                     rows.append(dict(definition_row))
         return normalized
 
-    def _with_signal_measurements(self, measurements: Mapping[str, Sequence[Mapping[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
+    def _with_signal_measurements(
+        self,
+        measurements: Mapping[str, Sequence[Mapping[str, Any]]],
+        *,
+        in_place: bool = False,
+    ) -> Dict[str, List[Dict[str, Any]]]:
         values = self._current_signal_values()
-        normalized: Dict[str, List[Dict[str, Any]]] = {
-            channel: [dict(row) for row in measurements.get(channel, [])]
-            for channel in ("definitions", "real", "scada")
-        }
+        if in_place:
+            normalized = {
+                channel: (
+                    measurements[channel]
+                    if isinstance(measurements.get(channel), list)
+                    else list(measurements.get(channel, []))
+                )
+                for channel in ("definitions", "real", "scada")
+            }
+        else:
+            normalized = {
+                channel: [dict(row) for row in measurements.get(channel, [])]
+                for channel in ("definitions", "real", "scada")
+            }
 
         max_idx = -1
         for rows in normalized.values():
@@ -652,8 +682,16 @@ class _MeasurementsMixin:
             normalized[channel] = rows
         return normalized
 
-    def _with_realtime_measurements(self, measurements: Mapping[str, Sequence[Mapping[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
-        return self._with_signal_measurements(self._with_weather_measurements(measurements))
+    def _with_realtime_measurements(
+        self,
+        measurements: Mapping[str, Sequence[Mapping[str, Any]]],
+        *,
+        in_place: bool = False,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        return self._with_signal_measurements(
+            self._with_weather_measurements(measurements, in_place=in_place),
+            in_place=True,
+        )
 
     def _compiled_measurement_definitions(
         self,
@@ -760,7 +798,10 @@ class _MeasurementsMixin:
                     continue
                 row["weight"] = definition.get("weight", row.get("weight"))
                 row["valid"] = definition.get("valid", row.get("valid"))
-        measurements = self._with_realtime_measurements({"definitions": definitions, "real": real, "scada": scada})
+        measurements = self._with_realtime_measurements(
+            {"definitions": definitions, "real": real, "scada": scada},
+            in_place=True,
+        )
         if self._automatic_runtime_state_invalidated:
             # Before the first successful calculation of a lifecycle, weather
             # and signal projections are definitions only, not valid automatic

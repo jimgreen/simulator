@@ -2114,14 +2114,10 @@ function initCurveEditor() {
       applyCurveDrag(event);
     }
   };
-  canvas.addEventListener("pointerdown", handleCurvePointerDown);
-  canvas.addEventListener("mousedown", handleCurvePointerDown);
-  canvas.addEventListener("pointermove", handleCurvePointerMove);
-  canvas.addEventListener("mousemove", handleCurvePointerMove);
-  canvas.addEventListener("pointerleave", () => {
-    if (!state.isCurveDragging) hideCurveCursor();
-  });
-  canvas.addEventListener("mouseleave", () => {
+  const hasPointer = typeof window !== "undefined" && "PointerEvent" in window;
+  canvas.addEventListener(hasPointer ? "pointerdown" : "mousedown", handleCurvePointerDown);
+  canvas.addEventListener(hasPointer ? "pointermove" : "mousemove", handleCurvePointerMove);
+  canvas.addEventListener(hasPointer ? "pointerleave" : "mouseleave", () => {
     if (!state.isCurveDragging) hideCurveCursor();
   });
   canvas.addEventListener("contextmenu", (event) => {
@@ -2134,10 +2130,14 @@ function initCurveEditor() {
     state.isCurveDragging = false;
     if (wasDragging) renderHourlyTable();
   };
-  window.addEventListener("pointerup", handleCurvePointerUp);
-  window.addEventListener("mouseup", handleCurvePointerUp);
+  window.addEventListener(hasPointer ? "pointerup" : "mouseup", handleCurvePointerUp);
   $("activeCurve").addEventListener("change", (event) => setActiveCurve(event.target.value));
-  window.addEventListener("resize", drawCurves);
+  let curveResizeTimer = null;
+  window.addEventListener("resize", () => {
+    if (currentPageName() !== "curves") return;
+    clearTimeout(curveResizeTimer);
+    curveResizeTimer = setTimeout(drawCurves, 120);
+  });
   table.addEventListener("blur", (event) => {
     if (event.target.matches("[data-index][data-key]")) {
       applyHourlyTableEdit(event.target);
@@ -2163,7 +2163,12 @@ function initRuntimeMonitor() {
   }
   initChartPeriodNavigation("runtimeTrace", runtimeTraceWindowRange, drawRuntimeTraceChart);
   initTraceChartInteractions("runtimeTrace", "runtimeTraceChart", drawRuntimeTraceChart);
-  window.addEventListener("resize", drawRuntimeTraceChart);
+  let runtimeResizeTimer = null;
+  window.addEventListener("resize", () => {
+    if (currentPageName() !== "runtime") return;
+    clearTimeout(runtimeResizeTimer);
+    runtimeResizeTimer = setTimeout(drawRuntimeTraceChart, 120);
+  });
 }
 
 function initMeasurementMonitor() {
@@ -2203,7 +2208,7 @@ async function refresh() {
   try {
     const activePage = currentPageName();
     const snapshot = await refreshSnapshotPayload(activePage);
-    if (state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
+    if (!snapshot || state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
       return;
     }
     const deltaRequests = [];
@@ -2218,6 +2223,7 @@ async function refresh() {
       return;
     }
     state.refreshConsecutiveFailures = 0;
+    state._lastRefreshErrorMsg = "";
     renderSnapshot(snapshot);
   } catch (error) {
     if (state.activeModelId !== requestedModelId || Number(state.modelSwitchEpoch || 0) !== switchEpoch) {
@@ -2225,7 +2231,11 @@ async function refresh() {
     }
     state.refreshConsecutiveFailures = (Number(state.refreshConsecutiveFailures || 0)) + 1;
     const retrySec = Math.round(refreshSchedulerIntervalMs() / 1000);
-    console.error("模拟台快照刷新失败", error);
+    const errMsg = String(error?.message || error);
+    if (state._lastRefreshErrorMsg !== errMsg) {
+      state._lastRefreshErrorMsg = errMsg;
+      console.error("模拟台快照刷新失败", error);
+    }
     $("simState").textContent = "offline";
     if (typeof syncClockTriggerSummary === "function") syncClockTriggerSummary("offline");
     const solverInfo = $("solverInfo");

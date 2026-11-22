@@ -601,6 +601,12 @@ function renderTraineeModelParamTable(snapshot = state.snapshot || {}) {
   const container = $("modelParamTable");
   if (!container) return;
   const devices = definedModelDevices(snapshot);
+  const rev = snapshot?.definitions?.revision ?? snapshot?.definition_revision ?? 0;
+  const filterKey = `${state.modelFilter?.group || ""}|${state.modelFilter?.device || ""}|${state.modelFilter?.search || ""}`;
+  const renderKey = `${state.activeModelId}|${rev}|${devices.length}|${filterKey}|${state.activeModelParamTab}`;
+  if (container.dataset.renderKey === renderKey && container.childElementCount > 0) {
+    return;
+  }
   const filtered = filteredDevices(devices, state.modelFilter);
   const groups = groupedModelAttributeRecords(filtered.map(modelAttributeRecordForDevice));
   const availableTabs = groups.map(([devType]) => devType);
@@ -610,6 +616,7 @@ function renderTraineeModelParamTable(snapshot = state.snapshot || {}) {
   $("modelParamSummary").textContent = groups.length > 1
     ? `${modelFilterLabel()} · ${filtered.length}/${devices.length} 台 · ${groups.length} 个分页`
     : `${modelFilterLabel()} · ${filtered.length}/${devices.length} 台 · ${activeColumns} 列属性`;
+  container.dataset.renderKey = `${state.activeModelId}|${rev}|${devices.length}|${filterKey}|${state.activeModelParamTab}`;
   if (!devices.length) {
     container.innerHTML = '<div class="empty-state">暂无电网模型数据</div>';
     return;
@@ -1018,7 +1025,7 @@ function renderMeasurements(snapshot = state.snapshot || {}) {
     <div class="measurement-type-tab-page is-active">
     <div class="virtual-table-scroll" data-virtual-table="measurement">
     <table class="measurement-compare-table">
-      <thead><tr><th>idx</th><th>量测名</th><th>设备</th><th>类型</th><th>量测值</th><th>状态</th></tr></thead>
+      <thead><tr><th class="numeric-cell">idx</th><th>量测名</th><th>设备</th><th>类型</th><th class="numeric-cell">量测值</th><th>状态</th></tr></thead>
       <tbody>
         ${renderVirtualSpacerRow(virtualRows.beforeHeight, 6)}
         ${virtualRows.rows.map((item) => {
@@ -1279,10 +1286,11 @@ function selectedMeasurementHistoryRow() {
 }
 
 function ensureSelectedMeasurementHistory() {
+  if (currentPageName() !== "measurements") return;
   const row = selectedMeasurementHistoryRow();
   if (!row) return;
   ensureMeasurementHistoryForRow(row).then((changed) => {
-    if (changed && measurementKey(row) === state.selectedMeasurementKey) {
+    if (changed && measurementKey(row) === state.selectedMeasurementKey && currentPageName() === "measurements") {
       drawMeasurementTraceChart();
     }
   });
@@ -1698,7 +1706,13 @@ function commandTraceWindowPoints(range = commandTraceWindowRange()) {
 function appendCommandTrace(snapshot) {
   const clock = snapshot.clock || {};
   if (isSimulationFrozenSnapshot(snapshot)) return false;
-  if (Number(clock.step_count ?? 0) <= 0) return;
+  const stepCount = Number(clock.step_count ?? 0);
+  if (stepCount <= 0) return false;
+  const traceKey = `${clock.run_id ?? 0}|${stepCount}|${clock.absolute_minute ?? clock.minute ?? ""}|${pending.run_status.size}|${pending.set_values.size}`;
+  if (state.lastCommandTraceKey === traceKey && state.commandTraceHistory.length > 0) {
+    return false;
+  }
+  state.lastCommandTraceKey = traceKey;
   const devices = controlDefinitionDevices(snapshot);
   const point = {
     minute: Number(clock.absolute_minute ?? clock.minute ?? state.commandTraceHistory.length) || 0,
@@ -2393,7 +2407,7 @@ function renderTraineeCommandTable(rows, activeTab, emptyText, virtualRows = { b
           <col class="remote-adjustment-time-col" />
           <col class="remote-adjustment-action-col" />
         </colgroup>
-        <thead><tr><th>遥调名称</th><th>量测值</th><th>控制值</th><th>指令来源</th><th>处理状态</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
+        <thead><tr><th>遥调名称</th><th class="numeric-cell">量测值</th><th class="numeric-cell">控制值</th><th>指令来源</th><th>处理状态</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
         <tbody>
           ${renderVirtualSpacerRow(virtualRows.beforeHeight, columnCount)}
           ${renderTraineeCommandRows(rows, activeTab)}

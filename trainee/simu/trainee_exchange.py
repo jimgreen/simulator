@@ -1402,6 +1402,7 @@ class TraineeRealtimeExchange:
                         else None
                     ),
                     wall_time=datetime.fromtimestamp(published_at).isoformat(timespec="seconds"),
+                    limit=3600,
                 )
             state.received_at = published_at
             state.last_success_at = published_at
@@ -2724,6 +2725,7 @@ class TraineeRealtimeExchange:
                         else []
                     )
                 runtime_definitions = service.measurement_runtime_definitions(definitions)
+                reused_previous_device_runtime = False
                 if (type(device_runtime_frame) is dict or isinstance(device_runtime_frame, Mapping)):
                     frame_signature = str(
                         device_runtime_frame.get("runtime_signature", "") or ""
@@ -2766,6 +2768,7 @@ class TraineeRealtimeExchange:
                             )
                         current_payload["devices"] = previous_devices
                         current_payload["device_states"] = previous_states
+                        reused_previous_device_runtime = True
                         next_remote_device_runtime_signature = advertised_device_runtime_signature
                     else:
                         raise DeviceRuntimeFrameMismatchError(
@@ -2817,11 +2820,24 @@ class TraineeRealtimeExchange:
                     next_remote_command_signature = advertised_command_signature
                 elif (type(commands_payload) is dict or isinstance(commands_payload, Mapping)):
                     next_remote_command_signature = command_payload_signature(commands_payload)
-                _hydrate_measurement_backed_device_runtime(
-                    current_payload.get("devices"),
-                    current_payload.get("device_states"),
-                    current_payload.get("measurements"),
-                )
+                # 维护已发布快照不可变契约：复用旧设备列表且量测未变时跳过 hydrate；量测变化时先浅拷贝再 hydrate，防止并发迭代撕裂。
+                if not (reused_previous_device_runtime and measurement_frame_unchanged):
+                    if reused_previous_device_runtime:
+                        cur_devs = current_payload.get("devices")
+                        cur_states = current_payload.get("device_states")
+                        if isinstance(cur_devs, list):
+                            current_payload["devices"] = [
+                                dict(row) if isinstance(row, Mapping) else row for row in cur_devs
+                            ]
+                        if isinstance(cur_states, list):
+                            current_payload["device_states"] = [
+                                dict(row) if isinstance(row, Mapping) else row for row in cur_states
+                            ]
+                    _hydrate_measurement_backed_device_runtime(
+                        current_payload.get("devices"),
+                        current_payload.get("device_states"),
+                        current_payload.get("measurements"),
+                    )
                 _restore_local_runtime_derivatives(service, current_payload)
             except (
                 CommandFrameMismatchError,
@@ -3198,6 +3214,7 @@ class TraineeRealtimeExchange:
             and same_frame_limit > 0.0
             and same_frame_duration > same_frame_limit
         )
+        # 移除每秒递增的 int(age)，避免暂停态 HTTP 帧缓存与 304 协商每秒强行失效；仅保留离散状态跃迁位。
         return (
             revision,
             receive_epoch,
@@ -3206,7 +3223,7 @@ class TraineeRealtimeExchange:
             consecutive_failures,
             frame_too_old,
             frame_frozen,
-            int(age) if ready else 0,
+            ready,
         )
 
     def abort_inflight_io(self) -> None:
