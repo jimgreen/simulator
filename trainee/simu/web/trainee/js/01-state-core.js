@@ -1980,9 +1980,82 @@ function showUiToast(message, level = "info", durationMs = 3600) {
   }
 }
 
+const UI_THEME_PRESETS = [
+  { id: "minimalist-light", label: "极简明亮", scheme: "light" },
+  { id: "precision-dark", label: "精密暗黑", scheme: "dark" },
+  { id: "bento-grid", label: "便当盒网格", scheme: "light" },
+  { id: "glassmorphism", label: "毛玻璃拟态", scheme: "dark" },
+  { id: "editorial", label: "编辑杂志", scheme: "light" },
+  { id: "neo-brutalism", label: "新粗野主义", scheme: "light" },
+  { id: "sci-fi", label: "科幻战情", scheme: "dark" },
+];
+
+const UI_THEME_MAP = new Map(UI_THEME_PRESETS.map((item) => [item.id, item]));
+
+function normalizeUiTheme(raw) {
+  if (raw === "dark") return "precision-dark";
+  if (raw === "light") return "minimalist-light";
+  return UI_THEME_MAP.has(raw) ? raw : "minimalist-light";
+}
+
+function currentUiTheme() {
+  return normalizeUiTheme(document.documentElement.dataset.theme);
+}
+
+function applyUiTheme(themeId, { persist = true, notify = false, redraw = true } = {}) {
+  const resolved = normalizeUiTheme(themeId);
+  const meta = UI_THEME_MAP.get(resolved) || UI_THEME_PRESETS[0];
+  document.documentElement.dataset.theme = meta.id;
+  document.documentElement.dataset.colorScheme = meta.scheme;
+  const selector = $("themeSelector");
+  if (selector && selector.value !== meta.id) {
+    selector.value = meta.id;
+  }
+  if (persist) {
+    try {
+      localStorage.setItem("polarUiTheme", meta.id);
+    } catch (_e) {}
+  }
+  if (redraw) {
+    redrawActiveTraineeCharts();
+  }
+  if (notify) {
+    showUiToast(`已切换至「${meta.label}」风格`, "info", 2000);
+  }
+  return meta;
+}
+
 function chartThemePalette() {
-  const dark = document.documentElement.dataset.theme === "dark";
-  if (dark) {
+  const theme = currentUiTheme();
+  if (theme === "sci-fi") {
+    return {
+      bg: "#061020",
+      grid: "rgba(0, 229, 255, 0.14)",
+      gridSubtle: "rgba(0, 229, 255, 0.07)",
+      axis: "rgba(0, 229, 255, 0.34)",
+      text: "#7da2c4",
+      markerFill: "#061020",
+      tooltipBg: "rgba(8, 17, 33, 0.96)",
+      tooltipBorder: "rgba(0, 229, 255, 0.42)",
+      tooltipTitle: "#e6f7ff",
+      tooltipText: "#bae6fd",
+    };
+  }
+  if (theme === "glassmorphism") {
+    return {
+      bg: "#0f172a",
+      grid: "rgba(203, 213, 225, 0.14)",
+      gridSubtle: "rgba(203, 213, 225, 0.08)",
+      axis: "rgba(148, 163, 184, 0.34)",
+      text: "#cbd5e1",
+      markerFill: "#0f172a",
+      tooltipBg: "rgba(15, 23, 42, 0.94)",
+      tooltipBorder: "rgba(96, 165, 250, 0.42)",
+      tooltipTitle: "#f8fafc",
+      tooltipText: "#e2e8f0",
+    };
+  }
+  if (theme === "precision-dark") {
     return {
       bg: "#0f172a",
       grid: "rgba(148, 163, 184, 0.16)",
@@ -1996,17 +2069,59 @@ function chartThemePalette() {
       tooltipText: "#cbd5e1",
     };
   }
+  if (theme === "editorial") {
+    return {
+      bg: "#faf9f6",
+      grid: "#e4e4e7",
+      gridSubtle: "#f0eee9",
+      axis: "#a1a1aa",
+      text: "#52525b",
+      markerFill: "#ffffff",
+      tooltipBg: "rgba(255, 255, 255, 0.98)",
+      tooltipBorder: "#d4d4d8",
+      tooltipTitle: "#18181b",
+      tooltipText: "#3f3f46",
+    };
+  }
+  if (theme === "neo-brutalism") {
+    return {
+      bg: "#fffdf7",
+      grid: "rgba(9, 9, 11, 0.18)",
+      gridSubtle: "rgba(9, 9, 11, 0.08)",
+      axis: "#09090b",
+      text: "#27272a",
+      markerFill: "#fef9c3",
+      tooltipBg: "#ffffff",
+      tooltipBorder: "#09090b",
+      tooltipTitle: "#09090b",
+      tooltipText: "#27272a",
+    };
+  }
+  if (theme === "bento-grid") {
+    return {
+      bg: "#fbfbfd",
+      grid: "#e5e5ea",
+      gridSubtle: "#f0f0f5",
+      axis: "#c7c7cc",
+      text: "#6e6e73",
+      markerFill: "#ffffff",
+      tooltipBg: "rgba(255, 255, 255, 0.97)",
+      tooltipBorder: "rgba(0, 0, 0, 0.12)",
+      tooltipTitle: "#1d1d1f",
+      tooltipText: "#3a3a3c",
+    };
+  }
   return {
     bg: "#fcfeff",
-    grid: "#d8e1e5",
-    gridSubtle: "#e7eef1",
-    axis: "#c9d6dc",
-    text: "#63717a",
+    grid: "#e2e8f0",
+    gridSubtle: "#f1f5f9",
+    axis: "#cbd5e1",
+    text: "#64748b",
     markerFill: "#ffffff",
     tooltipBg: "rgba(255, 255, 255, 0.96)",
-    tooltipBorder: "rgba(171, 190, 198, 0.9)",
-    tooltipTitle: "#1f3037",
-    tooltipText: "#314850",
+    tooltipBorder: "rgba(148, 163, 184, 0.6)",
+    tooltipTitle: "#0f172a",
+    tooltipText: "#334155",
   };
 }
 
@@ -2073,19 +2188,23 @@ function confirmDangerousAction({
 }
 
 function initPrecisionUiChrome() {
-  const themeBtn = $("themeToggleButton");
-  if (themeBtn) {
-    themeBtn.addEventListener("click", () => {
-      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-      if (next === "dark") document.documentElement.dataset.theme = "dark";
-      else delete document.documentElement.dataset.theme;
-      try {
-        localStorage.setItem("polarUiTheme", next);
-      } catch (_e) {}
-      redrawActiveTraineeCharts();
-      showUiToast(next === "dark" ? "已切换至控制室深色模式" : "已切换至日间浅色模式", "info", 2200);
+  const themeSelector = $("themeSelector");
+  let initialTheme = currentUiTheme();
+  try {
+    const stored = localStorage.getItem("polarUiTheme");
+    if (stored) initialTheme = normalizeUiTheme(stored);
+  } catch (_e) {}
+  applyUiTheme(initialTheme, { persist: false, notify: false, redraw: false });
+  if (themeSelector) {
+    themeSelector.addEventListener("change", () => {
+      applyUiTheme(themeSelector.value, { persist: true, notify: true, redraw: true });
     });
   }
+  window.addEventListener("storage", (event) => {
+    if (event.key === "polarUiTheme") {
+      applyUiTheme(event.newValue, { persist: false, notify: false, redraw: true });
+    }
+  });
   // 为所有含左侧设备树的页面注入一键折叠/展开按钮，扩大表格与曲线主可视区。
   document.querySelectorAll(".device-tree-panel").forEach((aside) => {
     const head = aside.querySelector(".panel-head");

@@ -634,6 +634,39 @@ for (const p of process.argv.slice(1)) runBundle(p);
         )
         self.assertEqual(proc.returncode, 0, f"前端模块顺序加载失败：\n{proc.stderr}")
 
+    def test_all_web_pages_expose_all_seven_style_presets(self) -> None:
+        """三套 Web 页面均应完整列出全部 7 套风格预设，CSS 完整实现对应 data-theme。"""
+        expected_themes = (
+            "minimalist-light",
+            "precision-dark",
+            "bento-grid",
+            "glassmorphism",
+            "editorial",
+            "neo-brutalism",
+            "sci-fi",
+        )
+        pages = [
+            (
+                REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "index.html",
+                REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "styles.css",
+            ),
+            (
+                REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "index.html",
+                REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "styles.css",
+            ),
+            (
+                REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "scada104.html",
+                REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "scada104.css",
+            ),
+        ]
+        for html_path, css_path in pages:
+            html_text = html_path.read_text(encoding="utf-8")
+            css_text = css_path.read_text(encoding="utf-8")
+            self.assertIn('id="themeSelector"', html_text, f"{html_path.name} 缺少风格选择器")
+            for theme_id in expected_themes:
+                self.assertIn(f'value="{theme_id}"', html_text, f"{html_path.name} 缺少风格选项 {theme_id}")
+                self.assertIn(f'[data-theme="{theme_id}"]', css_text, f"{css_path.name} 缺少风格样式 {theme_id}")
+
 
 if __name__ == "__main__":
     unittest.main()

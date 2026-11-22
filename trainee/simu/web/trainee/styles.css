@@ -6828,42 +6828,37 @@ body {
   flex-shrink: 0;
 }
 
-.theme-toggle-button {
-  width: 34px;
-  height: 34px;
-  padding: 0;
+.theme-switcher {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.theme-switcher-label {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.theme-select {
+  height: 32px;
+  min-width: 108px;
+  padding: 0 8px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--line-strong);
   background: var(--surface-subtle);
-  color: var(--muted);
-  cursor: pointer;
-  transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
-}
-
-.theme-toggle-button:hover {
-  background: var(--surface-hover);
   color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.theme-select:hover {
+  background: var(--surface-hover);
   border-color: var(--teal);
-}
-
-.theme-toggle-button svg {
-  width: 16px;
-  height: 16px;
-}
-
-.theme-toggle-button .theme-icon-sun {
-  display: none;
-}
-
-:root[data-theme="dark"] .theme-toggle-button .theme-icon-moon {
-  display: none;
-}
-
-:root[data-theme="dark"] .theme-toggle-button .theme-icon-sun {
-  display: block;
 }
 
 .topbar-alert-badge {
@@ -7244,115 +7239,461 @@ dialog.danger-confirm-dialog::backdrop {
 }
 
 /* ==========================================================================
-   控制室深色模式 (Control Room Dark Theme)
+   全 7 套官方视觉风格预设体系 (Web UI Design Style Presets)
+   支持：极简明亮 / 精密暗黑 / 便当盒网格 / 毛玻璃拟态 / 编辑杂志 / 新粗野主义 / 科幻战情
    ========================================================================== */
-:root[data-theme="dark"] {
+:root,
+:root[data-theme="minimalist-light"] {
+  --bg: #f8fafc;
+  --bg-image: none;
+  --surface: #ffffff;
+  --surface-subtle: #f1f5f9;
+  --surface-hover: #eff6ff;
+  --table-stripe: #f8fafc;
+  --table-hover: #eff6ff;
+  --ink: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --teal: #2563eb;
+  --teal-dark: #1d4ed8;
+  --teal-soft: rgba(37, 99, 235, 0.1);
+  --btn-primary-ink: #ffffff;
+  --green: #0d9488;
+  --ok-soft: rgba(13, 148, 136, 0.12);
+  --amber: #d97706;
+  --warn-soft: rgba(217, 119, 6, 0.13);
+  --red: #dc2626;
+  --danger-soft: rgba(220, 38, 38, 0.1);
+  --blue: #2563eb;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 14px;
+  --shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 1px 2px rgba(15, 23, 42, 0.02);
+  --shadow-modal: 0 20px 50px rgba(15, 23, 42, 0.22);
+  --font-heading: var(--font-sans);
+  --card-border-width: 1px;
+  color-scheme: light;
+}
+
+:root[data-theme="precision-dark"] {
   --bg: #0b0f19;
+  --bg-image: none;
   --surface: #111827;
-  --surface-subtle: #161e2e;
-  --surface-hover: #1e293b;
-  --ink: #f1f5f9;
+  --surface-subtle: #1e293b;
+  --surface-hover: #243247;
+  --table-stripe: #162032;
+  --table-hover: #1e293b;
+  --ink: #f8fafc;
   --muted: #94a3b8;
-  --line: rgba(255, 255, 255, 0.09);
+  --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.16);
-  --teal: #2dd4bf;
-  --teal-dark: #14b8a6;
-  --teal-soft: rgba(45, 212, 191, 0.14);
-  --amber: #fbbf24;
-  --red: #fb7185;
+  --teal: #38bdf8;
+  --teal-dark: #0ea5e9;
+  --teal-soft: rgba(56, 189, 248, 0.14);
+  --btn-primary-ink: #07131f;
   --green: #34d399;
+  --ok-soft: rgba(52, 211, 153, 0.14);
+  --amber: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, 0.15);
+  --red: #fb7185;
+  --danger-soft: rgba(251, 113, 133, 0.15);
   --blue: #38bdf8;
-  --shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
   --shadow-modal: 0 24px 60px rgba(0, 0, 0, 0.6);
+  --font-heading: var(--font-sans);
+  --card-border-width: 1px;
   color-scheme: dark;
 }
 
-:root[data-theme="dark"] .topbar,
-:root[data-theme="dark"] .page-nav,
-:root[data-theme="dark"] .panel,
-:root[data-theme="dark"] dialog,
-:root[data-theme="dark"] .remote-control-form,
-:root[data-theme="dark"] .diagram-tooltip,
-:root[data-theme="dark"] .diagram-context-menu,
-:root[data-theme="dark"] .model-context-menu {
+:root[data-theme="bento-grid"] {
+  --bg: #f5f5f7;
+  --bg-image: none;
+  --surface: #ffffff;
+  --surface-subtle: #ebebf0;
+  --surface-hover: #e5e5ec;
+  --table-stripe: #f7f7fa;
+  --table-hover: #ebf4ff;
+  --ink: #1d1d1f;
+  --muted: #6e6e73;
+  --line: rgba(0, 0, 0, 0.06);
+  --line-strong: rgba(0, 0, 0, 0.12);
+  --teal: #0071e3;
+  --teal-dark: #0077ed;
+  --teal-soft: rgba(0, 113, 227, 0.11);
+  --btn-primary-ink: #ffffff;
+  --green: #16a34a;
+  --ok-soft: rgba(22, 163, 74, 0.12);
+  --amber: #d97706;
+  --warn-soft: rgba(217, 119, 6, 0.13);
+  --red: #dc2626;
+  --danger-soft: rgba(220, 38, 38, 0.11);
+  --blue: #0071e3;
+  --radius-sm: 14px;
+  --radius-md: 20px;
+  --radius-lg: 22px;
+  --shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+  --shadow-modal: 0 24px 60px rgba(0, 0, 0, 0.16);
+  --font-heading: var(--font-sans);
+  --card-border-width: 1px;
+  color-scheme: light;
+}
+
+:root[data-theme="glassmorphism"] {
+  --bg: #0f172a;
+  --bg-image: radial-gradient(circle at 15% 20%, #1e293b 0%, #0f172a 60%, #090d16 100%);
+  --surface: rgba(255, 255, 255, 0.07);
+  --surface-subtle: rgba(255, 255, 255, 0.11);
+  --surface-hover: rgba(255, 255, 255, 0.16);
+  --table-stripe: rgba(255, 255, 255, 0.04);
+  --table-hover: rgba(96, 165, 250, 0.14);
+  --ink: #f8fafc;
+  --muted: #cbd5e1;
+  --line: rgba(255, 255, 255, 0.14);
+  --line-strong: rgba(255, 255, 255, 0.22);
+  --teal: #60a5fa;
+  --teal-dark: #3b82f6;
+  --teal-soft: rgba(96, 165, 250, 0.18);
+  --btn-primary-ink: #07131f;
+  --green: #34d399;
+  --ok-soft: rgba(52, 211, 153, 0.16);
+  --amber: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, 0.16);
+  --red: #fb7185;
+  --danger-soft: rgba(251, 113, 133, 0.16);
+  --blue: #60a5fa;
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 18px;
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.55);
+  --font-heading: var(--font-sans);
+  --card-border-width: 1px;
+  color-scheme: dark;
+}
+
+:root[data-theme="editorial"] {
+  --bg: #faf9f6;
+  --bg-image: none;
+  --surface: #ffffff;
+  --surface-subtle: #f4f3ee;
+  --surface-hover: #efece5;
+  --table-stripe: #faf9f6;
+  --table-hover: #f5f1eb;
+  --ink: #18181b;
+  --muted: #52525b;
+  --line: #e4e4e7;
+  --line-strong: #d4d4d8;
+  --teal: #9f1239;
+  --teal-dark: #881337;
+  --teal-soft: rgba(159, 18, 57, 0.1);
+  --btn-primary-ink: #ffffff;
+  --green: #15803d;
+  --ok-soft: rgba(21, 128, 61, 0.11);
+  --amber: #b45309;
+  --warn-soft: rgba(180, 83, 9, 0.12);
+  --red: #b91c1c;
+  --danger-soft: rgba(185, 28, 28, 0.11);
+  --blue: #1d4ed8;
+  --radius-sm: 2px;
+  --radius-md: 2px;
+  --radius-lg: 2px;
+  --shadow: none;
+  --shadow-modal: 0 12px 32px rgba(24, 24, 27, 0.16);
+  --font-heading: "Georgia", "Noto Serif SC", "Songti SC", serif;
+  --card-border-width: 1px;
+  color-scheme: light;
+}
+
+:root[data-theme="neo-brutalism"] {
+  --bg: #fffdf7;
+  --bg-image: none;
+  --surface: #ffffff;
+  --surface-subtle: #fef9c3;
+  --surface-hover: #fef08a;
+  --table-stripe: #fffbeb;
+  --table-hover: #fef08a;
+  --ink: #09090b;
+  --muted: #3f3f46;
+  --line: #09090b;
+  --line-strong: #09090b;
+  --teal: #facc15;
+  --teal-dark: #eab308;
+  --teal-soft: #fef08a;
+  --btn-primary-ink: #09090b;
+  --green: #15803d;
+  --ok-soft: #dcfce7;
+  --amber: #b45309;
+  --warn-soft: #fef3c7;
+  --red: #dc2626;
+  --danger-soft: #fee2e2;
+  --blue: #1d4ed8;
+  --radius-sm: 6px;
+  --radius-md: 6px;
+  --radius-lg: 6px;
+  --shadow: 4px 4px 0px #09090b;
+  --shadow-modal: 6px 6px 0px #09090b;
+  --font-heading: var(--font-sans);
+  --card-border-width: 2px;
+  color-scheme: light;
+}
+
+:root[data-theme="sci-fi"] {
+  --bg: #040812;
+  --bg-image:
+    linear-gradient(rgba(0, 229, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 229, 255, 0.035) 1px, transparent 1px);
+  --surface: #081121;
+  --surface-subtle: #0d1b33;
+  --surface-hover: #102444;
+  --table-stripe: #0a162b;
+  --table-hover: #102444;
+  --ink: #e6f7ff;
+  --muted: #7da2c4;
+  --line: rgba(0, 229, 255, 0.22);
+  --line-strong: rgba(0, 229, 255, 0.36);
+  --teal: #00e5ff;
+  --teal-dark: #38f2ff;
+  --teal-soft: rgba(0, 229, 255, 0.14);
+  --btn-primary-ink: #04101b;
+  --green: #00e6a8;
+  --ok-soft: rgba(0, 230, 168, 0.14);
+  --amber: #ffb020;
+  --warn-soft: rgba(255, 176, 32, 0.15);
+  --red: #ff4d6d;
+  --danger-soft: rgba(255, 77, 109, 0.16);
+  --blue: #00e5ff;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 6px;
+  --shadow: 0 0 0 1px rgba(0, 229, 255, 0.08), 0 8px 24px rgba(0, 8, 24, 0.55);
+  --shadow-modal: 0 0 0 1px rgba(0, 229, 255, 0.28), 0 24px 64px rgba(0, 4, 16, 0.78);
+  --font-heading: var(--font-sans);
+  --card-border-width: 1px;
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--bg);
+  background-image: var(--bg-image);
+}
+
+:root[data-theme="sci-fi"] body {
+  background-size: 28px 28px;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-heading);
+}
+
+.panel {
+  border-width: var(--card-border-width);
+}
+
+table tbody tr:nth-child(even) {
+  background: var(--table-stripe);
+}
+
+table tbody tr:hover {
+  background: var(--table-hover);
+}
+
+/* 暗黑系公共防穿帮底座（precision-dark / glassmorphism / sci-fi） */
+:root[data-color-scheme="dark"] .topbar,
+:root[data-color-scheme="dark"] .page-nav,
+:root[data-color-scheme="dark"] .panel,
+:root[data-color-scheme="dark"] dialog,
+:root[data-color-scheme="dark"] .remote-control-form,
+:root[data-color-scheme="dark"] .diagram-tooltip,
+:root[data-color-scheme="dark"] .diagram-context-menu,
+:root[data-color-scheme="dark"] .model-context-menu {
   background: var(--surface);
   color: var(--ink);
   border-color: var(--line-strong);
 }
 
-:root[data-theme="dark"] .clock-readout,
-:root[data-theme="dark"] .overview-status-metrics > div,
-:root[data-theme="dark"] .energy-device-card,
-:root[data-theme="dark"] .energy-bus-card,
-:root[data-theme="dark"] .energy-converter-card,
-:root[data-theme="dark"] .renewable-kpi-card,
-:root[data-theme="dark"] .renewable-metric-card,
-:root[data-theme="dark"] .renewable-control-summary-card,
-:root[data-theme="dark"] .advanced-solver-params,
-:root[data-theme="dark"] .diagram-tooltip-head,
-:root[data-theme="dark"] .panel-header,
-:root[data-theme="dark"] .tree-panel,
-:root[data-theme="dark"] .filter-bar {
+:root[data-color-scheme="dark"] .clock-readout,
+:root[data-color-scheme="dark"] .overview-status-metrics > div,
+:root[data-color-scheme="dark"] .energy-device-card,
+:root[data-color-scheme="dark"] .energy-bus-card,
+:root[data-color-scheme="dark"] .energy-converter-card,
+:root[data-color-scheme="dark"] .renewable-kpi-card,
+:root[data-color-scheme="dark"] .renewable-metric-card,
+:root[data-color-scheme="dark"] .renewable-control-summary-card,
+:root[data-color-scheme="dark"] .advanced-solver-params,
+:root[data-color-scheme="dark"] .diagram-tooltip-head,
+:root[data-color-scheme="dark"] .panel-header,
+:root[data-color-scheme="dark"] .panel-head,
+:root[data-color-scheme="dark"] .tree-panel,
+:root[data-color-scheme="dark"] .filter-bar,
+:root[data-color-scheme="dark"] .runtime-log-wrap {
   background: var(--surface-subtle);
   color: var(--ink);
   border-color: var(--line);
 }
 
-:root[data-theme="dark"] input,
-:root[data-theme="dark"] select,
-:root[data-theme="dark"] textarea {
+:root[data-color-scheme="dark"] input,
+:root[data-color-scheme="dark"] select,
+:root[data-color-scheme="dark"] textarea {
   background: #0f172a;
   color: var(--ink);
   border-color: var(--line-strong);
 }
 
-:root[data-theme="dark"] button:not(.primary):not(.danger-button):not(.is-active):not(.topbar-alert-badge):not(.is-running) {
+:root[data-color-scheme="dark"] select option {
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+:root[data-color-scheme="dark"] button:not(.primary):not(.danger-button):not(.is-active):not(.topbar-alert-badge):not(.is-running):not(.ui-toast-close) {
   background: var(--surface-subtle);
   color: var(--ink);
   border-color: var(--line-strong);
 }
 
-:root[data-theme="dark"] button:not(.primary):not(.danger-button):not(.is-active):not(.topbar-alert-badge):not(.is-running):hover {
+:root[data-color-scheme="dark"] button:not(.primary):not(.danger-button):not(.is-active):not(.topbar-alert-badge):not(.is-running):not(.ui-toast-close):hover {
   background: var(--surface-hover);
   border-color: var(--teal);
+  color: var(--ink);
 }
 
-:root[data-theme="dark"] button.primary {
-  background: #0d9488;
-  border-color: #0d9488;
-  color: #ffffff;
+:root[data-color-scheme="dark"] button.primary {
+  background: var(--teal);
+  border-color: var(--teal);
+  color: var(--btn-primary-ink);
+  font-weight: 600;
 }
 
-:root[data-theme="dark"] button.primary:hover {
-  background: #14b8a6;
+:root[data-color-scheme="dark"] button.primary:hover {
+  background: var(--teal-dark);
+  border-color: var(--teal-dark);
 }
 
-:root[data-theme="dark"] .page-nav button.is-active {
+:root[data-color-scheme="dark"] .page-nav button.is-active {
   background: var(--teal-soft);
   color: var(--teal);
-  border-color: rgba(45, 212, 191, 0.32);
+  border-color: var(--line-strong);
 }
 
-:root[data-theme="dark"] .renewable-control-log-detail-steps li.is-section {
-  background: rgba(45, 212, 191, 0.1);
-  color: #e2f8f5;
+:root[data-color-scheme="dark"] .renewable-control-log-detail-steps li.is-section {
+  background: var(--teal-soft);
+  color: var(--ink);
   border-left-color: var(--teal);
 }
 
-:root[data-theme="dark"] .renewable-control-log-detail-steps li.is-subitem {
-  color: #cbd5e1;
-  border-left-color: rgba(255, 255, 255, 0.14);
+:root[data-color-scheme="dark"] .renewable-control-log-detail-steps li.is-subitem {
+  color: var(--muted);
+  border-left-color: var(--line-strong);
 }
 
-:root[data-theme="dark"] .renewable-control-log-detail-steps li.is-warning {
-  background: rgba(251, 191, 36, 0.12);
-  color: #fde68a;
+:root[data-color-scheme="dark"] .renewable-control-log-detail-steps li.is-warning {
+  background: var(--warn-soft);
+  color: var(--amber);
   border-left-color: var(--amber);
 }
 
-:root[data-theme="dark"] canvas {
+:root[data-color-scheme="dark"] canvas {
   border-radius: var(--radius-sm);
-  filter: invert(0.9) hue-rotate(180deg);
+}
+
+/* 便当盒网格风专属质感 */
+:root[data-theme="bento-grid"] button,
+:root[data-theme="bento-grid"] .page-nav button,
+:root[data-theme="bento-grid"] .page-nav a {
+  border-radius: 9999px;
+}
+
+:root[data-theme="bento-grid"] .panel {
+  border-radius: 20px;
+}
+
+/* 毛玻璃拟态专属质感 */
+:root[data-theme="glassmorphism"] .topbar,
+:root[data-theme="glassmorphism"] .page-nav,
+:root[data-theme="glassmorphism"] .panel,
+:root[data-theme="glassmorphism"] dialog,
+:root[data-theme="glassmorphism"] .remote-control-form,
+:root[data-theme="glassmorphism"] .diagram-tooltip {
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+}
+
+:root[data-theme="glassmorphism"] input,
+:root[data-theme="glassmorphism"] select,
+:root[data-theme="glassmorphism"] textarea {
+  background: rgba(15, 23, 42, 0.62);
+}
+
+/* 编辑杂志风专属质感 */
+:root[data-theme="editorial"] .topbar,
+:root[data-theme="editorial"] .panel {
+  box-shadow: none;
+}
+
+:root[data-theme="editorial"] h1 {
+  letter-spacing: 0.02em;
+}
+
+/* 新粗野主义专属质感（高对比明黄主按钮 + 硬边按压效） */
+:root[data-theme="neo-brutalism"] .topbar,
+:root[data-theme="neo-brutalism"] .page-nav {
+  border-bottom: 2px solid #09090b;
+}
+
+:root[data-theme="neo-brutalism"] .panel,
+:root[data-theme="neo-brutalism"] dialog,
+:root[data-theme="neo-brutalism"] .remote-control-form {
+  border: 2px solid #09090b;
+  box-shadow: 4px 4px 0px #09090b;
+}
+
+:root[data-theme="neo-brutalism"] button:not(.ui-toast-close),
+:root[data-theme="neo-brutalism"] select,
+:root[data-theme="neo-brutalism"] input {
+  border: 2px solid #09090b;
+}
+
+:root[data-theme="neo-brutalism"] button.primary,
+:root[data-theme="neo-brutalism"] .page-nav button.is-active {
+  background: #facc15;
+  border-color: #09090b;
+  color: #09090b;
+  font-weight: 700;
+  box-shadow: 2px 2px 0px #09090b;
+}
+
+:root[data-theme="neo-brutalism"] button.primary:hover {
+  background: #eab308;
+  color: #09090b;
+}
+
+:root[data-theme="neo-brutalism"] button:not(:disabled):active {
+  transform: translate(2px, 2px);
+  box-shadow: none;
+}
+
+/* 科幻战情专属质感（低强度电光青边界，严禁正文泛滥发光） */
+:root[data-theme="sci-fi"] .topbar {
+  border-bottom: 1px solid rgba(0, 229, 255, 0.28);
+  box-shadow: 0 1px 16px rgba(0, 229, 255, 0.08);
+}
+
+:root[data-theme="sci-fi"] .page-nav button.is-active {
+  box-shadow: 0 0 10px rgba(0, 229, 255, 0.22);
+}
+
+:root[data-theme="sci-fi"] input,
+:root[data-theme="sci-fi"] select,
+:root[data-theme="sci-fi"] textarea {
+  background: #061020;
+}
+
+:root[data-theme="sci-fi"] select option {
+  background: #061020;
+  color: #e6f7ff;
 }
 
 /* 2026-11-23 持续优化：快捷筛选、CSV 导出与左侧设备树折叠 */

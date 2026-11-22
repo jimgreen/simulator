@@ -10,11 +10,28 @@
         document.documentElement.dataset.simulatorUiMode = "direct";
       }
       try {
-        const savedTheme = localStorage.getItem("polarUiTheme");
-        if (savedTheme === "dark") document.documentElement.dataset.theme = "dark";
-      } catch (_e) {}
+        const rawTheme = localStorage.getItem("polarUiTheme");
+        const darkThemes = new Set(["precision-dark", "glassmorphism", "sci-fi"]);
+        const validThemes = new Set([
+          "minimalist-light",
+          "precision-dark",
+          "bento-grid",
+          "glassmorphism",
+          "editorial",
+          "neo-brutalism",
+          "sci-fi",
+        ]);
+        const resolved = rawTheme === "dark"
+          ? "precision-dark"
+          : (rawTheme === "light" || !validThemes.has(rawTheme) ? "minimalist-light" : rawTheme);
+        document.documentElement.dataset.theme = resolved;
+        document.documentElement.dataset.colorScheme = darkThemes.has(resolved) ? "dark" : "light";
+      } catch (_e) {
+        document.documentElement.dataset.theme = "minimalist-light";
+        document.documentElement.dataset.colorScheme = "light";
+      }
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20261123-fix-init" />
+    <link rel="stylesheet" href="/styles.css?v=20261123-themes" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -86,10 +103,18 @@
             <span class="alert-pulse-dot" aria-hidden="true"></span>
             <span id="topbarAlertBadgeText">潮流异常</span>
           </button>
-          <button id="themeToggleButton" class="icon-button theme-toggle-button" type="button" title="切换深色/浅色主题" aria-label="切换深色或浅色主题">
-            <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
-            <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32 1.41-1.41" /></svg>
-          </button>
+          <label class="theme-switcher" title="选择界面风格">
+            <span class="theme-switcher-label">风格</span>
+            <select id="themeSelector" class="theme-select" aria-label="选择界面风格">
+              <option value="minimalist-light">极简明亮</option>
+              <option value="precision-dark">精密暗黑</option>
+              <option value="bento-grid">便当盒网格</option>
+              <option value="glassmorphism">毛玻璃拟态</option>
+              <option value="editorial">编辑杂志</option>
+              <option value="neo-brutalism">新粗野主义</option>
+              <option value="sci-fi">科幻战情</option>
+            </select>
+          </label>
         </div>
       </header>
 
@@ -1636,12 +1661,12 @@
       </div>
     </dialog>
     <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
-    <script defer src="/js/01-state-core.js?v=20261123-fix-init"></script>
-    <script defer src="/js/02-api-models.js?v=20261123-fix-init"></script>
-    <script defer src="/js/03-diagram-core.js?v=20261123-fix-init"></script>
-    <script defer src="/js/04-diagram-editor.js?v=20261123-fix-init"></script>
-    <script defer src="/js/05-curves.js?v=20261123-fix-init"></script>
-    <script defer src="/js/06-overview-runtime.js?v=20261123-fix-init"></script>
-    <script defer src="/js/07-measurements-faults.js?v=20261123-fix-init"></script>
+    <script defer src="/js/01-state-core.js?v=20261123-themes"></script>
+    <script defer src="/js/02-api-models.js?v=20261123-themes"></script>
+    <script defer src="/js/03-diagram-core.js?v=20261123-themes"></script>
+    <script defer src="/js/04-diagram-editor.js?v=20261123-themes"></script>
+    <script defer src="/js/05-curves.js?v=20261123-themes"></script>
+    <script defer src="/js/06-overview-runtime.js?v=20261123-themes"></script>
+    <script defer src="/js/07-measurements-faults.js?v=20261123-themes"></script>
   </body>
 </html>

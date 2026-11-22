@@ -25,16 +25,56 @@ let latestModels = [];
 let loadedPointsTableItems = [];
 const recentReceipts = [];
 
-function initThemeToggle() {
-  const btn = get("themeToggleButton");
-  if (!btn) return;
-  btn.addEventListener("click", () => {
-    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-    if (next === "dark") document.documentElement.dataset.theme = "dark";
-    else delete document.documentElement.dataset.theme;
+const UI_THEME_PRESETS = [
+  { id: "minimalist-light", label: "极简明亮", scheme: "light" },
+  { id: "precision-dark", label: "精密暗黑", scheme: "dark" },
+  { id: "bento-grid", label: "便当盒网格", scheme: "light" },
+  { id: "glassmorphism", label: "毛玻璃拟态", scheme: "dark" },
+  { id: "editorial", label: "编辑杂志", scheme: "light" },
+  { id: "neo-brutalism", label: "新粗野主义", scheme: "light" },
+  { id: "sci-fi", label: "科幻战情", scheme: "dark" },
+];
+const UI_THEME_MAP = new Map(UI_THEME_PRESETS.map((item) => [item.id, item]));
+
+function normalizeUiTheme(raw) {
+  if (raw === "dark") return "precision-dark";
+  if (raw === "light") return "minimalist-light";
+  return UI_THEME_MAP.has(raw) ? raw : "minimalist-light";
+}
+
+function applyUiTheme(themeId, { persist = true } = {}) {
+  const resolved = normalizeUiTheme(themeId);
+  const meta = UI_THEME_MAP.get(resolved) || UI_THEME_PRESETS[0];
+  document.documentElement.dataset.theme = meta.id;
+  document.documentElement.dataset.colorScheme = meta.scheme;
+  const selector = get("themeSelector");
+  if (selector && selector.value !== meta.id) {
+    selector.value = meta.id;
+  }
+  if (persist) {
     try {
-      localStorage.setItem("polarUiTheme", next);
+      localStorage.setItem("polarUiTheme", meta.id);
     } catch (_e) {}
+  }
+}
+
+function initThemeToggle() {
+  const selector = get("themeSelector");
+  let initialTheme = document.documentElement.dataset.theme;
+  try {
+    const stored = localStorage.getItem("polarUiTheme");
+    if (stored) initialTheme = stored;
+  } catch (_e) {}
+  applyUiTheme(initialTheme, { persist: false });
+  if (selector) {
+    selector.addEventListener("change", () => {
+      applyUiTheme(selector.value, { persist: true });
+    });
+  }
+  window.addEventListener("storage", (event) => {
+    if (event.key === "polarUiTheme") {
+      applyUiTheme(event.newValue, { persist: false });
+    }
   });
 }
 
