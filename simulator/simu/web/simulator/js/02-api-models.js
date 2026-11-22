@@ -2165,6 +2165,7 @@ async function setActiveModel(modelId, shouldRefresh = true) {
     if (shouldRefresh) await refresh();
   } else {
     $("simState").textContent = "stopped";
+    if (typeof syncClockTriggerSummary === "function") syncClockTriggerSummary("stopped");
     const solverInfo = $("solverInfo");
     if (solverInfo) solverInfo.textContent = "模拟服务已停止";
   }
@@ -2290,6 +2291,7 @@ async function setModelServiceRunning(modelId, shouldRun, { managementAction = f
       } else {
         state.snapshot = null;
         $("simState").textContent = "stopped";
+        if (typeof syncClockTriggerSummary === "function") syncClockTriggerSummary("stopped");
         const solverInfo = $("solverInfo");
         if (solverInfo) solverInfo.textContent = "模拟服务已停止";
       }

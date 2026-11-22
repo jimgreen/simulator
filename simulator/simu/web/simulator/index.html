@@ -39,7 +39,7 @@
         document.documentElement.dataset.colorScheme = "light";
       }
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20261123-i18n" />
+    <link rel="stylesheet" href="/styles.css?v=20261123-clock-popover" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -80,30 +80,50 @@
             <small id="simSpeed" hidden>x1</small>
           </div>
         </div>
-        <div class="overview-clock-controls topbar-clock-controls" aria-label="时钟控制">
-          <div class="overview-clock-control-label">
-            <span>时钟控制</span>
+        <div id="topbarClockControls" class="overview-clock-controls topbar-clock-controls" data-clock-state="stopped" aria-label="时钟控制">
+          <button
+            id="clockControlTrigger"
+            class="clock-control-trigger"
+            type="button"
+            aria-haspopup="true"
+            aria-expanded="false"
+            aria-controls="clockControlPopover"
+            title="悬停或点击展开时钟控制"
+          >
+            <span class="clock-status-dot" aria-hidden="true"></span>
+            <span id="overviewClockState" class="clock-status-text">已停止</span>
+            <span class="clock-trigger-sep" aria-hidden="true">·</span>
             <strong id="overviewClockSpeed">x1</strong>
-          </div>
-          <div class="overview-clock-button-group">
-            <button class="icon-button" type="button" data-clock="start" title="启动" aria-pressed="false">
-              <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-            </button>
-            <button class="icon-button" type="button" data-clock="pause" title="暂停" aria-pressed="false" aria-disabled="true" disabled>
-              <svg viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z" /></svg>
-            </button>
-            <button class="icon-button" type="button" data-clock="stop" title="停止" aria-pressed="true" aria-disabled="true" disabled>
-              <svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z" /></svg>
-            </button>
-            <button class="icon-button" type="button" data-clock="step" title="单步" aria-disabled="true" disabled>
-              <svg viewBox="0 0 24 24"><path d="M5 5v14l9-7-9-7zm11 0h3v14h-3z" /></svg>
-            </button>
-            <button class="icon-button" type="button" data-clock="slower" title="减速">
-              <svg viewBox="0 0 24 24"><path d="M11 7 6 12l5 5V7zm7 0-5 5 5 5V7z" /></svg>
-            </button>
-            <button class="icon-button" type="button" data-clock="faster" title="加速">
-              <svg viewBox="0 0 24 24"><path d="m6 7 5 5-5 5V7zm7 0 5 5-5 5V7z" /></svg>
-            </button>
+            <svg class="clock-trigger-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
+          </button>
+          <div id="clockControlPopover" class="clock-control-popover" role="group" aria-label="时钟控制操作">
+            <div class="clock-popover-head">
+              <span class="clock-popover-title">时钟控制</span>
+              <span class="clock-popover-meta">
+                <span id="clockPopoverStateText">已停止</span>
+                <strong id="clockPopoverSpeed">x1</strong>
+              </span>
+            </div>
+            <div class="overview-clock-button-group">
+              <button class="icon-button" type="button" data-clock="start" title="启动" aria-pressed="false">
+                <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+              </button>
+              <button class="icon-button" type="button" data-clock="pause" title="暂停" aria-pressed="false" aria-disabled="true" disabled>
+                <svg viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z" /></svg>
+              </button>
+              <button class="icon-button" type="button" data-clock="stop" title="停止" aria-pressed="true" aria-disabled="true" disabled>
+                <svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z" /></svg>
+              </button>
+              <button class="icon-button" type="button" data-clock="step" title="单步" aria-disabled="true" disabled>
+                <svg viewBox="0 0 24 24"><path d="M5 5v14l9-7-9-7zm11 0h3v14h-3z" /></svg>
+              </button>
+              <button class="icon-button" type="button" data-clock="slower" title="减速">
+                <svg viewBox="0 0 24 24"><path d="M11 7 6 12l5 5V7zm7 0-5 5 5 5V7z" /></svg>
+              </button>
+              <button class="icon-button" type="button" data-clock="faster" title="加速">
+                <svg viewBox="0 0 24 24"><path d="m6 7 5 5-5 5V7zm7 0 5 5-5 5V7z" /></svg>
+              </button>
+            </div>
           </div>
         </div>
         <div class="topbar-utility-group">
@@ -1678,13 +1698,13 @@
       </div>
     </dialog>
     <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
-    <script defer src="/js/00-i18n.js?v=20261123-i18n"></script>
-    <script defer src="/js/01-state-core.js?v=20261123-i18n"></script>
-    <script defer src="/js/02-api-models.js?v=20261123-i18n"></script>
-    <script defer src="/js/03-diagram-core.js?v=20261123-i18n"></script>
-    <script defer src="/js/04-diagram-editor.js?v=20261123-i18n"></script>
-    <script defer src="/js/05-curves.js?v=20261123-i18n"></script>
-    <script defer src="/js/06-overview-runtime.js?v=20261123-i18n"></script>
-    <script defer src="/js/07-measurements-faults.js?v=20261123-i18n"></script>
+    <script defer src="/js/00-i18n.js?v=20261123-clock-popover"></script>
+    <script defer src="/js/01-state-core.js?v=20261123-clock-popover"></script>
+    <script defer src="/js/02-api-models.js?v=20261123-clock-popover"></script>
+    <script defer src="/js/03-diagram-core.js?v=20261123-clock-popover"></script>
+    <script defer src="/js/04-diagram-editor.js?v=20261123-clock-popover"></script>
+    <script defer src="/js/05-curves.js?v=20261123-clock-popover"></script>
+    <script defer src="/js/06-overview-runtime.js?v=20261123-clock-popover"></script>
+    <script defer src="/js/07-measurements-faults.js?v=20261123-clock-popover"></script>
   </body>
 </html>

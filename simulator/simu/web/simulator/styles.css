@@ -6877,6 +6877,316 @@ table tbody tr:hover {
   display: none;
 }
 
+/* ==========================================================================
+   2026-11-23 顶栏防挤压布局 + 时钟控制悬浮框 (Clock Control Popover)
+   ========================================================================== */
+.topbar {
+  position: relative;
+  z-index: 30;
+  overflow: visible;
+  height: auto;
+  min-height: 60px;
+  padding: 10px 16px;
+  gap: 10px;
+}
+
+.brand {
+  gap: 10px;
+}
+
+.brand-mark {
+  width: 34px;
+  height: 34px;
+}
+
+.brand h1 {
+  font-size: 17px;
+  white-space: nowrap;
+}
+
+.model-toolbar {
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.model-switcher {
+  gap: 6px;
+}
+
+.model-switcher select {
+  flex: 0 1 142px;
+  min-width: 112px;
+  width: 142px;
+}
+
+/* 代理模式下拉框已直接显示选中模型名，隐藏冗余重复标签释放顶栏空间 */
+html:not([data-simulator-ui-mode="direct"]) .model-switcher > span {
+  display: none;
+}
+
+.model-management-button,
+.trainee-link-button,
+.model-service-toggle {
+  flex: 0 0 auto;
+  margin-right: 0;
+}
+
+.simulation-mode-switcher select {
+  width: 82px;
+}
+
+.top-clock-strip {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.top-clock-readout {
+  height: 34px;
+  min-width: 112px;
+  padding: 0 12px;
+}
+
+.top-clock-readout strong {
+  font-size: 17px;
+  line-height: 1;
+}
+
+.topbar-utility-group {
+  margin-left: 0;
+  gap: 6px;
+}
+
+.lang-switcher-label,
+.theme-switcher-label {
+  display: none;
+}
+
+.lang-select {
+  min-width: 76px;
+}
+
+.theme-select {
+  min-width: 104px;
+}
+
+/* 时钟控制悬浮框：顶栏默认仅显示当前状态与速度，悬停/点击弹出 6 项控制按钮 */
+.topbar-clock-controls {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  margin-left: 0;
+  padding: 0;
+  border-right: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+.clock-control-trigger {
+  height: 34px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-subtle);
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.clock-control-trigger:hover,
+.topbar-clock-controls.is-open .clock-control-trigger {
+  background: var(--surface-hover);
+  border-color: var(--teal);
+  color: var(--ink);
+}
+
+.clock-control-trigger strong {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--teal);
+}
+
+.clock-trigger-sep {
+  color: var(--muted);
+  opacity: 0.65;
+}
+
+.clock-trigger-chevron {
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+  transition: transform 160ms ease;
+}
+
+.topbar-clock-controls.is-open .clock-trigger-chevron {
+  transform: rotate(180deg);
+}
+
+.clock-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: 0 0 auto;
+}
+
+.topbar-clock-controls[data-clock-state="running"] .clock-status-dot {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--ok-soft);
+}
+
+.topbar-clock-controls[data-clock-state="paused"] .clock-status-dot {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px var(--warn-soft);
+}
+
+.topbar-clock-controls[data-clock-state="error"] .clock-status-dot,
+.topbar-clock-controls[data-clock-state="offline"] .clock-status-dot {
+  background: var(--red);
+  box-shadow: 0 0 0 3px var(--danger-soft);
+}
+
+.clock-control-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 60;
+  min-width: 264px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-modal);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 150ms ease, transform 150ms ease, visibility 150ms ease;
+}
+
+/* 顶部透明桥接区：鼠标从触发胶囊移入悬浮框时不触发离开 */
+.clock-control-popover::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -10px;
+  height: 10px;
+}
+
+.topbar-clock-controls.is-open .clock-control-popover {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.clock-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.clock-popover-title {
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.clock-popover-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+}
+
+.clock-popover-meta strong {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--teal);
+}
+
+.clock-control-popover .overview-clock-button-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.clock-control-popover .icon-button {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+}
+
+.clock-control-popover .icon-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.topbar.is-model-service-stopped .clock-control-trigger {
+  opacity: 0.72;
+}
+
+:root[data-color-scheme="dark"] .clock-control-popover {
+  background: var(--surface);
+  border-color: var(--line-strong);
+}
+
+:root[data-theme="glassmorphism"] .clock-control-popover {
+  background: rgba(15, 23, 42, 0.86);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+
+:root[data-theme="sci-fi-cyan"] .clock-control-popover {
+  box-shadow: 0 0 0 1px rgba(0, 229, 255, 0.25), 0 14px 36px rgba(0, 8, 24, 0.7);
+}
+
+:root[data-theme="sci-fi-purple"] .clock-control-popover {
+  box-shadow: 0 0 0 1px rgba(192, 132, 252, 0.28), 0 14px 36px rgba(9, 4, 24, 0.72);
+}
+
+:root[data-theme="sci-fi-matrix"] .clock-control-popover {
+  box-shadow: 0 0 0 1px rgba(0, 230, 118, 0.25), 0 14px 36px rgba(2, 14, 8, 0.7);
+}
+
+@media (max-width: 1320px) {
+  .simulation-mode-switcher > span {
+    display: none;
+  }
+}
+
+@media (max-width: 1200px) {
+  .topbar {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .model-toolbar {
+    flex-wrap: wrap;
+  }
+  .top-clock-strip {
+    margin-left: 0;
+  }
+  .topbar-utility-group {
+    margin-left: auto;
+  }
+}
+
 .device-tree-panel.is-collapsed .tree-collapse-btn {
   padding: 0 4px;
   font-size: 11px;

@@ -662,11 +662,12 @@ function renderCurveModeControls() {
 function renderClockTextOnly(clock) {
   const time = $("simTime");
   const simSpeed = $("simSpeed");
-  const overviewClockSpeed = $("overviewClockSpeed");
   const readout = document.querySelector(".clock-readout");
   if (time) time.textContent = formatSimulationClock(clock);
   if (simSpeed) simSpeed.textContent = `x${clock.speed ?? 1}`;
-  if (overviewClockSpeed) overviewClockSpeed.textContent = `x${clock.speed ?? 1}`;
+  if (typeof syncClockTriggerSummary === "function") {
+    syncClockTriggerSummary(clock.state || $("simState")?.textContent || "stopped", clock.speed ?? 1);
+  }
   if (readout) readout.classList.toggle("is-year-mode", isExtendedSimulationMode());
 }
 
@@ -2185,6 +2186,7 @@ async function refresh() {
   if (state.refreshRequestActive) return;
   if (!activeModelServiceRunning()) {
     $("simState").textContent = "stopped";
+    if (typeof syncClockTriggerSummary === "function") syncClockTriggerSummary("stopped");
     const solverInfo = $("solverInfo");
     if (solverInfo) solverInfo.textContent = "模拟服务已停止";
     return;
@@ -2219,6 +2221,7 @@ async function refresh() {
     const retrySec = Math.round(refreshSchedulerIntervalMs() / 1000);
     console.error("模拟台快照刷新失败", error);
     $("simState").textContent = "offline";
+    if (typeof syncClockTriggerSummary === "function") syncClockTriggerSummary("offline");
     const solverInfo = $("solverInfo");
     if (solverInfo) solverInfo.textContent = `连接中断（${retrySec}s 后重试）`;
   } finally {

@@ -147,6 +147,8 @@ const PHRASE_TRANSLATIONS = {
   "年仿真": ["Yearly", "Год"],
   "选择时、日、周、月或年仿真": ["Select hourly, daily, weekly, monthly or yearly mode", "Выбор режима: час, день, неделя, месяц, год"],
   "时钟控制": ["Clock", "Часы"],
+  "时钟控制操作": ["Clock Controls", "Управление часами"],
+  "悬停或点击展开时钟控制": ["Hover or click to open clock controls", "Наведите или нажмите для управления часами"],
   "当前时钟": ["Clock", "Текущее время"],
   "潮流异常": ["PF Alert", "Сбой ПР"],
   "查看未恢复的潮流告警": ["View active power-flow alerts", "Показать активные тревоги ПР"],

@@ -1195,30 +1195,121 @@ function renderClockControlAvailability(clockState = "") {
   });
 }
 
+function formatClockStateLabel(clockState) {
+  const key = String(clockState || "stopped").toLowerCase();
+  let zh = "已停止";
+  if (key === "running") zh = "运行中";
+  else if (key === "paused") zh = "已暂停";
+  else if (key === "offline") zh = "已断开";
+  else if (key === "error") zh = "异常";
+  return typeof translatePhrase === "function" ? translatePhrase(zh) : zh;
+}
+
+function syncClockTriggerSummary(clockState, speed = null) {
+  const normalizedState = String(clockState || "stopped").toLowerCase();
+  const label = formatClockStateLabel(normalizedState);
+  const speedText = speed != null ? `x${speed}` : ($("overviewClockSpeed")?.textContent || "x1");
+  const container = $("topbarClockControls");
+  if (container) container.dataset.clockState = normalizedState;
+  const triggerState = $("overviewClockState");
+  if (triggerState) triggerState.textContent = label;
+  const popoverState = $("clockPopoverStateText");
+  if (popoverState) popoverState.textContent = label;
+  const triggerSpeed = $("overviewClockSpeed");
+  if (triggerSpeed) triggerSpeed.textContent = speedText;
+  const popoverSpeed = $("clockPopoverSpeed");
+  if (popoverSpeed) popoverSpeed.textContent = speedText;
+}
+
+function initClockControlPopover() {
+  const host = $("topbarClockControls");
+  const trigger = $("clockControlTrigger");
+  const popover = $("clockControlPopover");
+  if (!host || !trigger || !popover) return;
+  let closeTimer = null;
+  let pinned = false;
+
+  const setOpen = (open) => {
+    host.classList.toggle("is-open", open);
+    trigger.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+  const cancelClose = () => {
+    if (closeTimer) {
+      clearTimeout(closeTimer);
+      closeTimer = null;
+    }
+  };
+  const scheduleClose = () => {
+    if (pinned) return;
+    cancelClose();
+    closeTimer = setTimeout(() => {
+      closeTimer = null;
+      if (!pinned) setOpen(false);
+    }, 180);
+  };
+
+  host.addEventListener("mouseenter", () => {
+    cancelClose();
+    setOpen(true);
+  });
+  host.addEventListener("mouseleave", () => {
+    scheduleClose();
+  });
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    cancelClose();
+    pinned = !pinned;
+    host.classList.toggle("is-pinned", pinned);
+    setOpen(pinned || true);
+    if (!pinned) setOpen(false);
+  });
+  popover.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+  document.addEventListener("click", (event) => {
+    if (!host.contains(event.target)) {
+      cancelClose();
+      pinned = false;
+      host.classList.remove("is-pinned");
+      setOpen(false);
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && host.classList.contains("is-open")) {
+      cancelClose();
+      pinned = false;
+      host.classList.remove("is-pinned");
+      setOpen(false);
+      trigger.focus();
+    }
+  });
+}
+
 function renderClock(clock) {
   if (!clock) return;
-  $("simState").textContent = clock.state || "stopped";
+  const clockState = clock.state || "stopped";
+  const clockSpeed = clock.speed ?? 1;
+  $("simState").textContent = clockState;
   $("simTime").textContent = formatSimulationClock(clock);
-  $("simSpeed").textContent = `x${clock.speed ?? 1}`;
-  const overviewClockSpeed = $("overviewClockSpeed");
-  if (overviewClockSpeed) overviewClockSpeed.textContent = `x${clock.speed ?? 1}`;
+  $("simSpeed").textContent = `x${clockSpeed}`;
+  syncClockTriggerSummary(clockState, clockSpeed);
   const readout = document.querySelector(".clock-readout");
   if (readout) {
-    readout.dataset.clockState = clock.state || "stopped";
+    readout.dataset.clockState = clockState;
     readout.classList.toggle("is-year-mode", isExtendedSimulationMode());
   }
   document.querySelectorAll("[data-clock]").forEach((button) => {
     const action = button.dataset.clock;
     const isActive =
-      (action === "start" && clock.state === "running") ||
-      (action === "pause" && clock.state === "paused") ||
-      (action === "stop" && clock.state === "stopped");
+      (action === "start" && clockState === "running") ||
+      (action === "pause" && clockState === "paused") ||
+      (action === "stop" && clockState === "stopped");
     button.classList.toggle("is-active", isActive);
     if (["start", "pause", "stop"].includes(action)) {
       button.setAttribute("aria-pressed", isActive ? "true" : "false");
     }
   });
-  renderClockControlAvailability(clock.state || "stopped");
+  renderClockControlAvailability(clockState);
   renderCurveModeControls();
 }
 
@@ -1501,6 +1592,8 @@ function initPrecisionUiChrome() {
   if (typeof initUiI18n === "function") {
     initUiI18n();
   }
+  initClockControlPopover();
+  syncClockTriggerSummary($("simState")?.textContent || "stopped");
   // 为所有左侧设备树面板注入一键折叠/展开按钮，最大化表格与曲线可视空间。
   document.querySelectorAll(".device-tree-panel").forEach((aside) => {
     const head = aside.querySelector(".panel-head");
@@ -1950,6 +2043,7 @@ async function controlClock(action, payload = {}) {
     const simState = $("simState");
     const solverInfo = $("solverInfo");
     if (simState) simState.textContent = "error";
+    syncClockTriggerSummary("error");
     if (solverInfo) solverInfo.textContent = "时钟控制失败";
     throw error;
   } finally {

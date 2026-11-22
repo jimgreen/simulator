@@ -7848,6 +7848,59 @@ table tbody tr:hover {
   display: none;
 }
 
+/* ==========================================================================
+   2026-11-23 学员端顶栏防挤压加固（按钮不压扁、去除重复模型标签、窄屏优雅折行）
+   ========================================================================== */
+.topbar {
+  height: auto;
+  min-height: 62px;
+  padding: 10px 16px;
+  gap: 10px;
+}
+
+.brand h1 {
+  font-size: 17px;
+  white-space: nowrap;
+}
+
+.model-toolbar {
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.model-management-button,
+.definition-import-button,
+.receive-toggle-button {
+  flex: 0 0 auto;
+}
+
+.model-switcher .active-model-name {
+  display: none;
+}
+
+.lang-switcher-label,
+.theme-switcher-label {
+  display: none;
+}
+
+.lang-select {
+  min-width: 76px;
+}
+
+.theme-select {
+  min-width: 104px;
+}
+
+@media (max-width: 1200px) {
+  .topbar {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .model-toolbar {
+    flex-wrap: wrap;
+  }
+}
+
 .device-tree-panel.is-collapsed .tree-collapse-btn {
   padding: 0 4px;
   font-size: 11px;

@@ -699,6 +699,16 @@ for (const p of process.argv.slice(1)) runBundle(p);
         trn_i18n = (REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "js" / "00-i18n.js").read_text(encoding="utf-8")
         self.assertEqual(sim_i18n, trn_i18n, "教员端与学员端 00-i18n.js 内容应保持一致")
 
+        sim_html = (REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
+        for token in (
+            'id="topbarClockControls"',
+            'id="clockControlTrigger"',
+            'id="clockControlPopover"',
+            'id="overviewClockState"',
+            'id="overviewClockSpeed"',
+        ):
+            self.assertIn(token, sim_html, f"教员端时钟控制悬浮框缺少元素：{token}")
+
         node = shutil.which("node")
         if node:
             check_js = r"""
