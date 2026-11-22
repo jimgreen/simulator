@@ -501,7 +501,8 @@ function drawMeasurementTraceChart() {
     syncChartLegendButtons(chartKey);
     ctx.fillStyle = palette.text;
     ctx.textAlign = "center";
-    ctx.fillText(!visibleSeries.length ? "所有曲线已隐藏" : "暂无跟踪数据", width / 2, height / 2);
+    const emptyMsg = !visibleSeries.length ? "所有曲线已隐藏" : "暂无跟踪数据";
+    ctx.fillText(typeof translatePhrase === "function" ? translatePhrase(emptyMsg) : emptyMsg, width / 2, height / 2);
     ctx.textAlign = "left";
     return;
   }
@@ -562,7 +563,7 @@ function drawMeasurementTraceChart() {
     timeLabel: (point) => runtimeTracePointTimeLabel(point, range),
     valueFormatter: formatMeasurementValue,
   });
-  ctx.fillStyle = "#63717a";
+  ctx.fillStyle = palette.text;
   ctx.textAlign = "left";
   ctx.fillText(formatMeasurementValue(maxValue), 8, top + 4);
   ctx.fillText(formatMeasurementValue(minValue), 8, bottom);

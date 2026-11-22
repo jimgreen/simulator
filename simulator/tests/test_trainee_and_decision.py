@@ -785,6 +785,47 @@ if (translatePhrase("12 台设备", "ru-RU") !== "12 устр.") {
                 if not any(c in tail for c in classes):
                     uncovered.append(clean_sel)
             self.assertEqual(uncovered, [], f"{css_path.name} 存在未被暗黑主题覆盖的浅底选择器：{uncovered}")
+            self.assertIn('data-color-scheme="dark"] ::-webkit-scrollbar-track', tail, f"{css_path.name} 缺少暗黑滚动条样式")
+            self.assertIn('[data-overview-target]', tail, f"{css_path.name} 缺少暗黑能量流对比度覆盖")
+
+    def test_all_static_html_chinese_strings_mapped_in_i18n(self) -> None:
+        """三套静态 HTML 中的可见中文文案与属性必须 100% 命中 i18n 词典或动态模板。"""
+        import re
+
+        i18n_src = (REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "js" / "00-i18n.js").read_text(encoding="utf-8")
+        known = set(re.findall(r'^\s*"([^"]+)"\s*:\s*\[', i18n_src, re.M)) | set(
+            re.findall(r'^\s*"[^"]+"\s*:\s*"([^"]+)"', i18n_src, re.M)
+        )
+        dyn_res = [
+            re.compile(r"^\d+\s*(?:台设备|可用|待发|条|条控制指令|条有效指令|点|类|项|次)$"),
+            re.compile(r"^\d+\s*类\s*·\s*\d+\s*台$"),
+            re.compile(r"^全部设备\s*·\s*\d+\s*台$"),
+            re.compile(r"^\d+/\d+\s*台$"),
+            re.compile(r"^最近\s*\d+\s*条$"),
+            re.compile(r"^\d+\s*项修改\s*·\s*已选\s*\d+\s*项$"),
+            re.compile(r"^\d+\s*点\s*·\s*左轴无\s*·\s*右轴无$"),
+        ]
+        missing = []
+        for hf in (
+            REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "index.html",
+            REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "index.html",
+            REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "scada104.html",
+        ):
+            s = re.sub(r"<script[\s\S]*?</script>", "", hf.read_text(encoding="utf-8"))
+            found = set()
+            for m in re.findall(r">([^<>]*[\u4e00-\u9fff][^<>]*)<", s):
+                t = " ".join(m.split())
+                if t:
+                    found.add(t)
+            for m in re.findall(r'(?:placeholder|title)="([^"]*[\u4e00-\u9fff][^"]*)"', s):
+                t = " ".join(m.split())
+                if t:
+                    found.add(t)
+            for item in sorted(found):
+                if item == "中文" or item in known or any(r.match(item) for r in dyn_res):
+                    continue
+                missing.append(f"{hf.name}: {item}")
+        self.assertEqual(missing, [], f"存在未映射 i18n 的静态 HTML 中文文案：{missing[:20]}")
 
 
 if __name__ == "__main__":

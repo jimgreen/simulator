@@ -677,51 +677,57 @@ function drawCurveDisplayXAxis(ctx, canvas, plot, snapshot = state.snapshot || {
   if (mode === "week" || mode === "month") {
     const dayCount = curveDisplayModeDayCount(mode);
     const dayStep = mode === "week" ? 1 : width < 560 ? 10 : width < 900 ? 5 : 3;
+    const palette = chartThemePalette();
     for (let day = 0; day <= dayCount; day += dayStep) {
       const x = left + (day / dayCount) * (right - left);
-      ctx.strokeStyle = day === 0 || day === dayCount ? "#c9d6dc" : "#e7eef1";
+      ctx.strokeStyle = day === 0 || day === dayCount ? palette.axis : palette.gridSubtle;
       ctx.beginPath();
       ctx.moveTo(x, top);
       ctx.lineTo(x, bottom);
       ctx.stroke();
-      ctx.fillStyle = "#63717a";
-      ctx.fillText(`第${Math.min(day + 1, dayCount)}天`, x - 16, height - 12);
+      ctx.fillStyle = palette.text;
+      const dayText = `第${Math.min(day + 1, dayCount)}天`;
+      ctx.fillText(typeof translatePhrase === "function" ? translatePhrase(dayText) : dayText, x - 16, height - 12);
     }
     if (dayCount % dayStep !== 0) {
       ctx.textAlign = "right";
-      ctx.fillText(`第${dayCount}天`, right, height - 12);
+      const endText = `第${dayCount}天`;
+      ctx.fillText(typeof translatePhrase === "function" ? translatePhrase(endText) : endText, right, height - 12);
       ctx.textAlign = "left";
     }
     return;
   }
   if (mode === "year") {
+    const palette = chartThemePalette();
     const monthStarts = [["01月", 0], ["02月", 31], ["03月", 59], ["04月", 90], ["05月", 120], ["06月", 151], ["07月", 181], ["08月", 212], ["09月", 243], ["10月", 273], ["11月", 304], ["12月", 334]];
     const monthStep = width < 560 ? 3 : width < 900 ? 2 : 1;
     monthStarts.forEach(([label, day], index) => {
       if (index % monthStep !== 0) return;
       const x = left + (day / 365) * (right - left);
-      ctx.strokeStyle = index % 3 === 0 ? "#c9d6dc" : "#e7eef1";
+      ctx.strokeStyle = index % 3 === 0 ? palette.axis : palette.gridSubtle;
       ctx.beginPath();
       ctx.moveTo(x, top);
       ctx.lineTo(x, bottom);
       ctx.stroke();
-      ctx.fillStyle = "#63717a";
+      ctx.fillStyle = palette.text;
       ctx.fillText(label, x - 12, height - 12);
     });
+    ctx.fillStyle = palette.text;
     ctx.textAlign = "right";
-    ctx.fillText("年末", right, height - 12);
+    ctx.fillText(typeof translatePhrase === "function" ? translatePhrase("年末") : "年末", right, height - 12);
     ctx.textAlign = "left";
     return;
   }
+  const palette = chartThemePalette();
   const hourStep = width < 480 ? 4 : width < 820 ? 3 : 2;
   for (let hour = 0; hour <= 24; hour += hourStep) {
     const x = left + (hour / 24) * (right - left);
-    ctx.strokeStyle = hour % 6 === 0 ? "#c9d6dc" : "#e7eef1";
+    ctx.strokeStyle = hour % 6 === 0 ? palette.axis : palette.gridSubtle;
     ctx.beginPath();
     ctx.moveTo(x, top);
     ctx.lineTo(x, bottom);
     ctx.stroke();
-    ctx.fillStyle = "#63717a";
+    ctx.fillStyle = palette.text;
     ctx.fillText(`${String(hour).padStart(2, "0")}:00`, x - 14, height - 12);
   }
 }
@@ -863,15 +869,15 @@ function drawCurveDisplay(snapshot = state.snapshot || {}, preparedSeries = null
     ctx.stroke();
   });
   if (!metas.length && allMetas.length) {
-    ctx.fillStyle = "#63717a";
+    ctx.fillStyle = palette.text;
     ctx.textAlign = "center";
-    ctx.fillText("所有曲线已隐藏", (left + right) / 2, (top + bottom) / 2);
+    ctx.fillText(typeof translatePhrase === "function" ? translatePhrase("所有曲线已隐藏") : "所有曲线已隐藏", (left + right) / 2, (top + bottom) / 2);
     ctx.textAlign = "left";
   }
   if (!allMetas.length) {
-    ctx.fillStyle = "#63717a";
+    ctx.fillStyle = palette.text;
     ctx.textAlign = "center";
-    ctx.fillText("未选择曲线", (left + right) / 2, (top + bottom) / 2);
+    ctx.fillText(typeof translatePhrase === "function" ? translatePhrase("未选择曲线") : "未选择曲线", (left + right) / 2, (top + bottom) / 2);
     ctx.textAlign = "left";
   }
   allMetas.forEach((meta, metaIndex) => {
@@ -886,9 +892,9 @@ function drawCurveDisplay(snapshot = state.snapshot || {}, preparedSeries = null
       width: Math.min(legendColumnWidth - 8, ctx.measureText(labelText).width + 42),
       height: 16,
     });
-    ctx.fillStyle = hidden ? "#9aa9af" : meta.color;
+    ctx.fillStyle = hidden ? palette.axis : meta.color;
     ctx.fillRect(legendX, legendY, 18, 3);
-    ctx.fillStyle = hidden ? "#9aa9af" : activeKey === meta.key ? "#1f3037" : "#63717a";
+    ctx.fillStyle = hidden ? palette.axis : activeKey === meta.key ? palette.tooltipTitle : palette.text;
     ctx.fillText(labelText, legendX + 26, legendY + 4);
   });
   drawCurveDisplayCursor(ctx, canvas, plot, metas, seriesByKey, snapshot);

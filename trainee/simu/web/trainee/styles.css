@@ -8198,6 +8198,33 @@ table tbody tr:hover {
   border-color: var(--red);
 }
 
+/* 深色模式：能量流数值对比度提升（WCAG AA）与自定义深色滚动条 */
+:root[data-color-scheme="dark"] .energy-device-reading [data-overview-target] {
+  color: var(--muted);
+}
+
+:root[data-color-scheme="dark"] .energy-device-reading [data-overview-max-available] {
+  color: var(--green);
+}
+
+:root[data-color-scheme="dark"],
+:root[data-color-scheme="dark"] * {
+  scrollbar-color: var(--line-strong) var(--surface);
+}
+
+:root[data-color-scheme="dark"] ::-webkit-scrollbar-track {
+  background: var(--surface);
+}
+
+:root[data-color-scheme="dark"] ::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-color: var(--surface);
+}
+
+:root[data-color-scheme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
 .device-tree-panel.is-collapsed .tree-collapse-btn {
   padding: 0 4px;
   font-size: 11px;

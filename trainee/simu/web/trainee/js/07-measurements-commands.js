@@ -1583,7 +1583,8 @@ function drawMeasurementTraceChart() {
     ctx.fillStyle = "#63717a";
     ctx.font = `${13 * ratio}px Microsoft YaHei, Arial`;
     ctx.textAlign = "center";
-    ctx.fillText(!visibleSeries.length ? "所有曲线已隐藏" : "暂无测点跟踪数据", width / 2, height / 2);
+    const emptyMsg = !visibleSeries.length ? "所有曲线已隐藏" : "暂无测点跟踪数据";
+    ctx.fillText(typeof translatePhrase === "function" ? translatePhrase(emptyMsg) : emptyMsg, width / 2, height / 2);
     ctx.textAlign = "left";
     $("measurementTraceSummary").textContent = "未选择测点";
     return;
@@ -1804,8 +1805,9 @@ function drawCommandTraceChart() {
     ctx.fillStyle = "#63717a";
     ctx.font = `${13 * ratio}px Microsoft YaHei, Arial`;
     ctx.textAlign = "center";
+    const emptyCmdMsg = !visibleSeries.length ? "所有曲线已隐藏" : state.selectedCommandTraceKey ? "暂无指令跟踪数据" : "请选择控制指令";
     ctx.fillText(
-      !visibleSeries.length ? "所有曲线已隐藏" : state.selectedCommandTraceKey ? "暂无指令跟踪数据" : "请选择控制指令",
+      typeof translatePhrase === "function" ? translatePhrase(emptyCmdMsg) : emptyCmdMsg,
       width / 2,
       height / 2,
     );
