@@ -1466,11 +1466,33 @@ function drawInlineChartCursorLabels(ctx, canvas, plot, x, samples, options = {}
     };
   });
 
+  const palette = options.palette || chartThemePalette();
+  const drawPill = (bx, by, bw, bh, radius) => {
+    const r = Math.min(radius, bw / 2, bh / 2);
+    ctx.beginPath();
+    ctx.moveTo(bx + r, by);
+    ctx.lineTo(bx + bw - r, by);
+    ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + r);
+    ctx.lineTo(bx + bw, by + bh - r);
+    ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - r, by + bh);
+    ctx.lineTo(bx + r, by + bh);
+    ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - r);
+    ctx.lineTo(bx, by + r);
+    ctx.quadraticCurveTo(bx, by, bx + r, by);
+    ctx.closePath();
+  };
+
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   placements.forEach(({ series, point, text, side, labelX }) => {
+    const textWidth = ctx.measureText(text).width;
+    const pillPadX = 6 * ratio;
+    const pillHeight = 18 * ratio;
+    const pillWidth = textWidth + 16 * ratio + pillPadX;
+    const pillX = clamp(labelX - 2 * ratio, left + 2 * ratio, right - pillWidth - 2 * ratio);
+    const pillY = point.y - pillHeight / 2;
     const connectorStartX = point.x + (side === "right" ? 6 : -6) * ratio;
-    const connectorEndX = side === "right" ? labelX - 3 * ratio : labelX + ctx.measureText(text).width + 17 * ratio;
+    const connectorEndX = side === "right" ? pillX : pillX + pillWidth;
     ctx.strokeStyle = series.color;
     ctx.globalAlpha = 0.72;
     ctx.lineWidth = 1 * ratio;
@@ -1480,15 +1502,19 @@ function drawInlineChartCursorLabels(ctx, canvas, plot, x, samples, options = {}
     ctx.stroke();
     ctx.globalAlpha = 1;
 
+    drawPill(pillX, pillY, pillWidth, pillHeight, 4 * ratio);
+    ctx.fillStyle = palette.labelBg || palette.tooltipBg;
+    ctx.fill();
+    ctx.strokeStyle = palette.labelBorder || palette.tooltipBorder;
+    ctx.lineWidth = 1 * ratio;
+    ctx.stroke();
+
     ctx.fillStyle = series.color;
     ctx.beginPath();
-    ctx.arc(labelX + 5 * ratio, point.y, 3 * ratio, 0, Math.PI * 2);
+    ctx.arc(pillX + 7 * ratio, point.y, 3 * ratio, 0, Math.PI * 2);
     ctx.fill();
-    ctx.lineWidth = 3 * ratio;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.96)";
-    ctx.strokeText(text, labelX + 12 * ratio, point.y);
-    ctx.fillStyle = "#24373f";
-    ctx.fillText(text, labelX + 12 * ratio, point.y);
+    ctx.fillStyle = palette.labelText || palette.tooltipTitle;
+    ctx.fillText(text, pillX + 14 * ratio, point.y);
   });
 
   const timeLabel = String(options.timeLabel || "").trim();
@@ -1496,14 +1522,20 @@ function drawInlineChartCursorLabels(ctx, canvas, plot, x, samples, options = {}
     const text = `时刻: ${timeLabel}`;
     ctx.font = `${11 * ratio}px Consolas, Microsoft YaHei, Arial`;
     const textWidth = ctx.measureText(text).width;
-    const preferredX = x + labelGap + textWidth <= right ? x + labelGap : x - labelGap - textWidth;
-    const textX = clamp(preferredX, left + 2 * ratio, right - textWidth - 2 * ratio);
-    const textY = top + 11 * ratio;
-    ctx.lineWidth = 3 * ratio;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.98)";
-    ctx.strokeText(text, textX, textY);
-    ctx.fillStyle = "#344b54";
-    ctx.fillText(text, textX, textY);
+    const pillPadX = 7 * ratio;
+    const pillHeight = 19 * ratio;
+    const pillWidth = textWidth + pillPadX * 2;
+    const preferredX = x + labelGap + pillWidth <= right ? x + labelGap : x - labelGap - pillWidth;
+    const pillX = clamp(preferredX, left + 2 * ratio, right - pillWidth - 2 * ratio);
+    const pillY = top + 3 * ratio;
+    drawPill(pillX, pillY, pillWidth, pillHeight, 4 * ratio);
+    ctx.fillStyle = palette.labelBg || palette.tooltipBg;
+    ctx.fill();
+    ctx.strokeStyle = palette.labelBorder || palette.tooltipBorder;
+    ctx.lineWidth = 1 * ratio;
+    ctx.stroke();
+    ctx.fillStyle = palette.labelMuted || palette.tooltipText;
+    ctx.fillText(text, pillX + pillPadX, pillY + pillHeight / 2);
   }
 }
 
@@ -1525,9 +1557,10 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
   const timeLabel = options.timeLabel ? options.timeLabel(mainPoint) : (mainPoint.time || "");
   const valueFormatter = options.valueFormatter || formatNumber;
   const maxSeries = Math.max(1, Number(options.maxSeries) || 6);
+  const palette = chartThemePalette();
 
   ctx.save();
-  ctx.strokeStyle = "rgba(29, 57, 66, 0.58)";
+  ctx.strokeStyle = palette.cursorLine || palette.axis;
   ctx.lineWidth = 1 * ratio;
   ctx.setLineDash([5 * ratio, 4 * ratio]);
   ctx.beginPath();
@@ -1540,7 +1573,6 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
   ctx.stroke();
   ctx.setLineDash([]);
 
-  const palette = chartThemePalette();
   samples.forEach(({ series, point }) => {
     ctx.fillStyle = palette.markerFill;
     ctx.strokeStyle = series.color;
@@ -1557,6 +1589,7 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
       maxSeries,
       timeLabel,
       valueFormatter,
+      palette,
     });
     ctx.restore();
     return;
@@ -2060,10 +2093,15 @@ function chartThemePalette() {
     return {
       bg: "#061020",
       grid: "rgba(0, 229, 255, 0.14)",
-      gridSubtle: "rgba(0, 229, 255, 0.07)",
+      gridSubtle: "rgba(0, 229, 255, 0.08)",
       axis: "rgba(0, 229, 255, 0.34)",
+      cursorLine: "rgba(0, 229, 255, 0.48)",
       text: "#7da2c4",
       markerFill: "#061020",
+      labelBg: "rgba(6, 18, 36, 0.90)",
+      labelBorder: "rgba(0, 229, 255, 0.28)",
+      labelText: "#e6f7ff",
+      labelMuted: "#bae6fd",
       tooltipBg: "rgba(8, 17, 33, 0.96)",
       tooltipBorder: "rgba(0, 229, 255, 0.42)",
       tooltipTitle: "#e6f7ff",
@@ -2076,8 +2114,13 @@ function chartThemePalette() {
       grid: "rgba(192, 132, 252, 0.15)",
       gridSubtle: "rgba(192, 132, 252, 0.08)",
       axis: "rgba(192, 132, 252, 0.36)",
+      cursorLine: "rgba(192, 132, 252, 0.50)",
       text: "#a695c9",
       markerFill: "#120c24",
+      labelBg: "rgba(20, 14, 40, 0.90)",
+      labelBorder: "rgba(192, 132, 252, 0.30)",
+      labelText: "#f3eeff",
+      labelMuted: "#d8b4fe",
       tooltipBg: "rgba(18, 12, 36, 0.96)",
       tooltipBorder: "rgba(192, 132, 252, 0.44)",
       tooltipTitle: "#f3eeff",
@@ -2088,10 +2131,15 @@ function chartThemePalette() {
     return {
       bg: "#081810",
       grid: "rgba(0, 230, 118, 0.14)",
-      gridSubtle: "rgba(0, 230, 118, 0.07)",
+      gridSubtle: "rgba(0, 230, 118, 0.08)",
       axis: "rgba(0, 230, 118, 0.34)",
+      cursorLine: "rgba(0, 230, 118, 0.46)",
       text: "#7eb396",
       markerFill: "#081810",
+      labelBg: "rgba(8, 26, 17, 0.90)",
+      labelBorder: "rgba(0, 230, 118, 0.28)",
+      labelText: "#e2fbe9",
+      labelMuted: "#a7f3d0",
       tooltipBg: "rgba(8, 24, 16, 0.96)",
       tooltipBorder: "rgba(0, 230, 118, 0.42)",
       tooltipTitle: "#e2fbe9",
@@ -2104,8 +2152,13 @@ function chartThemePalette() {
       grid: "rgba(203, 213, 225, 0.14)",
       gridSubtle: "rgba(203, 213, 225, 0.08)",
       axis: "rgba(148, 163, 184, 0.34)",
+      cursorLine: "rgba(96, 165, 250, 0.48)",
       text: "#cbd5e1",
       markerFill: "#0f172a",
+      labelBg: "rgba(15, 23, 42, 0.88)",
+      labelBorder: "rgba(148, 163, 184, 0.28)",
+      labelText: "#f8fafc",
+      labelMuted: "#e2e8f0",
       tooltipBg: "rgba(15, 23, 42, 0.94)",
       tooltipBorder: "rgba(96, 165, 250, 0.42)",
       tooltipTitle: "#f8fafc",
@@ -2116,10 +2169,15 @@ function chartThemePalette() {
     return {
       bg: "#0f172a",
       grid: "rgba(148, 163, 184, 0.16)",
-      gridSubtle: "rgba(148, 163, 184, 0.1)",
+      gridSubtle: "rgba(148, 163, 184, 0.10)",
       axis: "rgba(148, 163, 184, 0.34)",
+      cursorLine: "rgba(148, 163, 184, 0.52)",
       text: "#94a3b8",
       markerFill: "#0f172a",
+      labelBg: "rgba(15, 23, 42, 0.90)",
+      labelBorder: "rgba(148, 163, 184, 0.28)",
+      labelText: "#f1f5f9",
+      labelMuted: "#cbd5e1",
       tooltipBg: "rgba(15, 23, 42, 0.96)",
       tooltipBorder: "rgba(148, 163, 184, 0.35)",
       tooltipTitle: "#f1f5f9",
@@ -2132,8 +2190,13 @@ function chartThemePalette() {
       grid: "#e4e4e7",
       gridSubtle: "#f0eee9",
       axis: "#a1a1aa",
+      cursorLine: "rgba(63, 63, 70, 0.45)",
       text: "#52525b",
       markerFill: "#ffffff",
+      labelBg: "rgba(255, 255, 255, 0.92)",
+      labelBorder: "rgba(161, 161, 170, 0.40)",
+      labelText: "#18181b",
+      labelMuted: "#3f3f46",
       tooltipBg: "rgba(255, 255, 255, 0.98)",
       tooltipBorder: "#d4d4d8",
       tooltipTitle: "#18181b",
@@ -2146,8 +2209,13 @@ function chartThemePalette() {
       grid: "#e5e5ea",
       gridSubtle: "#f0f0f5",
       axis: "#c7c7cc",
+      cursorLine: "rgba(60, 60, 67, 0.42)",
       text: "#6e6e73",
       markerFill: "#ffffff",
+      labelBg: "rgba(255, 255, 255, 0.92)",
+      labelBorder: "rgba(0, 0, 0, 0.12)",
+      labelText: "#1d1d1f",
+      labelMuted: "#3a3a3c",
       tooltipBg: "rgba(255, 255, 255, 0.97)",
       tooltipBorder: "rgba(0, 0, 0, 0.12)",
       tooltipTitle: "#1d1d1f",
@@ -2159,8 +2227,13 @@ function chartThemePalette() {
     grid: "#e2e8f0",
     gridSubtle: "#f1f5f9",
     axis: "#cbd5e1",
+    cursorLine: "rgba(29, 57, 66, 0.48)",
     text: "#64748b",
     markerFill: "#ffffff",
+    labelBg: "rgba(255, 255, 255, 0.92)",
+    labelBorder: "rgba(148, 163, 184, 0.42)",
+    labelText: "#0f172a",
+    labelMuted: "#334155",
     tooltipBg: "rgba(255, 255, 255, 0.96)",
     tooltipBorder: "rgba(148, 163, 184, 0.6)",
     tooltipTitle: "#0f172a",

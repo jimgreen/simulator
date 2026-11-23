@@ -1583,14 +1583,15 @@ function drawCurveXAxis(ctx, canvas, plot) {
   const bottom = height - plot.bottom;
   if (state.curveMode === "hour") {
     const minuteStep = width < 560 ? 15 : 10;
+    const palette = chartThemePalette();
     for (let minute = 0; minute <= 60; minute += minuteStep) {
       const x = left + (minute / 60) * (right - left);
-      ctx.strokeStyle = minute % 30 === 0 ? "#c9d6dc" : "#e7eef1";
+      ctx.strokeStyle = minute % 30 === 0 ? palette.axis : palette.gridSubtle;
       ctx.beginPath();
       ctx.moveTo(x, top);
       ctx.lineTo(x, bottom);
       ctx.stroke();
-      ctx.fillStyle = "#63717a";
+      ctx.fillStyle = palette.text;
       const labelHour = Math.floor(minute / 60);
       const labelMinute = minute % 60;
       ctx.fillText(`${String(labelHour).padStart(2, "0")}:${String(labelMinute).padStart(2, "0")}`, x - 14, height - 12);

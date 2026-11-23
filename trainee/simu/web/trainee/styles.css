@@ -4066,7 +4066,7 @@ body.is-vertical-splitter-dragging {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(190px, 228px) minmax(0, 1fr);
+  grid-template-columns: minmax(224px, 260px) minmax(0, 1fr);
   border-top: 1px solid var(--line);
 }
 .renewable-trend-series-panel {
@@ -4229,7 +4229,7 @@ body.is-vertical-splitter-dragging {
 }
 .renewable-trend-series-device > summary {
   min-height: 30px;
-  padding-left: 32px;
+  padding-left: 22px;
   color: var(--ink);
   font-size: 11px;
   font-weight: 600;
@@ -4274,7 +4274,7 @@ body.is-vertical-splitter-dragging {
 }
 .renewable-trend-series-list {
   position: relative;
-  padding: 1px 5px 6px 68px;
+  padding: 1px 6px 6px 38px;
   display: grid;
   gap: 1px;
 }
@@ -4283,7 +4283,7 @@ body.is-vertical-splitter-dragging {
   position: absolute;
   top: 2px;
   bottom: 7px;
-  left: 52px;
+  left: 28px;
   width: 1px;
   background: #d7e2e6;
   pointer-events: none;
@@ -4295,7 +4295,7 @@ body.is-vertical-splitter-dragging {
   min-height: 29px;
   padding: 3px 5px;
   display: grid;
-  grid-template-columns: 15px 21px minmax(0, 1fr);
+  grid-template-columns: 15px 20px minmax(0, 1fr) auto;
   align-items: center;
   gap: 5px;
   border-radius: 4px;
@@ -4357,11 +4357,31 @@ body.is-vertical-splitter-dragging {
     transparent 12px 15px
   );
 }
-.renewable-trend-series-item span {
+.renewable-trend-series-item .renewable-trend-series-label,
+.renewable-trend-series-item > span:first-of-type {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.renewable-trend-series-value {
+  margin-left: 4px;
+  color: var(--teal-dark);
+  font-family: Consolas, "Cascadia Mono", "SFMono-Regular", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  text-align: right;
+  white-space: nowrap;
+}
+.renewable-trend-series-item.is-hidden .renewable-trend-series-value {
+  color: var(--muted);
+  font-weight: 500;
+}
+.renewable-trend-series-value.is-empty {
+  color: var(--muted);
+  font-weight: 400;
 }
 .renewable-trend-chart-surface {
   min-width: 0;
@@ -9422,6 +9442,45 @@ dialog.ux-shortcuts-dialog::backdrop {
 :root[data-color-scheme="dark"] .overview-bottom-column-splitter::before,
 :root[data-color-scheme="dark"] .renewable-trend-series-list::before {
   background: var(--line-strong);
+}
+
+:root[data-color-scheme="dark"] .renewable-trend-series-item:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+:root[data-color-scheme="dark"] .renewable-trend-series-item.is-selected {
+  background: var(--teal-soft);
+  box-shadow: inset 3px 0 0 var(--accent, var(--teal));
+  color: var(--ink);
+}
+
+:root[data-color-scheme="dark"] .renewable-trend-series-item.is-selected .renewable-trend-series-label {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+:root[data-color-scheme="dark"] .renewable-trend-series-value {
+  color: var(--accent, var(--teal));
+}
+
+:root[data-color-scheme="dark"] .renewable-trend-series-item.is-hidden .renewable-trend-series-value,
+:root[data-color-scheme="dark"] .renewable-trend-series-value.is-empty {
+  color: var(--muted);
+}
+
+:root[data-color-scheme="dark"] .renewable-trend-inline-legend-item {
+  color: var(--ink);
+}
+
+:root[data-color-scheme="dark"] .renewable-trend-inline-legend-item:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+:root[data-color-scheme="dark"] .renewable-trend-inline-legend-item.is-hidden {
+  color: var(--muted);
 }
 
 :root[data-color-scheme="dark"] .vertical-stack-splitter:hover::before,

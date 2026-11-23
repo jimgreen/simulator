@@ -230,7 +230,9 @@ function resetRenewableControlView(modelId = state.activeModelId) {
     logPage: 1,
     selectedLogSeq: 0,
     lastControlLogRenderKey: "",
+    lastMetricText: {},
   });
+  renderRenewableTrendSeriesValues({});
   resetRenewableTrendHistoryHydration({ clearHistory: true });
 }
 
@@ -1147,6 +1149,35 @@ function renderRenewableMetricAvailability(metrics = {}) {
   });
 }
 
+const renewableTrendSeriesValueNodes = new Map();
+
+function formatRenewableTrendSeriesLiveValue(rawText, unit = "") {
+  const text = String(rawText ?? "").trim();
+  if (!text || text === "--") return "--";
+  const normalized = text.replace(/,/g, "");
+  if (!/^[-+]?\d+(?:\.\d+)?$/.test(normalized)) return text;
+  const cleanUnit = String(unit || "").trim();
+  if (!cleanUnit) return text;
+  return cleanUnit === "%" ? `${text}%` : `${text} ${cleanUnit}`;
+}
+
+function renderRenewableTrendSeriesValues(metricText = {}) {
+  const latestMap = metricText && typeof metricText === "object" ? metricText : {};
+  state.renewableControl.lastMetricText = latestMap;
+  if (!renewableTrendSeriesValueNodes.size) return;
+  renewableTrendSeriesValueNodes.forEach(({ node, unit, item, baseTitle }, metricId) => {
+    const formatted = formatRenewableTrendSeriesLiveValue(latestMap[metricId], unit);
+    if (node.textContent !== formatted) {
+      node.textContent = formatted;
+      node.classList.toggle("is-empty", formatted === "--");
+    }
+    const nextTitle = formatted === "--" ? baseTitle : `${baseTitle}: ${formatted}`;
+    if (item && item.title !== nextTitle) {
+      item.title = nextTitle;
+    }
+  });
+}
+
 function renderRenewableTrendSeriesTree() {
   const container = $("renewableTrendSeriesGroups");
   if (!container || container.dataset.rendered === "true") return;
@@ -1180,11 +1211,18 @@ function renderRenewableTrendSeriesTree() {
             data-renewable-series-group="${escapeHtml(series.group)}"
             data-renewable-series-metric="${escapeHtml(series.metricId)}"
             data-renewable-series-search="${escapeHtml(searchText)}"
+            data-renewable-series-base-title="${escapeHtml(series.label)}"
             title="${escapeHtml(series.label)}"
           >
             <input type="checkbox" data-chart-toggle="renewableTrend" data-chart-series="${escapeHtml(series.key)}"${checked} />
             <i class="renewable-trend-series-swatch ${styleClass}" style="--renewable-series-color: ${escapeHtml(series.color)}"></i>
-            <span>${escapeHtml(series.curveLabel)}</span>
+            <span class="renewable-trend-series-label">${escapeHtml(series.curveLabel)}</span>
+            <span
+              class="renewable-trend-series-value is-empty"
+              data-renewable-series-value="${escapeHtml(series.metricId)}"
+              data-renewable-series-unit="${escapeHtml(series.unit || "")}"
+              data-i18n-skip="true"
+            >--</span>
           </label>
         `;
       }).join("");
@@ -1207,6 +1245,21 @@ function renderRenewableTrendSeriesTree() {
     <div id="renewableTrendSeriesEmpty" class="renewable-trend-series-empty" hidden>没有匹配的曲线</div>
   `;
   container.dataset.rendered = "true";
+  renewableTrendSeriesValueNodes.clear();
+  container.querySelectorAll("[data-renewable-series-value]").forEach((node) => {
+    const metricId = node.dataset.renewableSeriesValue || "";
+    if (!metricId) return;
+    const item = node.closest(".renewable-trend-series-item");
+    renewableTrendSeriesValueNodes.set(metricId, {
+      node,
+      unit: node.dataset.renewableSeriesUnit || "",
+      item,
+      baseTitle: item?.dataset.renewableSeriesBaseTitle || item?.title || "",
+    });
+  });
+  if (state.renewableControl?.lastMetricText) {
+    renderRenewableTrendSeriesValues(state.renewableControl.lastMetricText);
+  }
 }
 
 function ensureRenewableTrendSeriesSelection(seriesDefs = []) {
@@ -1470,7 +1523,7 @@ function renewableTrendAxisY(axis, value, top, plotHeight) {
   return top + plotHeight - normalized * plotHeight;
 }
 
-function drawRenewableTrendAxes(ctx, axisGroups, plotBounds, ratio) {
+function drawRenewableTrendAxes(ctx, axisGroups, plotBounds, ratio, palette = chartThemePalette()) {
   const { left, right, top, plotHeight, axisSlot } = plotBounds;
   const maxAxisOffset = (side) => Math.max(0, ((axisGroups[side] || []).length - 1) * axisSlot);
   ["left", "right"].forEach((side) => {
@@ -1479,9 +1532,9 @@ function drawRenewableTrendAxes(ctx, axisGroups, plotBounds, ratio) {
       const axisX = side === "left"
         ? left - maxAxisOffset(side) + index * axisSlot
         : right + maxAxisOffset(side) - index * axisSlot;
-      const axisColor = axis.active ? axis.color : "#829198";
+      const axisColor = axis.active ? axis.color : (palette.text || "#829198");
       ctx.save();
-      ctx.globalAlpha = axis.active ? 1 : 0.58;
+      ctx.globalAlpha = axis.active ? 1 : 0.72;
       ctx.strokeStyle = axisColor;
       ctx.fillStyle = axisColor;
       ctx.lineWidth = (axis.active ? 1.8 : 1) * ratio;
@@ -1617,17 +1670,17 @@ function drawRenewableTrendChart() {
     top,
     plotHeight,
     axisSlot: layout.axisSlot * ratio,
-  }, ratio);
+  }, ratio, palette);
 
   const xTicks = measurementTraceAxisTicks(range, plotWidth / ratio);
   xTicks.forEach((minute, tickIndex) => {
     const x = left + ((minute - range.startMinute) / range.windowMinutes) * plotWidth;
-    ctx.strokeStyle = tickIndex === xTicks.length - 1 ? "#c9d6dc" : "#edf2f4";
+    ctx.strokeStyle = tickIndex === xTicks.length - 1 ? palette.axis : palette.gridSubtle;
     ctx.beginPath();
     ctx.moveTo(x, top);
     ctx.lineTo(x, top + plotHeight);
     ctx.stroke();
-    ctx.fillStyle = "#63717a";
+    ctx.fillStyle = palette.text;
     ctx.font = `${11 * ratio}px Consolas, Microsoft YaHei, Arial`;
     ctx.textAlign = tickIndex === xTicks.length - 1 ? "right" : "left";
     const textOffset = tickIndex === 0 || tickIndex === xTicks.length - 1 ? 0 : 4 * ratio;
@@ -1647,7 +1700,7 @@ function drawRenewableTrendChart() {
   if (!points.length || !visibleSeries.length) {
     state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: [] };
     syncChartLegendButtons(chartKey);
-    ctx.fillStyle = "#63717a";
+    ctx.fillStyle = palette.text;
     ctx.font = `${13 * ratio}px Microsoft YaHei, Arial`;
     ctx.textAlign = "center";
     const emptyText = !selectedSeries.length
@@ -2252,6 +2305,7 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
     const node = $(id);
     if (node) node.textContent = text;
   });
+  renderRenewableTrendSeriesValues(metricText);
   renderRenewableMetricAvailability(metrics);
   const status = $("renewableControlStatus");
   if (status) {
