@@ -269,15 +269,19 @@ def _apply_renewable_natural_upper_bounds(
         )
 
         # 第一层：有效气象前馈自然上限（严控门控：仅对应测点有效时触发）
+        # 仅确认零资源且实测接近 0 时硬置 0；正常发电区间取 max(current_kw, control_weather_kw)，
+        # 只封堵虚假向上增发空间，杜绝量测噪声或传感器负偏导致“倒压正常实发、多烧柴油”。
         natural_upper: Optional[float] = None
         natural_reason = ""
         if control_weather_kw is not None:
-            natural_upper = max(0.0, min(capacity, float(control_weather_kw)))
-            natural_reason = (
-                "weather_zero_resource"
-                if natural_upper <= EPSILON
-                else "weather_available_limit"
-            )
+            raw_weather_kw = max(0.0, min(capacity, float(control_weather_kw)))
+            zero_meas_tol = max(1.0, 0.02 * capacity)
+            if raw_weather_kw <= EPSILON and current_kw <= zero_meas_tol:
+                natural_upper = 0.0
+                natural_reason = "weather_zero_resource"
+            else:
+                natural_upper = min(capacity, max(current_kw, raw_weather_kw))
+                natural_reason = "weather_available_limit"
             if natural_upper < min(capacity, current_kw + step_kw) - EPSILON:
                 weather_limited_devices.append(key[1] or key[0])
 
@@ -2852,6 +2856,9 @@ def calculate_renewable_control_plan(
         optimization_result=optimization_result,
         runtime_memory=runtime_memory,
         sim_time_seconds=sim_time_seconds,
+        zero_diesel_grid_forming=bool(
+            operating_mode == "grid_forming_storage_reference"
+        ),
     )
     # 氢能与主优化器单拍协同：氢能闭环发生非零电功率调节时，将氢能净电注入变更量回代重算主优化器，
     # 使新能源恢复、柴发出力、储能充放与变流器并联均流在同一控制周期内满足精确功率平衡。
@@ -2870,9 +2877,40 @@ def calculate_renewable_control_plan(
                 hydrogen_external_injection.get(comp_key, 0.0) + signed_injection
             )
     if hydrogen_external_injection:
+        # 若某电气组件因电制氢增载产生净负荷增加（signed_injection < 0），在回代重算副本中临时释放
+        # 仅由首轮柴发低载防倒送导致的向上恢复锁（保留物理自然上限与储能充电安全限电锁），
+        # 使电制氢优先消纳弃风弃光而非拉高柴发。
+        electrolyzer_load_components = {
+            comp_id
+            for (comp_id, _side), inj_kw in hydrogen_external_injection.items()
+            if inj_kw < -0.05
+        }
+        electrolyzer_island_components: set[str] = set(electrolyzer_load_components)
+        for isl in optimization_result.islands:
+            if electrolyzer_load_components.intersection(isl.component_ids):
+                electrolyzer_island_components.update(isl.component_ids)
+        coordinated_renewable_rows = []
+        for row in renewable_rows:
+            row_copy = dict(row)
+            row_comp = str(row_copy.get("gridComponentId", "") or "").strip()
+            if (
+                row_comp in electrolyzer_island_components
+                and row_copy.get("dispatchUpperReason") == "diesel_guard_no_renewable_recovery"
+            ):
+                nat_upper = _number(row_copy.get("naturalUpperKw"))
+                if nat_upper is not None:
+                    row_copy["dispatchUpperKw"] = nat_upper
+                    row_copy["dispatchUpperReason"] = str(
+                        row_copy.get("naturalUpperReason", "natural_limit")
+                    )
+                else:
+                    row_copy.pop("dispatchUpperKw", None)
+                    row_copy.pop("dispatchUpperReason", None)
+            coordinated_renewable_rows.append(row_copy)
+
         coordinated_opt = optimize_topology_islands(
             resource_topology,
-            renewable_rows=renewable_rows,
+            renewable_rows=coordinated_renewable_rows,
             diesel_rows=diesel_rows,
             storage_rows=storage_rows,
             converter_rows=all_converter_rows,
@@ -2900,7 +2938,29 @@ def calculate_renewable_control_plan(
             blocked_component_ids=blocked_optimization_component_ids,
             external_injection_delta_by_component=hydrogen_external_injection,
         )
-        if coordinated_opt.islands and any(isl.success for isl in coordinated_opt.islands):
+        # 仅在氢能所在岛求解成功且未引入恶化平衡残差时采纳单拍回代结果
+        h_comp_set = {comp_id for comp_id, _side in hydrogen_external_injection}
+        baseline_max_delta = max(
+            (isl.max_balance_delta_kw for isl in optimization_result.islands if h_comp_set.intersection(isl.component_ids)),
+            default=0.0,
+        )
+        coord_h_islands = [
+            isl for isl in coordinated_opt.islands if h_comp_set.intersection(isl.component_ids)
+        ]
+        balance_acceptable = bool(
+            coord_h_islands
+            and all(
+                isl.success
+                and isl.max_balance_delta_kw
+                <= max(
+                    baseline_max_delta + 0.05,
+                    settings.optimization_balance_tolerance_kw,
+                    settings.optimization_balance_delta_warning_kw,
+                )
+                for isl in coord_h_islands
+            )
+        )
+        if balance_acceptable:
             optimization_result = coordinated_opt
             non_hydrogen_rows = [
                 row for row in command_rows if row.get("category") != "氢能"
@@ -2931,6 +2991,23 @@ def calculate_renewable_control_plan(
                 if row.get("technology") == "storage"
                 and row.get("online")
                 and _number(row.get("commandKw")) is not None
+            )
+            coordinated_diesel_kw = sum(
+                float(row["commandKw"])
+                for row in command_rows
+                if row.get("category") == "柴油发电"
+                and row.get("online")
+                and _number(row.get("commandKw")) is not None
+            )
+            diesel_cap_total = float(hydrogen_plan.get("dieselCapacityKw") or 0.0)
+            diesel_cnt = max(1, int(hydrogen_plan.get("dieselUnitCount") or 1))
+            hydrogen_plan["predictedDieselAfterKw"] = coordinated_diesel_kw
+            hydrogen_plan["predictedDieselAverageAfterKw"] = coordinated_diesel_kw / diesel_cnt
+            hydrogen_plan["predictedDieselLoadRatioAfter"] = (
+                coordinated_diesel_kw / diesel_cap_total if diesel_cap_total > EPSILON else None
+            )
+            hydrogen_plan["balanceCorrectionKw"] = (
+                coordinated_diesel_kw - float(hydrogen_plan.get("predictedDieselBeforeKw") or 0.0)
             )
     strategy_boundary_warnings = _clamp_final_command_rows_to_boundaries(
         command_rows

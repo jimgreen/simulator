@@ -1636,5 +1636,203 @@ class Batch2ControlStrategyTests(unittest.TestCase):
             self.assertNotEqual(plan.get("dataQuality", {}).get("status"), "blocked")
 
 
+class Round2ControlHardeningTests(unittest.TestCase):
+    """验证二轮深度复审的 5 项边界收口修复。"""
+
+    def test_noisy_weather_feedforward_never_curtails_live_output(self) -> None:
+        from simu.renewable_control_parts.planner import _apply_renewable_natural_upper_bounds
+
+        ctrl_settings = renewable_control.RenewableControlSettings(step_coefficient=0.05)
+        rows = [
+            {
+                "dev_type": "ACGenerator",
+                "dev_name": "PV_NOISY",
+                "technology": "pv",
+                "online": True,
+                "commandable": True,
+                "capacityKw": 100.0,
+                "currentKw": 50.0,
+                "planningCurrentKw": 50.0,
+                "weatherMeasurementAvailable": True,
+                "controlWeatherAvailableKw": 48.0,  # 传感器负偏差导致理论值略低于实测
+            },
+            {
+                "dev_type": "ACGenerator",
+                "dev_name": "PV_NIGHT",
+                "technology": "pv",
+                "online": True,
+                "commandable": True,
+                "capacityKw": 100.0,
+                "currentKw": 0.0,
+                "planningCurrentKw": 0.0,
+                "weatherMeasurementAvailable": True,
+                "controlWeatherAvailableKw": 0.0,  # 夜间确认零辐照
+            },
+        ]
+        targets = {
+            ("ACGenerator", "PV_NOISY"): 55.0,
+            ("ACGenerator", "PV_NIGHT"): 5.0,
+        }
+        _apply_renewable_natural_upper_bounds(
+            rows,
+            targets,
+            ctrl_settings,
+            runtime_memory=None,
+            sim_time_seconds=10.0,
+            wind_measurement_status={"available": False, "value": None},
+            solar_measurement_status={"available": True, "value": 480.0},
+            diesel_guard_blocked=False,
+        )
+        # 有光照且带负偏时，只封堵向上虚假增发（55 -> 50），绝不倒压实发至 48 kW
+        self.assertAlmostEqual(float(rows[0]["naturalUpperKw"]), 50.0, places=6)
+        self.assertAlmostEqual(targets[("ACGenerator", "PV_NOISY")], 50.0, places=6)
+        # 夜间零辐照且实测为 0 时仍硬置 0
+        self.assertAlmostEqual(float(rows[1]["naturalUpperKw"]), 0.0, places=6)
+        self.assertAlmostEqual(targets[("ACGenerator", "PV_NIGHT")], 0.0, places=6)
+
+    def test_converter_efficiency_clamps_to_same_sign_half_space(self) -> None:
+        from simu.resource_topology import ResourceTopology
+
+        topo = ResourceTopology(
+            resources={},
+            dc_transfer_groups={},
+            converter_component_ids={("DCACConverter", "C1"): ("AC_1", "DC_1")},
+            device_component_ids={},
+        )
+        # 正向 +5 kW（P_AC = -5 kW），步长 20 kW -> 计入效率 0.96 时下界钳至 0.0 防单拍跨零失真
+        pos_var = renewable_optimization._converter_variable(
+            {
+                "dev_type": "DCACConverter",
+                "dev_name": "C1",
+                "online": True,
+                "commandable": True,
+                "currentKw": -5.0,
+                "signedMinTargetKw": -100.0,
+                "signedMaxTargetKw": 100.0,
+                "transferCapacityKw": 100.0,
+                "set_type": "p_ac_set",
+            },
+            topo,
+            0.20,
+            converter_efficiency=0.96,
+        )
+        assert pos_var is not None
+        self.assertAlmostEqual(pos_var.lower_kw, 0.0, places=6)
+        self.assertAlmostEqual(pos_var.upper_kw, 25.0, places=6)
+
+        # 反向 -5 kW（P_AC = +5 kW），步长 20 kW -> 上界钳至 0.0
+        neg_var = renewable_optimization._converter_variable(
+            {
+                "dev_type": "DCACConverter",
+                "dev_name": "C1",
+                "online": True,
+                "commandable": True,
+                "currentKw": 5.0,
+                "signedMinTargetKw": -100.0,
+                "signedMaxTargetKw": 100.0,
+                "transferCapacityKw": 100.0,
+                "set_type": "p_ac_set",
+            },
+            topo,
+            0.20,
+            converter_efficiency=0.96,
+        )
+        assert neg_var is not None
+        self.assertAlmostEqual(neg_var.lower_kw, -25.0, places=6)
+        self.assertAlmostEqual(neg_var.upper_kw, 0.0, places=6)
+
+    def test_storage_rebalance_skips_uncommandable_grid_forming_units(self) -> None:
+        import numpy as np
+
+        gf_vars = [
+            renewable_optimization._Variable(
+                key=("ACStorage", "GF1"),
+                kind="storage",
+                current_kw=10.0,
+                lower_kw=-100.0,
+                upper_kw=100.0,
+                side="AC",
+                component_id="AC_1",
+                storage_soc=0.80,
+                storage_forced_direction="",
+                storage_commandable=False,
+            ),
+            renewable_optimization._Variable(
+                key=("ACStorage", "GF2"),
+                kind="storage",
+                current_kw=50.0,
+                lower_kw=-100.0,
+                upper_kw=100.0,
+                side="AC",
+                component_id="AC_1",
+                storage_soc=0.40,
+                storage_forced_direction="",
+                storage_commandable=False,
+            ),
+        ]
+        original = np.array([10.0, 50.0])
+        out = renewable_optimization._rebalance_storage_targets_by_soc(
+            original,
+            gf_vars,
+            np.array([-100.0, -100.0]),
+            np.array([100.0, 100.0]),
+            np.array([[1.0, 1.0]]),
+            np.zeros((0, 2)),
+            0.05,
+            1e-4,
+            100,
+        )
+        self.assertTrue(np.allclose(out, original))
+
+    def test_fuel_cell_zero_diesel_grid_forming_mode(self) -> None:
+        from simu.fuel_cell_control import (
+            FuelCellControlInputs,
+            FuelCellControlParameters,
+            calculate_fuel_cell_power_decision,
+        )
+
+        params = FuelCellControlParameters(
+            power_step_kw=10.0,
+            diesel_power_limit_ratio=0.50,
+            diesel_power_stop_minimum_ratio=0.30,
+            electric_storage_soc_limit=0.30,
+            hydrogen_storage_soc_start_limit=0.30,
+            hydrogen_storage_soc_stop_limit=0.20,
+            electric_storage_soc_deadband=0.05,
+        )
+        decision = calculate_fuel_cell_power_decision(
+            params,
+            FuelCellControlInputs(
+                current_power_kw=0.0,
+                maximum_power_kw=90.0,
+                minimum_power_kw=20.0,
+                start_threshold_kw=30.0,
+                stop_threshold_kw=20.0,
+                diesel_power_kw=0.0,
+                diesel_capacity_kw=0.0,
+                electric_storage_soc_average=0.25,
+                hydrogen_storage_soc_average=0.50,
+                allow_zero_diesel=True,
+            ),
+        )
+        self.assertEqual(decision.action, "start")
+        self.assertAlmostEqual(decision.requested_delta_kw, 30.0, places=6)
+
+    def test_manager_commits_runtime_memory_only_after_closed_loop_dispatch(self) -> None:
+        manager_src = (
+            REPO_ROOT / "trainee" / "simu" / "renewable_control_parts" / "manager.py"
+        ).read_text(encoding="utf-8")
+        # 确认不再在开环计算阶段提前写回 state.runtime_memory
+        self.assertNotIn(
+            "if publishes_control_targets:\n                    state.runtime_memory = cycle_runtime_memory",
+            manager_src,
+        )
+        # 确认仅在闭环指令真实下发成功后提交 state.runtime_memory
+        self.assertIn(
+            "state.runtime_memory = cycle_runtime_memory\n                                state.last_sent_at = _now_text()",
+            manager_src,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -631,6 +631,7 @@ def _optimize_hydrogen_within_topology_islands(
     optimization_result: Optional[RenewableDispatchOptimizationResult] = None,
     runtime_memory: Optional[MutableMapping[str, Any]] = None,
     sim_time_seconds: Optional[float] = None,
+    zero_diesel_grid_forming: bool = False,
 ) -> Dict[str, Any]:
     hydrogen_electric_refs = _hydrogen_electric_resource_refs(snapshot)
     hydrogen_electric_connections = dict(resource_topology.resources)
@@ -734,7 +735,7 @@ def _optimize_hydrogen_within_topology_islands(
             pressure_states,
         )
     )
-    if not diesel_input_valid or diesel_capacity_kw <= EPSILON:
+    if (not diesel_input_valid or diesel_capacity_kw <= EPSILON) and not zero_diesel_grid_forming:
         diagnostics["action"] = "blocked"
         diagnostics["warnings"].append(
             "氢能策略缺少全部在线柴发的有效实时有功或额定容量，已按 fail closed 禁止计算"
@@ -1304,7 +1305,7 @@ def _optimize_hydrogen_within_topology_islands(
                 "controlReason": "hold_region",
                 "blockers": [],
             }
-            if scoped_diesel_capacity_kw <= EPSILON:
+            if scoped_diesel_capacity_kw <= EPSILON and not zero_diesel_grid_forming:
                 diagnostics["warnings"].append(
                     f"氢能设备{coupling_name}所属电气岛（{topology_island_id}）无在线柴发容量，"
                     "已按 fail closed 禁止自动调节"
@@ -1343,11 +1344,15 @@ def _optimize_hydrogen_within_topology_islands(
             required_start_delta_kw: Optional[float] = None
             fuel_cell_decision = None
             if is_electrolyzer:
-                diesel_raise_margin_kw = max(
-                    0.0,
-                    electrolyzer_diesel_limit_ratio * scoped_diesel_capacity_kw
-                    - scoped_predicted_diesel_kw,
-                )
+                if scoped_diesel_capacity_kw <= EPSILON and zero_diesel_grid_forming:
+                    # 零柴发构网运行：电制氢仅由电储高 SOC 与氢储未满驱动，不额外受柴发裕度阻断
+                    diesel_raise_margin_kw = max(allowed_power, start_threshold_kw)
+                else:
+                    diesel_raise_margin_kw = max(
+                        0.0,
+                        electrolyzer_diesel_limit_ratio * scoped_diesel_capacity_kw
+                        - scoped_predicted_diesel_kw,
+                    )
                 # 氢储 SOC 启机/升功率引入回差死区（默认停机 90% - 死区 5% = 85%），避免在 90% 边界高频抖动
                 h2_stop_limit = settings.electrolyzer_hydrogen_storage_soc_stop_minimum
                 h2_deadband = max(0.0, float(settings.hydrogen_pressure_deadband_ratio))
@@ -1405,6 +1410,9 @@ def _optimize_hydrogen_within_topology_islands(
                         diesel_capacity_kw=scoped_diesel_capacity_kw,
                         electric_storage_soc_average=electric_storage_soc,
                         hydrogen_storage_soc_average=hydrogen_storage_soc,
+                        allow_zero_diesel=bool(
+                            zero_diesel_grid_forming and scoped_diesel_capacity_kw <= EPSILON
+                        ),
                     ),
                 )
                 if (
@@ -2160,8 +2168,11 @@ def _optimize_hydrogen_within_topology_islands(
             "converterCorrectionKw": converter_correction,
             "balanceCorrectionKw": balance_correction,
             "predictedDieselAfterKw": predicted_diesel_kw,
-            "predictedDieselLoadRatioAfter": predicted_diesel_kw
-            / diesel_capacity_kw,
+            "predictedDieselLoadRatioAfter": (
+                predicted_diesel_kw / diesel_capacity_kw
+                if diesel_capacity_kw > EPSILON
+                else None
+            ),
             "predictedDieselAverageAfterKw": predicted_diesel_kw
             / diesel_unit_count,
         }

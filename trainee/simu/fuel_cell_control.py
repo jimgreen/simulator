@@ -34,6 +34,7 @@ class FuelCellControlInputs:
     diesel_capacity_kw: float
     electric_storage_soc_average: Optional[float]
     hydrogen_storage_soc_average: Optional[float]
+    allow_zero_diesel: bool = False
 
 
 @dataclass(frozen=True)
@@ -78,18 +79,23 @@ def calculate_fuel_cell_power_decision(
     step_kw = max(0.0, float(parameters.power_step_kw))
     diesel_capacity = max(0.0, float(inputs.diesel_capacity_kw))
     if diesel_capacity <= EPSILON:
-        return FuelCellControlDecision(action="hold", reason="invalid_diesel_capacity")
-    diesel_power = float(inputs.diesel_power_kw)
-    diesel_start_limit = float(parameters.diesel_power_limit_ratio)
-    diesel_stop_limit = float(parameters.diesel_power_stop_minimum_ratio)
-    diesel_raise_margin_kw = max(
-        0.0,
-        diesel_power - diesel_start_limit * diesel_capacity,
-    )
-    diesel_reduce_margin_kw = max(
-        0.0,
-        diesel_stop_limit * diesel_capacity - diesel_power,
-    )
+        if not inputs.allow_zero_diesel:
+            return FuelCellControlDecision(action="hold", reason="invalid_diesel_capacity")
+        # 零柴发构网运行模式：按电储 SOC 与氢储 SOC 独立驱动燃料电池启停与步长调功
+        diesel_raise_margin_kw = max(maximum_power, start_threshold)
+        diesel_reduce_margin_kw = 0.0
+    else:
+        diesel_power = float(inputs.diesel_power_kw)
+        diesel_start_limit = float(parameters.diesel_power_limit_ratio)
+        diesel_stop_limit = float(parameters.diesel_power_stop_minimum_ratio)
+        diesel_raise_margin_kw = max(
+            0.0,
+            diesel_power - diesel_start_limit * diesel_capacity,
+        )
+        diesel_reduce_margin_kw = max(
+            0.0,
+            diesel_stop_limit * diesel_capacity - diesel_power,
+        )
 
     electric_soc_deadband = max(0.0, float(parameters.electric_storage_soc_deadband))
     electric_soc_low = (

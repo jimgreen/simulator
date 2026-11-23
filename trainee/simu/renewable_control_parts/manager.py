@@ -2441,8 +2441,6 @@ class TraineeRenewableControlManager:
             )
             publishes_control_targets = trigger != "preview"
             with state.lock:
-                if publishes_control_targets:
-                    state.runtime_memory = cycle_runtime_memory
                 effective_target_snapshot = (
                     self._capture_effective_targets(plan)
                     if publishes_control_targets or state.effective_target_snapshot is None
@@ -2764,6 +2762,8 @@ class TraineeRenewableControlManager:
                                 and self._service_instance_id(service) == state.service_instance_id
                             )
                             if generation_valid and controller_valid:
+                                # 仅在闭环指令真实下发成功后提交跨周期反馈记忆（防开环/失败污染饱和态与驻留计时）
+                                state.runtime_memory = cycle_runtime_memory
                                 state.last_sent_at = _now_text()
                                 state.last_preview_started = time.monotonic()
                                 state.strategy_generation_active = has_dispatch_commands

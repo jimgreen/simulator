@@ -92,6 +92,7 @@ class _Variable:
     normal_step_kw: float = 0.0
     storage_soc: Optional[float] = None
     storage_forced_direction: str = ""
+    storage_commandable: bool = True
 
 
 @dataclass(frozen=True)
@@ -545,6 +546,7 @@ def _storage_variable(
         normal_step_kw=normal_step_kw,
         storage_soc=soc,
         storage_forced_direction=forced_direction,
+        storage_commandable=bool(row.get("commandable")),
     )
 
 
@@ -564,8 +566,11 @@ def _rebalance_storage_targets_by_soc(
 
     original = np.asarray(values, dtype=float).copy()
     tolerance = max(EPSILON, float(tolerance_kw))
+    # 仅对可直接下发 p_set 的可控储能执行 SOC 互挪，不对无 p_set 的构网平衡储能做无效纸面再平衡
     storage_indexes = [
-        index for index, item in enumerate(variables) if item.kind == "storage"
+        index
+        for index, item in enumerate(variables)
+        if item.kind == "storage" and item.storage_commandable
     ]
     if len(storage_indexes) < 2:
         return original
@@ -843,6 +848,13 @@ def _converter_variable(
         normal_step_kw = math.inf
         lower = minimum
         upper = maximum
+    # 计入双向效率损耗（eff < 1）时，常规单拍约束在同号半区（先归零下一拍再换向），
+    # 杜绝单拍跨零线性化时把能量损耗误算为凭空增益。
+    if eff < 1.0 - EPSILON:
+        if current > EPSILON and lower < 0.0 <= upper:
+            lower = 0.0
+        elif current < -EPSILON and upper > 0.0 >= lower:
+            upper = 0.0
     return _Variable(
         key=key,
         kind="converter",
