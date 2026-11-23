@@ -105,6 +105,30 @@ HYDROGEN_STORAGE_STATE_HEADERS = (
 )
 StorageTarget = Tuple[str, dict, str, Optional[dict], int]
 SIGNAL_MEASUREMENT_TYPES = {"RUN_STAT", "STATUS"}
+NON_NEGATIVE_SCADA_MEAS_TYPES = {
+    "WIND_SPEED",
+    "SOLAR_IRRADIANCE",
+    "PRESSURE",
+    "GAS_QUANTITY",
+    "SOC",
+    "I",
+    "U",
+    "V",
+}
+GRID_FORMING_STORAGE_CONTROL_TYPES = {
+    "V",
+    "U",
+    "VF",
+    "V_F",
+    "VTHETA",
+    "V_THETA",
+    "SLACK",
+    "SWING",
+    "VDC",
+    "V_DC",
+    "UDC",
+    "U_DC",
+}
 CLOSED_STATUS_SET_FIELD = "closed_status_set"
 CLOSED_STATUS_FIELD = "closed_status"
 LEGACY_CLOSED_STATUS_FIELD = "status"
@@ -206,6 +230,7 @@ class SimulationResult:
     scada_rows: Optional[List[List[str]]] = None
     device_states: Optional[List[Dict[str, Any]]] = None
     missing_measurements: Optional[List[Dict[str, str]]] = None
+    operating_warnings: Optional[List[Dict[str, Any]]] = None
 
 
 def default_config() -> SimulationConfig:
@@ -1486,6 +1511,7 @@ def update_hydrogen_storage_state_book(
     period_seconds: float,
     *,
     snapshot: Any,
+    operating_warnings: Optional[List[Dict[str, Any]]] = None,
 ) -> int:
     changed = ensure_hydrogen_storage_state_rows_book(stat_book, model_book)
     block = _hydrogen_storage_state_block(stat_book)
@@ -1526,6 +1552,7 @@ def update_hydrogen_storage_state_book(
         )
         rated_capacity = _hydrogen_storage_rated_capacity(model_row)
         water_volume = _hydrogen_storage_water_volume(model_row)
+        next_pressure: Optional[float] = None
         if water_volume is None or water_volume <= 0.0:
             _warn_throttled(
                 ("hydro_water_vol", name),
@@ -1546,6 +1573,178 @@ def update_hydrogen_storage_state_book(
             )
         else:
             changed += _set_row_value(state, "soc", format_number(next_soc))
+
+        # 保留氢储罐无截断积分以暴露错误控制策略，同时向教员台输出显式运行告警。
+        if operating_warnings is not None:
+            flow_min = _safe_float(model_row.get("flow_min"), None)
+            flow_max = _safe_float(model_row.get("flow_max"), None)
+            if (flow_min is not None and flow < flow_min - 1e-9) or (
+                flow_max is not None and flow > flow_max + 1e-9
+            ):
+                operating_warnings.append(
+                    {
+                        "code": "hydro_storage_flow_limit",
+                        "severity": "warn",
+                        "dev_type": "HydroStorage",
+                        "dev_name": name,
+                        "metric": "FLOW",
+                        "value": round(float(flow), 6),
+                        "limit_min": None if flow_min is None else round(float(flow_min), 6),
+                        "limit_max": None if flow_max is None else round(float(flow_max), 6),
+                        "message": (
+                            f"氢储罐 {name} 充放氢流量越界：当前流量 {format_number(flow)} Nm³/h，"
+                            f"超出允许范围 [{format_number(flow_min) if flow_min is not None else '-∞'}, "
+                            f"{format_number(flow_max) if flow_max is not None else '+∞'}]，"
+                            "提示运行方式存在越界风险"
+                        ),
+                    }
+                )
+            quantity_warned = False
+            if next_quantity < -1e-9:
+                quantity_warned = True
+                soc_suffix = (
+                    f"，SOC {format_number(next_soc * 100.0)}%"
+                    if next_soc is not None
+                    else ""
+                )
+                operating_warnings.append(
+                    {
+                        "code": "hydro_storage_negative_quantity",
+                        "severity": "error",
+                        "dev_type": "HydroStorage",
+                        "dev_name": name,
+                        "metric": "GAS_QUANTITY",
+                        "value": round(float(next_quantity), 6),
+                        "limit_min": 0.0,
+                        "limit_max": None if rated_capacity is None else round(float(rated_capacity), 6),
+                        "flow": round(float(flow), 6),
+                        "soc": None if next_soc is None else round(float(next_soc), 6),
+                        "message": (
+                            f"氢储罐 {name} 过度放氢导致储量跌破下限：当前储氢量 {format_number(next_quantity)} Nm³"
+                            f"{soc_suffix}（当前流量 {format_number(flow)} Nm³/h），"
+                            "错误运行方式：空罐仍继续放氢"
+                        ),
+                    }
+                )
+            elif rated_capacity is not None and rated_capacity > 0.0 and next_quantity > rated_capacity + 1e-9:
+                quantity_warned = True
+                soc_suffix = (
+                    f"，SOC {format_number(next_soc * 100.0)}%"
+                    if next_soc is not None
+                    else ""
+                )
+                operating_warnings.append(
+                    {
+                        "code": "hydro_storage_overcapacity",
+                        "severity": "warn",
+                        "dev_type": "HydroStorage",
+                        "dev_name": name,
+                        "metric": "GAS_QUANTITY",
+                        "value": round(float(next_quantity), 6),
+                        "limit_min": 0.0,
+                        "limit_max": round(float(rated_capacity), 6),
+                        "flow": round(float(flow), 6),
+                        "soc": None if next_soc is None else round(float(next_soc), 6),
+                        "message": (
+                            f"氢储罐 {name} 过度充氢超过额定容量：当前储氢量 {format_number(next_quantity)} Nm³"
+                            f"{soc_suffix}，超出额定容量 {format_number(rated_capacity)} Nm³"
+                            f"（当前流量 {format_number(flow)} Nm³/h），"
+                            "错误运行方式：满罐仍继续制氢注入"
+                        ),
+                    }
+                )
+            elif next_soc is not None and (next_soc < -1e-9 or next_soc > 1.0 + 1e-9):
+                quantity_warned = True
+                operating_warnings.append(
+                    {
+                        "code": "hydro_storage_soc_limit",
+                        "severity": "error" if next_soc < -1e-9 else "warn",
+                        "dev_type": "HydroStorage",
+                        "dev_name": name,
+                        "metric": "SOC",
+                        "value": round(float(next_soc), 6),
+                        "limit_min": 0.0,
+                        "limit_max": 1.0,
+                        "flow": round(float(flow), 6),
+                        "message": (
+                            f"氢储罐 {name} SOC 越界：当前 SOC {format_number(next_soc * 100.0)}%，"
+                            "超出允许范围 [0%, 100%]，提示运行方式错误"
+                        ),
+                    }
+                )
+            if next_pressure is not None:
+                pressure_min = _safe_float(model_row.get("pressure_min"), None)
+                pressure_max = _safe_float(model_row.get("pressure_max"), None)
+                full_tank_pressure = (
+                    rated_capacity / water_volume / 10.0
+                    if rated_capacity is not None and rated_capacity > 0.0 and water_volume is not None and water_volume > 0.0
+                    else None
+                )
+                if next_pressure < -1e-9:
+                    operating_warnings.append(
+                        {
+                            "code": "hydro_storage_negative_pressure",
+                            "severity": "error",
+                            "dev_type": "HydroStorage",
+                            "dev_name": name,
+                            "metric": "PRESSURE",
+                            "value": round(float(next_pressure), 6),
+                            "limit_min": 0.0,
+                            "limit_max": None if pressure_max is None else round(float(pressure_max), 6),
+                            "flow": round(float(flow), 6),
+                            "message": (
+                                f"氢储罐 {name} 气压跌破零值：当前压力 {format_number(next_pressure)} MPa"
+                                f"（当前流量 {format_number(flow)} Nm³/h），"
+                                "错误运行方式：过度放氢导致罐压失物理下界"
+                            ),
+                        }
+                    )
+                elif pressure_max is not None and next_pressure > pressure_max + 1e-9:
+                    operating_warnings.append(
+                        {
+                            "code": "hydro_storage_overpressure",
+                            "severity": "warn",
+                            "dev_type": "HydroStorage",
+                            "dev_name": name,
+                            "metric": "PRESSURE",
+                            "value": round(float(next_pressure), 6),
+                            "limit_min": None if pressure_min is None else round(float(pressure_min), 6),
+                            "limit_max": round(float(pressure_max), 6),
+                            "flow": round(float(flow), 6),
+                            "message": (
+                                f"氢储罐 {name} 超压运行：当前压力 {format_number(next_pressure)} MPa，"
+                                f"超出允许上限 {format_number(pressure_max)} MPa"
+                                f"（当前流量 {format_number(flow)} Nm³/h），"
+                                "错误运行方式：超压继续充氢"
+                            ),
+                        }
+                    )
+                elif (
+                    pressure_min is not None
+                    and pressure_min > 0.0
+                    and (full_tank_pressure is None or pressure_min < full_tank_pressure - 1e-9)
+                    and next_pressure < pressure_min - 1e-9
+                    and not quantity_warned
+                ):
+                    operating_warnings.append(
+                        {
+                            "code": "hydro_storage_underpressure",
+                            "severity": "warn",
+                            "dev_type": "HydroStorage",
+                            "dev_name": name,
+                            "metric": "PRESSURE",
+                            "value": round(float(next_pressure), 6),
+                            "limit_min": round(float(pressure_min), 6),
+                            "limit_max": None if pressure_max is None else round(float(pressure_max), 6),
+                            "flow": round(float(flow), 6),
+                            "message": (
+                                f"氢储罐 {name} 欠压运行：当前压力 {format_number(next_pressure)} MPa，"
+                                f"低于允许下限 {format_number(pressure_min)} MPa"
+                                f"（当前流量 {format_number(flow)} Nm³/h），"
+                                "错误运行方式：低气压继续放氢"
+                            ),
+                        }
+                    )
     changed += apply_hydrogen_storage_state_book(model_book, stat_book)
     return changed
 
@@ -3051,13 +3250,21 @@ def update_storage_soc(
     period_seconds: float,
     dev_define_file: Optional[Path] = None,
     snapshot=None,
+    operating_warnings: Optional[List[Dict[str, Any]]] = None,
 ) -> int:
     dev_stat_file = Path(dev_stat_file)
     if not dev_stat_file.exists():
         return 0
     stat_book = EBook(dev_stat_file)
     dev_define = _capability_define_book(model_book, dev_define_file)
-    changed = update_storage_soc_book(stat_book, model_book, period_seconds, dev_define, snapshot=snapshot)
+    changed = update_storage_soc_book(
+        stat_book,
+        model_book,
+        period_seconds,
+        dev_define,
+        snapshot=snapshot,
+        operating_warnings=operating_warnings,
+    )
     if changed:
         write_ebook_aligned(stat_book, dev_stat_file)
     return changed
@@ -3069,6 +3276,7 @@ def update_hydrogen_storage_state(
     period_seconds: float,
     *,
     snapshot: Any,
+    operating_warnings: Optional[List[Dict[str, Any]]] = None,
 ) -> int:
     dev_stat_file = Path(dev_stat_file)
     stat_book = EBook(dev_stat_file) if dev_stat_file.exists() else EBook({})
@@ -3077,6 +3285,7 @@ def update_hydrogen_storage_state(
         model_book,
         period_seconds,
         snapshot=snapshot,
+        operating_warnings=operating_warnings,
     )
     if changed:
         write_ebook_aligned(stat_book, dev_stat_file)
@@ -3207,6 +3416,18 @@ def _storage_internal_power_for_soc(terminal_power: float, charge_efficiency: fl
     return 0.0
 
 
+def _storage_control_role_label(source: Mapping[str, Any]) -> str:
+    """根据电源控制模式识别构网/平衡储能与可控储能角色。"""
+    for field in ("control_type", "ctrl_type", "ctrl_mode"):
+        raw = str(source.get(field, "") or "").strip().upper()
+        if not raw:
+            continue
+        normalized = raw.replace("-", "_").replace(" ", "")
+        if normalized in GRID_FORMING_STORAGE_CONTROL_TYPES:
+            return "构网/平衡储能"
+    return "可控储能"
+
+
 def update_storage_soc_book(
     stat_book: EBook,
     model_book: EBook,
@@ -3214,6 +3435,7 @@ def update_storage_soc_book(
     dev_define: EBook,
     storage_power_by_name: Optional[Mapping[object, float]] = None,
     snapshot=None,
+    operating_warnings: Optional[List[Dict[str, Any]]] = None,
 ) -> int:
     changed = _ensure_storage_soc_rows_book(stat_book, model_book, dev_define)
     block = _storage_soc_block(stat_book)
@@ -3248,27 +3470,53 @@ def update_storage_soc_book(
         bounded_soc = _clamp(soc, soc_min, soc_max)
         raw_next_soc = bounded_soc - soc_power * float(period_seconds) / 3600.0 / max(capacity, 1e-9)
         next_soc = _clamp(raw_next_soc, soc_min, soc_max)
+        dev_name = str(source.get("name", "") or _storage_name)
         if soc > soc_max + 1e-9 or soc < soc_min - 1e-9:
             _warn_throttled(
-                ("storage_soc_init", _dev_type, source.get("name", "")),
+                ("storage_soc_init", _dev_type, dev_name),
                 "Storage %s.%s SOC %.6f is outside model limits [%.6f, %.6f]; state integration starts from the nearest limit",
                 _dev_type,
-                source.get("name", ""),
+                dev_name,
                 soc,
                 soc_min,
                 soc_max,
             )
         if raw_next_soc > soc_max + 1e-9 or raw_next_soc < soc_min - 1e-9:
             _warn_throttled(
-                ("storage_soc_clamp", _dev_type, source.get("name", "")),
+                ("storage_soc_clamp", _dev_type, dev_name),
                 "Storage %s.%s solved power %.6f kW would move SOC to %.6f outside model limits [%.6f, %.6f]; SOC state was clamped",
                 _dev_type,
-                source.get("name", ""),
+                dev_name,
                 actual_power,
                 raw_next_soc,
                 soc_min,
                 soc_max,
             )
+            if operating_warnings is not None:
+                role_label = _storage_control_role_label(source)
+                overcharge = raw_next_soc > soc_max + 1e-9
+                operating_warnings.append(
+                    {
+                        "code": "storage_soc_overcharge" if overcharge else "storage_soc_overdischarge",
+                        "severity": "warn",
+                        "dev_type": _dev_type,
+                        "dev_name": dev_name,
+                        "role": role_label,
+                        "metric": "SOC",
+                        "value": round(float(raw_next_soc), 6),
+                        "clamped_value": round(float(next_soc), 6),
+                        "limit_min": round(float(soc_min), 6),
+                        "limit_max": round(float(soc_max), 6),
+                        "power_kw": round(float(actual_power), 4),
+                        "message": (
+                            f"{role_label} {dev_name} 持续{'过充' if overcharge else '过放'}越界："
+                            f"求解功率 {format_number(actual_power)} kW，"
+                            f"理论积分 SOC {format_number(raw_next_soc * 100.0)}%"
+                            f"{'超出上限 ' + format_number(soc_max * 100.0) + '%' if overcharge else '低于下限 ' + format_number(soc_min * 100.0) + '%'}，"
+                            f"错误运行方式：储能已达边界仍继续{'充电' if overcharge else '放电'}"
+                        ),
+                    }
+                )
         changed += _set_row_value(row, "soc_curr", format_number(next_soc))
     return changed
 
@@ -4292,9 +4540,14 @@ def add_noise_to_rows(
             median_deviation = 0.0
         if sigma > 0.0 or median_deviation != 0.0 or meas_type == "SOC":
             try:
-                value = float(row[7])
+                raw_value = float(row[7])
+                value = raw_value
                 if sigma > 0.0 or median_deviation != 0.0:
                     value += rng.gauss(median_deviation, sigma)
+                    # 仅在真值本身非负时截断高斯噪声引入的虚假负值；
+                    # 若真值本身因错误策略已跌破零（如氢储罐负储量/负气压），保留负值以暴露错误。
+                    if meas_type in NON_NEGATIVE_SCADA_MEAS_TYPES and raw_value >= 0.0 and value < 0.0:
+                        value = 0.0
                 row[7] = format_number(value)
             except (IndexError, TypeError, ValueError):
                 pass
@@ -4434,13 +4687,22 @@ def run_once(
         )
         snapshot, solver_info = _solve_snapshot_from_book(solver, model_book, config.model_file)
         closed_status_updates = update_closed_status_results_book(stat_book, model_book)
-        soc_updates = update_storage_soc_book(stat_book, model_book, config.period_seconds, dev_define, snapshot=snapshot)
+        operating_warnings: List[Dict[str, Any]] = []
+        soc_updates = update_storage_soc_book(
+            stat_book,
+            model_book,
+            config.period_seconds,
+            dev_define,
+            snapshot=snapshot,
+            operating_warnings=operating_warnings,
+        )
         storage_soc = _storage_soc_values_from_book(stat_book, model_book)
         hydrogen_updates = update_hydrogen_storage_state_book(
             stat_book,
             model_book,
             config.period_seconds,
             snapshot=snapshot,
+            operating_warnings=operating_warnings,
         )
         hydrogen_storage_state = hydrogen_storage_state_values_from_book(stat_book)
         device_states = collect_device_operating_states(snapshot, model_book)
@@ -4490,6 +4752,7 @@ def run_once(
             scada_rows=scada_rows,
             device_states=device_states,
             missing_measurements=missing_measurements,
+            operating_warnings=operating_warnings,
         )
 
     work_dir = config.real_file.parent / ".simu_loop_work"
@@ -4505,12 +4768,21 @@ def run_once(
     )
     snapshot, solver_info = _solve_snapshot_from_book(solver, model_book, config.model_file)
     closed_status_updates = update_closed_status_results(config.dev_stat_file, model_book)
-    soc_updates = update_storage_soc(config.dev_stat_file, model_book, config.period_seconds, config.dev_define_file, snapshot=snapshot)
+    operating_warnings = []
+    soc_updates = update_storage_soc(
+        config.dev_stat_file,
+        model_book,
+        config.period_seconds,
+        config.dev_define_file,
+        snapshot=snapshot,
+        operating_warnings=operating_warnings,
+    )
     hydrogen_updates = update_hydrogen_storage_state(
         config.dev_stat_file,
         model_book,
         config.period_seconds,
         snapshot=snapshot,
+        operating_warnings=operating_warnings,
     )
     device_states = collect_device_operating_states(snapshot, model_book)
 
@@ -4548,6 +4820,7 @@ def run_once(
         scada_rows=scada_rows,
         device_states=device_states,
         missing_measurements=missing_measurements,
+        operating_warnings=operating_warnings,
     )
 
 

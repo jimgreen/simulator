@@ -1646,26 +1646,67 @@ class _ClockStepMixin:
                 + (f"，其余 {len(missing_measurements) - 12} 条" if len(missing_measurements) > 12 else "")
             )
         has_missing = int(_to_float(result.get("missing"), 0) or 0) != 0
-        self._append_runtime_log_batch(
-            (
-                {
-                    "log_type": "控制响应",
-                    "target": "运行边界 / 控制指令",
-                    "result": "完成",
-                    "detail": control_detail,
-                    "level": "ok",
-                    "simu_time": simu_time,
-                },
-                {
-                    "log_type": "潮流计算",
-                    "target": "内存模型 / 量测快照",
-                    "result": "有缺失" if has_missing else "完成",
-                    "detail": power_flow_detail,
-                    "level": "warn" if has_missing else "ok",
-                    "simu_time": simu_time,
-                },
+        operating_warnings = [
+            dict(item)
+            for item in (result.get("operating_warnings") or [])
+            if (type(item) is dict or isinstance(item, Mapping))
+        ]
+        log_entries: List[Dict[str, Any]] = [
+            {
+                "log_type": "控制响应",
+                "target": "运行边界 / 控制指令",
+                "result": "完成",
+                "detail": control_detail,
+                "level": "ok",
+                "simu_time": simu_time,
+            },
+            {
+                "log_type": "潮流计算",
+                "target": "内存模型 / 量测快照",
+                "result": "有缺失" if has_missing else "完成",
+                "detail": power_flow_detail,
+                "level": "warn" if has_missing else "ok",
+                "simu_time": simu_time,
+            },
+        ]
+        if operating_warnings:
+            has_error_warning = any(
+                str(item.get("severity", "")).strip().lower() == "error"
+                for item in operating_warnings
             )
-        )
+            device_labels: List[str] = []
+            for item in operating_warnings:
+                label = str(item.get("dev_name", "") or item.get("dev_type", "")).strip()
+                if label and label not in device_labels:
+                    device_labels.append(label)
+            target_text = "、".join(device_labels[:3])
+            if len(device_labels) > 3:
+                target_text += f" 等 {len(device_labels)} 台设备"
+            warning_detail = [
+                str(item.get("message", "")).strip()
+                for item in operating_warnings
+                if str(item.get("message", "")).strip()
+            ]
+            if not warning_detail:
+                warning_detail = [
+                    f"{item.get('dev_type', '')}/{item.get('dev_name', '')} {item.get('metric', '')} 越界"
+                    for item in operating_warnings
+                ]
+            log_entries.append(
+                {
+                    "log_type": "运行告警",
+                    "target": target_text or "设备运行越界",
+                    "result": (
+                        f"严重越界 ({len(operating_warnings)} 项)"
+                        if has_error_warning
+                        else f"越界告警 ({len(operating_warnings)} 项)"
+                    ),
+                    "detail": warning_detail,
+                    "level": "error" if has_error_warning else "warn",
+                    "simu_time": simu_time,
+                }
+            )
+        self._append_runtime_log_batch(tuple(log_entries))
 
     def _power_flow_failure_result(self, error: BaseException) -> str:
         text = f"{type(error).__name__}: {error}".casefold()
@@ -1801,7 +1842,7 @@ class _ClockStepMixin:
                     clock_advance = max(1e-9, float(advance_minutes))
                 else:
                     clock_advance = _effective_clock_step(self.clock.step_minutes, self.clock.speed)
-                self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, clock_advance)
+                # 保持仿真时钟在切换倍率或求解前单调连续，不因对齐粗网格而跳空或提前改写时钟。
                 self.clock.minute = self.clock.absolute_minute % 1440.0
                 period_seconds = clock_advance * 60.0
                 minute = self.clock.minute
@@ -1812,10 +1853,20 @@ class _ClockStepMixin:
                 definition_revision = self.definition_snapshot.revision
                 curve_revision = self._curve_revision
                 self._remote_adjustment_cycle_seq += 1
-                boundary_stat_book, boundary_yt_ctrl_book = self._prepare_runtime_inputs(
+                before_remote_adjustment_execution = {
+                    key: dict(value)
+                    for key, value in self._remote_adjustment_execution.items()
+                }
+                (
+                    boundary_stat_book,
+                    boundary_yt_ctrl_book,
+                    pending_remote_adjustment_execution,
+                ) = self._prepare_runtime_inputs(
                     minute,
                     absolute_minute,
                     remote_adjustment_cycle_token=self._remote_adjustment_cycle_seq,
+                    period_seconds=period_seconds,
+                    defer_remote_adjustment_commit=True,
                 )
                 config = self._make_config(
                     period_seconds=period_seconds,
@@ -1896,6 +1947,10 @@ class _ClockStepMixin:
 
                 if execution.runtime_stat_book is not None:
                     self._merge_execution_runtime_stat_book(execution.runtime_stat_book)
+                self._commit_remote_adjustment_execution(
+                    before_remote_adjustment_execution,
+                    pending_remote_adjustment_execution,
+                )
                 kernel_result = execution.result
                 self._record_compute_execution(execution)
                 if backtrack_info is not None:
@@ -1953,6 +2008,9 @@ class _ClockStepMixin:
                 self.clock.step_count += 1
                 self.clock.updated_at = measurement_updated_at
                 if crossed_cycle_start:
+                    # 跨周期归零时开启新 run_id 并重置储能/氢罐与自动指令，
+                    # 但保留本拍刚计算完成的有效量测作为无缝过渡帧，避免客户端在瞬间读到空量测帧。
+                    self.clock.run_id += 1
                     self._reset_storage_soc_to_initial()
                     self._reset_hydrogen_storage_state_to_initial()
                     if self.clear_commands_on_start_and_reset:
@@ -1983,7 +2041,18 @@ class _ClockStepMixin:
                             level="ok",
                             simu_time=minute_to_time(self.clock.minute),
                         )
-                    self._invalidate_automatic_runtime_state_for_simulation_reset()
+                    definition_signature = (
+                        self._measurement_definition_signature_for_current_revision()
+                    )
+                    self._measurement_history.clear()
+                    self._measurement_delta_seq += 1
+                    self._measurement_delta_state = self._measurement_delta_current_items(
+                        self.latest_measurements,
+                        measurement_clock=measurement_clock,
+                    )
+                    self._measurement_delta_history = []
+                    self._measurement_delta_definition_signature = definition_signature
+                    self._measurement_delta_step_count = self.clock.step_count
                 else:
                     definition_signature = (
                         self._measurement_definition_signature_for_current_revision()
@@ -2117,6 +2186,11 @@ class _ClockStepMixin:
             "missing_measurements": [
                 dict(item)
                 for item in (getattr(result, "missing_measurements", None) or [])
+                if (type(item) is dict or isinstance(item, Mapping))
+            ],
+            "operating_warnings": [
+                dict(item)
+                for item in (getattr(result, "operating_warnings", None) or [])
                 if (type(item) is dict or isinstance(item, Mapping))
             ],
             "overlay_updates": getattr(result, "overlay_updates", 0),

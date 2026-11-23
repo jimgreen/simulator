@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ..device_roles import device_role_from_type
 from .common import *  # noqa: F401,F403
 from .common import (
     _MeasurementDefinitionLayout,
@@ -1580,21 +1581,84 @@ class _ControlsMixin:
                 return candidates[meas_type]
         return None
 
+    @staticmethod
+    def _effective_remote_adjustment_response_ratio(
+        base_ratio: float,
+        period_seconds: Optional[float],
+    ) -> float:
+        """将 1 秒基准一阶响应比例按仿真步长 Δt 等效换算，避免高倍率仿真拉长响应时间常数。"""
+        ratio = max(0.0, min(1.0, float(base_ratio)))
+        if ratio <= 0.0 or ratio >= 1.0:
+            return ratio
+        if period_seconds is None:
+            return ratio
+        try:
+            dt = float(period_seconds)
+        except (TypeError, ValueError):
+            return ratio
+        if not math.isfinite(dt) or dt <= 0.0 or abs(dt - 1.0) <= 1e-9:
+            return ratio
+        effective = 1.0 - ((1.0 - ratio) ** dt)
+        return max(0.0, min(1.0, effective))
+
+    def _is_renewable_active_power_adjustment(self, key: Tuple[str, str, str]) -> bool:
+        """判断遥调键是否属于风电/光伏有功上限调节。"""
+        dev_type, dev_name, set_type = key
+        if set_type not in ("p_set", "p_ac_set", "p_dc_set"):
+            return False
+        if device_role_from_type(dev_type) in {"wind", "pv"}:
+            return True
+        block = self.source_model_book.data.get(dev_type)
+        if block is None:
+            return False
+        for row in block.data:
+            if str(row.get("name", "")).strip() == dev_name:
+                return device_role_from_type(row.get("dev_type")) in {"wind", "pv"}
+        return False
+
+    def _commit_remote_adjustment_execution(
+        self,
+        before_execution: Mapping[Tuple[str, str, str], Dict[str, Any]],
+        pending_execution: Mapping[Tuple[str, str, str], Dict[str, Any]],
+    ) -> None:
+        """在潮流收敛且结果未陈旧时原子提交遥调执行状态，并保留锁外新下发的并发指令。"""
+        all_keys = set(before_execution) | set(pending_execution)
+        for key in all_keys:
+            current_state = self._remote_adjustment_execution.get(key)
+            before_state = before_execution.get(key)
+            # 若潮流求解期间外部已写入新状态（如新的 force_target_once），保留外部最新状态。
+            if current_state != before_state:
+                continue
+            if key in pending_execution:
+                self._remote_adjustment_execution[key] = dict(pending_execution[key])
+            else:
+                self._remote_adjustment_execution.pop(key, None)
+
     def _remote_adjustment_boundary_books(
         self,
         absolute_minute: int | float,
         cycle_token: int,
-    ) -> Tuple[EBook, EBook]:
+        *,
+        period_seconds: Optional[float] = None,
+        return_next_state: bool = False,
+    ) -> Any:
         stat_book = simu_loop._clone_ebook(self.runtime_stat_book)
         yt_ctrl_book = simu_loop._clone_ebook(self.yt_ctrl_book)
         active_keys = self._active_remote_adjustment_keys(absolute_minute)
-        tracked_keys = active_keys | set(self._remote_adjustment_execution)
-        response_ratio = self.remote_adjustment_response_ratio
+        working_execution: Dict[Tuple[str, str, str], Dict[str, Any]] = {
+            key: dict(value)
+            for key, value in self._remote_adjustment_execution.items()
+        }
+        tracked_keys = active_keys | set(working_execution)
+        response_ratio = self._effective_remote_adjustment_response_ratio(
+            self.remote_adjustment_response_ratio,
+            period_seconds,
+        )
 
         for key in sorted(tracked_keys):
             target = self._set_value_from_book(self.runtime_stat_book, key)
             if target is None:
-                self._remote_adjustment_execution.pop(key, None)
+                working_execution.pop(key, None)
                 continue
             try:
                 safe_target = self._validated_set_command_item(
@@ -1620,14 +1684,14 @@ class _ControlsMixin:
                     f"{_number_text(target)} 超出允许范围；本轮潮流计算已阻断。"
                 ) from exc
 
-            state = self._remote_adjustment_execution.get(key)
+            state = working_execution.get(key)
             if state is None:
                 fallback = self._set_value_from_book(self.source_stat_book, key)
                 current = self._latest_true_remote_adjustment_value(key)
                 if current is None:
                     current = target if fallback is None else fallback
                 state = {"executed_value": float(current), "last_cycle_token": None}
-                self._remote_adjustment_execution[key] = state
+                working_execution[key] = state
 
             if state.pop("force_target_once", False):
                 state["executed_value"] = float(target)
@@ -1635,13 +1699,27 @@ class _ControlsMixin:
                 state["last_cycle_token"] = cycle_token
             elif state.get("last_cycle_token") != cycle_token:
                 current = self._latest_true_remote_adjustment_value(key)
-                if current is None:
-                    current = float(state.get("executed_value", target))
+                prev_executed = _to_float(state.get("executed_value"), None)
+                if self._is_renewable_active_power_adjustment(key):
+                    # 新能源遥调本质为有功上限设点：以 max(实测出力, 上拍已执行设点) 作为基线，
+                    # 防止夜间/无风实发为 0 时放开限幅被永久卡在 response_ratio * target。
+                    if current is not None and prev_executed is not None:
+                        baseline = max(float(current), float(prev_executed))
+                    elif prev_executed is not None:
+                        baseline = float(prev_executed)
+                    elif current is not None:
+                        baseline = float(current)
+                    else:
+                        baseline = float(target)
+                else:
+                    baseline = float(current) if current is not None else float(
+                        prev_executed if prev_executed is not None else target
+                    )
                 tolerance = max(1e-9, abs(target) * 1e-9)
-                if abs(target - current) <= tolerance or response_ratio >= 1.0:
+                if abs(target - baseline) <= tolerance or response_ratio >= 1.0:
                     executed = target
                 else:
-                    executed = target * response_ratio + current * (1.0 - response_ratio)
+                    executed = target * response_ratio + baseline * (1.0 - response_ratio)
                     if abs(target - executed) <= tolerance:
                         executed = target
                 state["executed_value"] = float(executed)
@@ -1706,8 +1784,11 @@ class _ControlsMixin:
                 self._write_boundary_set_value(yt_ctrl_book, key, executed_value)
 
             if key not in active_keys and math.isclose(executed_value, target, rel_tol=1e-9, abs_tol=1e-9):
-                self._remote_adjustment_execution.pop(key, None)
+                working_execution.pop(key, None)
 
+        if return_next_state:
+            return stat_book, yt_ctrl_book, working_execution
+        self._remote_adjustment_execution = working_execution
         return stat_book, yt_ctrl_book
 
     def _cancel_command_input_items(self, payload: Mapping[str, Any]) -> List[Any]:
@@ -3968,7 +4049,8 @@ class _ControlsMixin:
             elif action in ("slower", "speed_down"):
                 self.clock.speed = _previous_clock_speed(self.clock.speed)
             effective_step = _effective_clock_step(self.clock.step_minutes, self.clock.speed)
-            self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, effective_step)
+            if requested_absolute_minute is not None or action == "stop":
+                self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, effective_step)
             self.clock.minute = self.clock.absolute_minute % 1440.0
             if should_reset_storage_soc:
                 self._reset_storage_soc_to_initial()

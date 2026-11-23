@@ -602,8 +602,8 @@ class PolarMicrogridSimulator(
                 )
 
             effective_step = _effective_clock_step(self.clock.step_minutes, self.clock.speed)
-            self.clock.absolute_minute = _align_minute_to_step(self.clock.absolute_minute, effective_step)
-            self.clock.minute = self.clock.absolute_minute % 1440
+            # 仅调整系统参数（如切换时钟倍率）时不强行跳改当前仿真时刻，保证时钟单调连续不跳空。
+            self.clock.minute = self.clock.absolute_minute % 1440.0
             self.clock.updated_at = time.time()
 
             stored_params = self.local_settings.get("system_parameters", {})
@@ -981,7 +981,9 @@ class PolarMicrogridSimulator(
         absolute_minute: int | float,
         *,
         remote_adjustment_cycle_token: Optional[int] = None,
-    ) -> Tuple[EBook, EBook]:
+        period_seconds: Optional[float] = None,
+        defer_remote_adjustment_commit: bool = False,
+    ) -> Any:
         if remote_adjustment_cycle_token is None:
             self._remote_adjustment_cycle_seq += 1
             remote_adjustment_cycle_token = self._remote_adjustment_cycle_seq
@@ -992,6 +994,8 @@ class PolarMicrogridSimulator(
         return self._remote_adjustment_boundary_books(
             absolute_minute,
             remote_adjustment_cycle_token,
+            period_seconds=period_seconds,
+            return_next_state=defer_remote_adjustment_commit,
         )
 
     def _current_signal_values(self) -> Dict[Tuple[str, str, str], float]:
