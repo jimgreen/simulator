@@ -298,6 +298,35 @@ class ClusterAndProxyTests(unittest.TestCase):
                 def channel_logs(self, rtu, limit=120):
                     return [{"time": "2026-11-23T00:00:00", "level": "INFO", "message": "ready"}]
 
+                def service_overview(self, rtu_id=None):
+                    return {
+                        "available": True,
+                        "hosted_by": "simulator",
+                        "host": {"pid": 12345, "running": True, "running_channels": 1, "total_channels": 1},
+                        "services": [{"rtu_id": 1, "model": "M1", "bind_ip": "127.0.0.1", "port": 2405, "running": True}],
+                        "rtus": [{"rtu_id": 1, "channel_id": 1, "name": "M1", "process_enable": 1}],
+                        "channels": [{"channel_id": 1, "name": "M1", "remote_host": "127.0.0.1", "remote_port": 2405}],
+                    }
+
+                def list_point_definitions(self, rtu, kind):
+                    return [{"pnt_no": 1, "name": "P1", "io_address": 16385, "io_address_hex": "0x4001", "type_id": 13, "type_name": "M_ME_NC_1"}]
+
+                def control_service_process(self, action, *, rtu_id=None, scope="single"):
+                    calls.append(("service_process", action, rtu_id, scope))
+                    return {"scope": scope, "action": action, "results": [{"rtu_id": rtu_id or 1, "running": action != "stop"}]}
+
+                def update_service_config(self, rtu, values, *, apply_restart=True):
+                    calls.append(("service_config", rtu, values.get("port"), apply_restart))
+                    return {"rtu_id": rtu, "config": values, "running": True, "restarted": apply_restart}
+
+                def update_rtu_definition(self, rtu, values):
+                    calls.append(("rtu_update", rtu, values.get("name")))
+                    return {"rtu_id": rtu, "name": values.get("name")}
+
+                def update_channel_definition(self, channel_id, values, *, apply_restart=True):
+                    calls.append(("channel_def_update", channel_id, values.get("remote_port")))
+                    return {"channel": {"channel_id": channel_id, "remote_port": values.get("remote_port")}, "restarted": apply_restart}
+
                 def close(self):
                     self.closed = True
 
@@ -358,11 +387,35 @@ class ClusterAndProxyTests(unittest.TestCase):
                 )
                 self.assertEqual(s_ch, 200)
                 self.assertFalse(json.loads(b_ch.decode("utf-8"))["channel"]["running"])
+
+                s_svc, _, b_svc = _req(b"GET /api/simulator104/service HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                self.assertEqual(s_svc, 200)
+                self.assertEqual(json.loads(b_svc.decode("utf-8"))["host"]["pid"], 12345)
+
+                s_pdef, _, b_pdef = _req(b"GET /api/simulator104/point-definitions?rtu_id=1&kind=yc HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                self.assertEqual(s_pdef, 200)
+                self.assertEqual(json.loads(b_pdef.decode("utf-8"))["items"][0]["io_address"], 16385)
+
+                def _post_json(route: str, obj: dict):
+                    raw = json.dumps(obj).encode("utf-8")
+                    return _req(
+                        f"POST {route} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {len(raw)}\r\n\r\n".encode("ascii")
+                        + raw
+                    )
+
+                self.assertEqual(_post_json("/api/simulator104/service/process", {"action": "restart", "rtu_id": 1, "scope": "single"})[0], 200)
+                self.assertEqual(_post_json("/api/simulator104/service/config", {"rtu_id": 1, "config": {"bind_ip": "0.0.0.0", "port": 2406}})[0], 200)
+                self.assertEqual(_post_json("/api/simulator104/rtu/update", {"rtu_id": 1, "name": "StationA", "process_enable": 1})[0], 200)
+                self.assertEqual(_post_json("/api/simulator104/channel-define/update", {"channel_id": 1, "remote_port": 2406})[0], 200)
             finally:
                 srv.server_close()
             self.assertTrue(fake_host.closed)
             self.assertIn(("cmd", 1, "yk", 1, 1), calls)
             self.assertIn(("channel", 1, "stop"), calls)
+            self.assertIn(("service_process", "restart", 1, "single"), calls)
+            self.assertIn(("service_config", 1, 2406, True), calls)
+            self.assertIn(("rtu_update", 1, "StationA"), calls)
+            self.assertIn(("channel_def_update", 1, 2406), calls)
 
 
 if __name__ == "__main__":

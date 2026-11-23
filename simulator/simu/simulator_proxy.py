@@ -101,6 +101,10 @@ def make_simulator_proxy_server(
             "/api/simulator104/commands",
             "/api/simulator104/channel",
             "/api/simulator104/points/disable",
+            "/api/simulator104/service/config",
+            "/api/simulator104/service/process",
+            "/api/simulator104/rtu/update",
+            "/api/simulator104/channel-define/update",
         }
 
         def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
@@ -169,6 +173,33 @@ def make_simulator_proxy_server(
                     limit = int(raw_limit) if raw_limit.isdigit() else 120
                     items = host.channel_logs(int(raw_rtu), limit=limit)
                     self._send_json({"rtu_id": int(raw_rtu), "items": items})
+                elif path == "/api/simulator104/service":
+                    if iec104_host is None or not callable(getattr(iec104_host, "service_overview", None)):
+                        self._send_json(
+                            {
+                                "available": False,
+                                "hosted_by": "simulator",
+                                "reason": "IEC104 联动后台服务未启用",
+                                "host": {"pid": 0, "running": False, "running_channels": 0, "total_channels": 0},
+                                "services": [],
+                                "rtus": [],
+                                "channels": [],
+                            }
+                        )
+                    else:
+                        query = parse_qs(urlparse(self.path).query)
+                        raw_rtu = str((query.get("rtu_id") or [""])[0]).strip()
+                        rtu_filter = int(raw_rtu) if raw_rtu.isdigit() else None
+                        self._send_json(iec104_host.service_overview(rtu_id=rtu_filter))
+                elif path == "/api/simulator104/point-definitions":
+                    host = _require_iec104_host()
+                    query = parse_qs(urlparse(self.path).query)
+                    raw_rtu = str((query.get("rtu_id") or [""])[0]).strip()
+                    raw_kind = str((query.get("kind") or ["yc"])[0]).strip().lower()
+                    if not raw_rtu.isdigit():
+                        raise ValueError("请指定有效的 rtu_id")
+                    items = host.list_point_definitions(int(raw_rtu), raw_kind)
+                    self._send_json({"rtu_id": int(raw_rtu), "kind": raw_kind, "items": items})
                 elif path in {"/simulator104", "/simulator104/"}:
                     served = static_cache.serve(
                         self,
@@ -309,6 +340,48 @@ def make_simulator_proxy_server(
                         self._parse_bool_flag(payload["disabled"]),
                     )
                     self._send_json({"point": result})
+                    return
+                elif path == "/api/simulator104/service/process":
+                    host = _require_iec104_host()
+                    action = str(payload.get("action") or "").strip().lower()
+                    scope = str(payload.get("scope") or "single").strip().lower()
+                    rtu_raw = payload.get("rtu_id")
+                    if not action:
+                        raise ValueError("请提供 action（start/stop/restart）")
+                    rtu_val = int(rtu_raw) if rtu_raw is not None and str(rtu_raw).strip() != "" else None
+                    result = host.control_service_process(action, rtu_id=rtu_val, scope=scope)
+                    self._send_json(result)
+                    return
+                elif path == "/api/simulator104/service/config":
+                    host = _require_iec104_host()
+                    rtu_raw = payload.get("rtu_id")
+                    if rtu_raw is None or str(rtu_raw).strip() == "":
+                        raise ValueError("请指定有效的 rtu_id")
+                    config_patch = payload.get("config") if isinstance(payload.get("config"), dict) else payload
+                    apply_restart = self._parse_bool_flag(payload.get("apply_restart", True))
+                    result = host.update_service_config(int(rtu_raw), config_patch, apply_restart=apply_restart)
+                    self._send_json(result)
+                    return
+                elif path == "/api/simulator104/rtu/update":
+                    host = _require_iec104_host()
+                    rtu_raw = payload.get("rtu_id")
+                    if rtu_raw is None or str(rtu_raw).strip() == "":
+                        raise ValueError("请指定有效的 rtu_id")
+                    result = host.update_rtu_definition(int(rtu_raw), payload)
+                    self._send_json({"rtu": result})
+                    return
+                elif path == "/api/simulator104/channel-define/update":
+                    host = _require_iec104_host()
+                    cid_raw = payload.get("channel_id")
+                    if cid_raw is None or str(cid_raw).strip() == "":
+                        raise ValueError("请指定有效的 channel_id")
+                    apply_restart = self._parse_bool_flag(payload.get("apply_restart", True))
+                    result = host.update_channel_definition(
+                        int(cid_raw),
+                        payload,
+                        apply_restart=apply_restart,
+                    )
+                    self._send_json(result)
                     return
                 elif path.startswith("/api/rtus/"):
                     parts = [seg for seg in path.split("/") if seg]

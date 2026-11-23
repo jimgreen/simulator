@@ -44,7 +44,7 @@
         }
       } catch (_e) {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20261123-audit-v4" />
+    <link rel="stylesheet" href="/styles.css?v=20261124-104-tabs-v3" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -1314,8 +1314,10 @@
           <div class="scada104-page-layout">
             <div class="scada104-page-toolbar">
               <div class="sub-tabs" role="tablist" aria-label="IEC104 视图切换">
-                <button type="button" class="is-active" data-scada104-tab="channels" role="tab" aria-selected="true">通道与指令</button>
+                <button type="button" class="is-active" data-scada104-tab="service" role="tab" aria-selected="true">服务与进程</button>
+                <button type="button" data-scada104-tab="config" role="tab" aria-selected="false">站与通道配置</button>
                 <button type="button" data-scada104-tab="points" role="tab" aria-selected="false">四遥点表</button>
+                <button type="button" data-scada104-tab="commands" role="tab" aria-selected="false">指令下发</button>
                 <button type="button" data-scada104-tab="logs" role="tab" aria-selected="false">通信日志</button>
               </div>
               <div class="scada104-page-meta">
@@ -1325,34 +1327,262 @@
             </div>
 
             <p id="scada104BridgeError" class="scada104-banner is-error" role="status"></p>
+            <p id="scada104ServiceNotice" class="scada104-banner" role="status"></p>
 
-            <div class="scada104-view-pane" data-scada104-pane="channels">
-              <section class="panel scada104-panel" aria-label="模型通道状态">
+            <div class="scada104-view-pane" data-scada104-pane="service">
+              <section class="panel scada104-panel" aria-label="IEC104 服务进程管控">
                 <div class="panel-head">
-                  <h2>模型通道状态</h2>
+                  <h2>IEC104 服务进程管控</h2>
                   <div class="panel-actions">
-                    <button id="scada104RefreshStatusBtn" type="button" title="立即刷新模型通道状态">刷新状态</button>
+                    <button id="scada104StartAllBtn" type="button">全部启动</button>
+                    <button id="scada104RestartAllBtn" type="button">全部重启</button>
+                    <button id="scada104StopAllBtn" class="compact-action-btn is-danger" type="button">全部停止</button>
+                    <button id="scada104ReloadServiceBtn" type="button">刷新</button>
+                  </div>
+                </div>
+                <div id="scada104HostSummary" class="scada104-host-strip">
+                  <div class="scada104-host-metric"><span>托管状态</span><strong id="scada104HostState">—</strong></div>
+                  <div class="scada104-host-metric"><span>进程 PID</span><strong id="scada104HostPid" class="mono-cell">—</strong></div>
+                  <div class="scada104-host-metric"><span>运行通道</span><strong id="scada104HostChannels" class="mono-cell">0 / 0</strong></div>
+                  <div class="scada104-host-metric"><span>起始端口</span><strong id="scada104HostFirstPort" class="mono-cell">—</strong></div>
+                  <div class="scada104-host-metric"><span>同步周期</span><strong id="scada104HostInterval" class="mono-cell">—</strong></div>
+                  <div class="scada104-host-metric"><span>启动时间</span><strong id="scada104HostStartedAt" class="mono-cell">—</strong></div>
+                </div>
+                <div class="scada104-table-wrap">
+                  <table class="runtime-device-table scada104-table">
+                    <thead>
+                      <tr>
+                        <th>模型 / RTU</th>
+                        <th class="mono-cell">监听地址</th>
+                        <th class="numeric-cell">公共地址</th>
+                        <th>进程状态</th>
+                        <th class="mono-cell">PID</th>
+                        <th class="numeric-cell">YC / YX / YK / YT</th>
+                        <th class="numeric-cell">连接数</th>
+                        <th class="mono-cell">收发帧</th>
+                        <th>错误信息</th>
+                        <th>进程操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="scada104ServiceRows">
+                      <tr><td colspan="10" class="empty-state">暂无 IEC104 服务实例</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section class="panel scada104-panel scada104-fill-panel" aria-label="客户端连接监控">
+                <div class="panel-head">
+                  <h2>客户端连接监控</h2>
+                  <div class="panel-actions">
+                    <select id="scada104ConnRtuSelect" aria-label="连接监控模型"></select>
+                    <span id="scada104ConnSummary" class="scada104-pill is-off">0 活动 / 0 打开</span>
+                  </div>
+                </div>
+                <div class="scada104-table-wrap is-tall">
+                  <table class="runtime-device-table scada104-table">
+                    <thead>
+                      <tr>
+                        <th class="mono-cell">接入时间</th>
+                        <th class="mono-cell">客户端地址</th>
+                        <th>状态</th>
+                      </tr>
+                    </thead>
+                    <tbody id="scada104ConnectionsBody">
+                      <tr><td colspan="3" class="empty-state">暂无客户端连接记录</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+
+            <div class="scada104-view-pane" data-scada104-pane="config" hidden>
+              <section class="panel scada104-panel" aria-label="RTU 定义">
+                <div class="panel-head">
+                  <h2>RTU 定义</h2>
+                  <div class="panel-actions">
+                    <button id="scada104ReloadConfigBtn" type="button">刷新配置</button>
                   </div>
                 </div>
                 <div class="scada104-table-wrap">
                   <table class="runtime-device-table scada104-table">
                     <thead>
                       <tr>
-                        <th>模型</th>
-                        <th class="numeric-cell">RTU</th>
-                        <th class="mono-cell">IEC104 地址</th>
-                        <th>状态</th>
-                        <th class="numeric-cell">YC / YX / YK / YT</th>
-                        <th>通道与点表操作</th>
+                        <th class="numeric-cell">RTU 编号</th>
+                        <th class="numeric-cell">通道标识</th>
+                        <th>规约</th>
+                        <th>RTU 名称</th>
+                        <th>自动通信</th>
+                        <th>保存报文</th>
+                        <th>进程状态</th>
+                        <th>操作</th>
                       </tr>
                     </thead>
-                    <tbody id="scada104ModelRows">
-                      <tr><td colspan="6" class="empty-state">正在读取模型</td></tr>
+                    <tbody id="scada104RtuDefRows">
+                      <tr><td colspan="8" class="empty-state">暂无 RTU 定义</td></tr>
                     </tbody>
                   </table>
                 </div>
               </section>
 
+              <section class="panel scada104-panel" aria-label="通道与规约配置">
+                <div class="panel-head">
+                  <h2>通道与规约配置</h2>
+                  <div class="panel-actions">
+                    <select id="scada104ChDefSelect" aria-label="选择 IEC104 通道定义"></select>
+                  </div>
+                </div>
+                <form id="scada104ChDefForm" class="scada104-config-grid">
+                  <label class="scada104-field">通道名称
+                    <input id="scada104ChName" type="text" required />
+                  </label>
+                  <label class="scada104-field">主站地址
+                    <input id="scada104ChRtuAddr" type="number" min="1" max="65535" step="1" required />
+                  </label>
+                  <label class="scada104-field">监听地址
+                    <select id="scada104CfgHostPreset" aria-label="监听地址预设">
+                      <option value="127.0.0.1">127.0.0.1</option>
+                      <option value="0.0.0.0">0.0.0.0</option>
+                      <option value="localhost">localhost</option>
+                      <option value="__custom__">自定义地址</option>
+                    </select>
+                  </label>
+                  <label id="scada104CfgCustomHostWrap" class="scada104-field" hidden>自定义 IP
+                    <input id="scada104CfgHostCustom" type="text" autocomplete="off" placeholder="127.0.0.1" />
+                  </label>
+                  <label class="scada104-field">监听端口
+                    <input id="scada104ChPort" type="number" min="1" max="65535" step="1" required />
+                  </label>
+                  <label class="scada104-field">最大连接数
+                    <input id="scada104CfgMaxConn" type="number" min="0" max="256" step="1" required />
+                  </label>
+                  <label class="scada104-field">周期(ms)
+                    <input id="scada104CfgTickMs" type="number" min="10" max="60000" step="10" required />
+                  </label>
+                  <label class="scada104-field">选择超时(ms)
+                    <input id="scada104CfgSelectTimeoutMs" type="number" min="100" max="120000" step="100" required />
+                  </label>
+                  <label class="scada104-field">遥测起始地址
+                    <input id="scada104ChYcBegin" type="number" min="0" max="16777215" step="1" />
+                  </label>
+                  <label class="scada104-field">遥信起始地址
+                    <input id="scada104ChYxBegin" type="number" min="0" max="16777215" step="1" />
+                  </label>
+                  <label class="scada104-field">遥控起始地址
+                    <input id="scada104ChYkBegin" type="number" min="0" max="16777215" step="1" />
+                  </label>
+                  <label class="scada104-field">遥调起始地址
+                    <input id="scada104ChYtBegin" type="number" min="0" max="16777215" step="1" />
+                  </label>
+                  <label class="scada104-field">遥测数据类型
+                    <select id="scada104ChYcType">
+                      <option value="1">M_ME_NC_1 (短浮点)</option>
+                      <option value="2">M_ME_NB_1 (标度化)</option>
+                      <option value="3">M_ME_NA_1 (归一化)</option>
+                    </select>
+                  </label>
+                  <label class="scada104-field">遥信数据类型
+                    <select id="scada104ChYxType">
+                      <option value="1">M_SP_NA_1 (单点)</option>
+                      <option value="2">M_DP_NA_1 (双点)</option>
+                    </select>
+                  </label>
+                  <label class="scada104-field">遥控执行类型
+                    <select id="scada104ChYkType">
+                      <option value="1">C_SC_NA_1 (单点)</option>
+                      <option value="2">C_DC_NA_1 (双点)</option>
+                    </select>
+                  </label>
+                  <label class="scada104-field">遥调执行类型
+                    <select id="scada104ChYtType">
+                      <option value="1">C_SE_NA_1 (归一化)</option>
+                      <option value="2">C_SE_NB_1 (标度化)</option>
+                      <option value="3">C_SE_NC_1 (短浮点)</option>
+                    </select>
+                  </label>
+                  <label class="scada104-field">发送窗口 k
+                    <input id="scada104CfgK" type="number" min="1" max="32767" step="1" required />
+                  </label>
+                  <label class="scada104-field">确认窗口 w
+                    <input id="scada104CfgW" type="number" min="1" max="32767" step="1" required />
+                  </label>
+                  <label class="scada104-field">超时 t1(s)
+                    <input id="scada104CfgT1" type="number" min="1" max="255" step="0.5" required />
+                  </label>
+                  <label class="scada104-field">确认周期 t2(s)
+                    <input id="scada104CfgT2" type="number" min="1" max="255" step="0.5" required />
+                  </label>
+                  <label class="scada104-field">测试周期 t3(s)
+                    <input id="scada104CfgT3" type="number" min="1" max="255" step="0.5" required />
+                  </label>
+                  <label class="scada104-field">ASDU 最大长度
+                    <input id="scada104CfgMaxAsdu" type="number" min="16" max="249" step="1" required />
+                  </label>
+                  <label class="scada104-field">总召唤周期(秒)
+                    <input id="scada104ChCallAll" type="number" min="0" max="86400" step="1" />
+                  </label>
+                  <label class="scada104-field">自动发送全数据
+                    <select id="scada104ChAutoAll">
+                      <option value="1">启用</option>
+                      <option value="0">停用</option>
+                    </select>
+                  </label>
+                  <div class="scada104-config-actions">
+                    <label class="inline-check-filter"><input id="scada104CfgAutoRestart" type="checkbox" checked /><span>保存后自动重启运行中通道</span></label>
+                    <button id="scada104SaveChDefBtn" class="primary" type="submit">保存通道配置</button>
+                  </div>
+                </form>
+              </section>
+            </div>
+
+            <div class="scada104-view-pane" data-scada104-pane="points" hidden>
+              <section class="panel scada104-panel scada104-fill-panel" aria-label="四遥点表">
+                <div class="panel-head">
+                  <h2>四遥点表</h2>
+                  <div class="panel-actions">
+                    <select id="scada104PointsRtuSelect" aria-label="点表模型"></select>
+                    <select id="scada104PointsKindSelect" aria-label="四遥类型">
+                      <option value="yc">遥测 YC</option>
+                      <option value="yx">遥信 YX</option>
+                      <option value="yk">遥控 YK</option>
+                      <option value="yt">遥调 YT</option>
+                    </select>
+                    <input id="scada104PointsSearch" class="scada104-search" type="search" placeholder="筛选名称、点号或 IOA…" aria-label="筛选四遥点表" autocomplete="off" />
+                    <label class="inline-check-filter"><input id="scada104PausePointsRefresh" type="checkbox" /><span>暂停自动刷新</span></label>
+                    <button id="scada104ReloadPointsBtn" type="button">刷新</button>
+                  </div>
+                </div>
+                <div class="scada104-def-toolbar">
+                  <div class="scada104-pager">
+                    <button id="scada104PointsPrevBtn" type="button">上一页</button>
+                    <span id="scada104PointsPageInfo" class="mono-cell">0 / 0</span>
+                    <button id="scada104PointsNextBtn" type="button">下一页</button>
+                  </div>
+                </div>
+                <div class="scada104-table-wrap is-tall">
+                  <table class="runtime-device-table scada104-table">
+                    <thead>
+                      <tr>
+                        <th class="numeric-cell is-sortable" data-scada104-sort="pnt_no" aria-sort="none">点号</th>
+                        <th class="is-sortable" data-scada104-sort="name" aria-sort="none">测点名称</th>
+                        <th class="mono-cell">仿真源名</th>
+                        <th class="mono-cell is-sortable" data-scada104-sort="io_address" aria-sort="none">信息体地址 (IOA)</th>
+                        <th class="mono-cell">类型标识</th>
+                        <th class="mono-cell">时间标签</th>
+                        <th class="numeric-cell is-sortable" data-scada104-sort="value" aria-sort="none">当前值</th>
+                        <th>质量/状态</th>
+                        <th>操作控制</th>
+                      </tr>
+                    </thead>
+                    <tbody id="scada104PointsTableBody">
+                      <tr><td colspan="9" class="empty-state">请选择模型查看点表</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+
+            <div class="scada104-view-pane" data-scada104-pane="commands" hidden>
               <section class="panel scada104-panel" aria-labelledby="scada104CommandTitle">
                 <div class="panel-head">
                   <h2 id="scada104CommandTitle">下发仿真指令</h2>
@@ -1386,43 +1616,6 @@
                 <p id="scada104PointMeta" class="scada104-point-meta"></p>
                 <p id="scada104Receipt" class="scada104-banner" role="status"></p>
                 <ul id="scada104RecentReceipts" class="scada104-receipt-history" aria-label="最近指令记录"></ul>
-              </section>
-            </div>
-
-            <div class="scada104-view-pane" data-scada104-pane="points" hidden>
-              <section class="panel scada104-panel scada104-fill-panel" aria-label="四遥点表">
-                <div class="panel-head">
-                  <h2>四遥点表</h2>
-                  <div class="panel-actions">
-                    <select id="scada104PointsRtuSelect" aria-label="点表模型"></select>
-                    <select id="scada104PointsKindSelect" aria-label="四遥类型">
-                      <option value="yc">遥测 YC</option>
-                      <option value="yx">遥信 YX</option>
-                      <option value="yk">遥控 YK</option>
-                      <option value="yt">遥调 YT</option>
-                    </select>
-                    <input id="scada104PointsSearch" class="scada104-search" type="search" placeholder="筛选测点名称或点号…" aria-label="筛选四遥点表" autocomplete="off" />
-                    <label class="inline-check-filter"><input id="scada104PausePointsRefresh" type="checkbox" /><span>暂停自动刷新</span></label>
-                    <button id="scada104ReloadPointsBtn" type="button">刷新</button>
-                  </div>
-                </div>
-                <div class="scada104-table-wrap is-tall">
-                  <table class="runtime-device-table scada104-table">
-                    <thead>
-                      <tr>
-                        <th class="numeric-cell is-sortable" data-scada104-sort="pnt_no" aria-sort="none">点号</th>
-                        <th class="is-sortable" data-scada104-sort="name" aria-sort="none">测点名称</th>
-                        <th class="mono-cell">仿真源名</th>
-                        <th class="numeric-cell is-sortable" data-scada104-sort="value" aria-sort="none">当前值</th>
-                        <th>质量/状态</th>
-                        <th>操作控制</th>
-                      </tr>
-                    </thead>
-                    <tbody id="scada104PointsTableBody">
-                      <tr><td colspan="6" class="empty-state">请选择模型查看点表</td></tr>
-                    </tbody>
-                  </table>
-                </div>
               </section>
             </div>
 
@@ -1805,7 +1998,7 @@
       </div>
     </dialog>
     <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
-    <script defer src="/js/00-i18n.js?v=20261123-audit-v4"></script>
+    <script defer src="/js/00-i18n.js?v=20261124-104-tabs-v3"></script>
     <script defer src="/js/01-state-core.js?v=20261123-audit-v4"></script>
     <script defer src="/js/02-api-models.js?v=20261123-audit-v4"></script>
     <script defer src="/js/03-diagram-core.js?v=20261123-audit-v4"></script>
@@ -1814,6 +2007,6 @@
     <script defer src="/js/06-overview-runtime.js?v=20261123-audit-v4"></script>
     <script defer src="/js/07-measurements-faults.js?v=20261123-audit-v4"></script>
     <script defer src="/js/08-ux-enhancements.js?v=20261123-audit-v4"></script>
-    <script defer src="/js/09-scada104.js?v=20261123-audit-v4"></script>
+    <script defer src="/js/09-scada104.js?v=20261124-104-tabs-v3"></script>
   </body>
 </html>

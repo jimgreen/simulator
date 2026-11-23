@@ -8144,6 +8144,10 @@ textarea[aria-invalid="true"] {
   color: var(--muted);
 }
 
+.scada104-field[hidden] {
+  display: none !important;
+}
+
 .scada104-field select,
 .scada104-field input {
   width: 100%;
@@ -8200,8 +8204,147 @@ textarea[aria-invalid="true"] {
   color: var(--red);
 }
 
+.scada104-host-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.scada104-host-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-subtle);
+  min-width: 0;
+}
+
+.scada104-host-metric span {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scada104-host-metric strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scada104-service-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.scada104-config-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.scada104-config-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+.scada104-conn-wrap {
+  max-height: 290px;
+}
+
+.scada104-def-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.scada104-inline-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.scada104-inline-select select {
+  height: 32px;
+  min-width: 180px;
+}
+
+.scada104-pager {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.scada104-panel .panel-actions button,
+.scada104-panel .panel-actions .compact-action-btn,
+.scada104-pager button {
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.scada104-pager button {
+  height: 30px;
+  padding: 0 10px;
+}
+
+.scada104-table-input,
+.scada104-table-select {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  min-width: 96px;
+}
+
+.scada104-err-cell {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--red);
+  font-size: 12px;
+}
+
+@media (max-width: 1180px) {
+  .scada104-host-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .scada104-service-split {
+    grid-template-columns: 1fr;
+  }
+
+  .scada104-config-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 1080px) {
   .scada104-command-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .scada104-config-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
