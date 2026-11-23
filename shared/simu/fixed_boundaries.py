@@ -700,6 +700,17 @@ def _repair_fluid_devices(
             )
             if midpoint is not None:
                 candidates.append(midpoint)
+            if block_name == "HydroStorage":
+                # HydroStorage.pressure_set 是由储氢量实时积分推导的动态罐压：
+                # 凡是有限正压（哪怕低于 pressure_min 或高于 pressure_max）均应原样送入潮流求解器，
+                # 以真实反映管网压差并暴露错误控制策略；仅在缺失、非有限或 <= 0 时才兜底正压参考。
+                repair_minimum = math.nextafter(0.0, 1.0)
+                repair_maximum = math.inf
+                repair_reason = "动态储氢罐定压力边界缺失或跌破零值，求解器回退正压参考"
+            else:
+                repair_minimum = minimum
+                repair_maximum = maximum
+                repair_reason = "投入设备采用定压力控制时压力参考必须有效且位于允许范围内"
             _repair_field(
                 block=block,
                 block_name=block_name,
@@ -708,9 +719,9 @@ def _repair_fluid_devices(
                 aliases=("p_set",),
                 candidates=candidates,
                 corrections=corrections,
-                minimum=minimum,
-                maximum=maximum,
-                reason="投入设备采用定压力控制时压力参考必须有效且位于允许范围内",
+                minimum=repair_minimum,
+                maximum=repair_maximum,
+                reason=repair_reason,
             )
 
         if prefix == "Heat":

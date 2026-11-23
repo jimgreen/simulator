@@ -375,6 +375,210 @@ class ClosedLoopSimulationAuditTests(unittest.TestCase):
             sim.set_system_parameters({"clock_speed": 60})
             self.assertAlmostEqual(sim.clock.absolute_minute, round(5.0 / 60.0, 9), places=9)
 
+    def test_fixed_boundaries_preserves_dynamic_hydro_storage_positive_pressure(self) -> None:
+        """验证 repair_fixed_boundary_setpoints 保留氢储罐越界动态正压，仅在缺失或 <=0 时兜底。"""
+        from simu.fixed_boundaries import repair_fixed_boundary_setpoints
+
+        model_book = EBook(APP_ROOT / "model.e")
+        hydro_rows = simu_loop._hydrogen_storage_rows(model_book)
+        self.assertTrue(hydro_rows)
+
+        # 欠压正值（0.5 < pressure_min=2）保持原值不被篡改回中值 23.5
+        under_book = simu_loop._clone_ebook(model_book)
+        under_book.data["HydroStorage"].data[0]["pressure_set"] = "0.5"
+        repair_fixed_boundary_setpoints(under_book)
+        self.assertAlmostEqual(float(under_book.data["HydroStorage"].data[0]["pressure_set"]), 0.5, places=6)
+
+        # 超压正值（52.0 > pressure_max=45）保持原值
+        over_book = simu_loop._clone_ebook(model_book)
+        over_book.data["HydroStorage"].data[0]["pressure_set"] = "52.0"
+        repair_fixed_boundary_setpoints(over_book)
+        self.assertAlmostEqual(float(over_book.data["HydroStorage"].data[0]["pressure_set"]), 52.0, places=6)
+
+        # 跌破零值（-0.2 <= 0）时才兜底为正压参考供流体求解器求解
+        neg_book = simu_loop._clone_ebook(model_book)
+        neg_book.data["HydroStorage"].data[0]["pressure_set"] = "-0.2"
+        repair_fixed_boundary_setpoints(neg_book)
+        self.assertGreater(float(neg_book.data["HydroStorage"].data[0]["pressure_set"]), 0.0)
+
+    def test_backtrack_respects_renewable_anchor_and_concurrent_new_command(self) -> None:
+        """验证新能源回溯锚点不被夜间零出力压回 0，且回溯提交保留并发新指令并不漏写已弹出键。"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim = _make_simulator(tmp_dir)
+            ren_dev_type = ""
+            ren_name = ""
+            target_kw = 20.0
+            for block_name in ("ACGenerator", "DCGenerator"):
+                block = sim.source_model_book.data.get(block_name)
+                if block is None:
+                    continue
+                for row in block.data:
+                    if any(tok in str(row.get("dev_type", "")).lower() for tok in ("pv", "wind")):
+                        ren_dev_type = block_name
+                        ren_name = str(row["name"])
+                        target_kw = float(simu_loop._safe_float(row.get("p_max"), 20.0) or 20.0)
+                        break
+                if ren_name:
+                    break
+            self.assertTrue(ren_name)
+            ren_key = (ren_dev_type, ren_name, "p_set")
+            sim.apply_student_commands(
+                {
+                    "set_values": [
+                        {
+                            "dev_type": ren_dev_type,
+                            "dev_name": ren_name,
+                            "set_type": "p_set",
+                            "set_value": target_kw,
+                        }
+                    ]
+                },
+                source="trainee",
+            )
+            sim._materialize_active_control_commands(0.0)
+            sim.latest_real_rows = [
+                ["1", f"{ren_name}_P", ren_dev_type, ren_name, "P_GEN", "1", "1", "0.0"]
+            ]
+            sim._remote_adjustment_execution[ren_key] = {
+                "executed_value": target_kw,
+                "target_value": target_kw,
+                "last_cycle_token": 1,
+            }
+            cfg = sim._make_config(
+                period_seconds=1.0,
+                dev_stat_book=simu_loop._clone_ebook(sim.runtime_stat_book),
+                yt_ctrl_book=simu_loop._clone_ebook(sim.yt_ctrl_book),
+            )
+            # 实测 0 但已执行设点已等于目标上限 -> 不应被加入回溯列表压回 0
+            candidates = sim._power_flow_backtrack_candidates(cfg, 0.0)
+            self.assertNotIn(ren_key, candidates)
+
+            # 验证回溯提交：1) 原已弹出的 key_popped 被重新写入 accepted；2) 并发修改的 key_concurrent 不被覆盖
+            key_popped = ("ACGenerator", "G_POP", "p_set")
+            key_concurrent = ("ACGenerator", "G_CONC", "p_set")
+            before_exec = {
+                key_popped: {"executed_value": 10.0, "target_value": 50.0, "last_cycle_token": 1},
+                key_concurrent: {"executed_value": 20.0, "target_value": 40.0, "last_cycle_token": 1},
+            }
+            pending_exec = {
+                key_concurrent: {"executed_value": 34.0, "target_value": 40.0, "last_cycle_token": 2},
+            }
+            # 模拟锁外并发新指令写入 key_concurrent
+            sim._remote_adjustment_execution = {
+                key_popped: dict(before_exec[key_popped]),
+                key_concurrent: {
+                    "executed_value": 99.0,
+                    "target_value": 99.0,
+                    "force_target_once": True,
+                    "last_cycle_token": None,
+                },
+            }
+            backtrack_info = {
+                "factor": 0.5,
+                "attempts": 1,
+                "initial_error": "mock",
+                "controls": [
+                    {"key": key_popped, "actual": 10.0, "candidate": 50.0, "accepted": 30.0},
+                    {"key": key_concurrent, "actual": 20.0, "candidate": 34.0, "accepted": 27.0},
+                ],
+            }
+            sim._apply_backtrack_controls_to_pending_execution(
+                pending_exec,
+                before_exec,
+                backtrack_info,
+                2,
+            )
+            sim._commit_remote_adjustment_execution(before_exec, pending_exec)
+            sim._record_power_flow_backtrack(backtrack_info, 0.0)
+
+            self.assertEqual(sim._remote_adjustment_execution[key_popped]["executed_value"], 30.0)
+            self.assertEqual(sim._remote_adjustment_execution[key_concurrent]["executed_value"], 99.0)
+            self.assertTrue(sim._remote_adjustment_execution[key_concurrent].get("force_target_once"))
+
+    def test_device_fault_expiry_does_not_overwrite_command_issued_during_fault(self) -> None:
+        """验证设备故障期间新下发的停机指令，在故障窗口解除当拍不被 _fault_restore 过期旧值覆写。"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim = _make_simulator(tmp_dir)
+            diesel_rows = [
+                row
+                for row in sim.source_model_book.data["ACGenerator"].data
+                if "diesel" in str(row.get("dev_type", "")).lower()
+            ]
+            self.assertTrue(diesel_rows)
+            diesel_name = str(diesel_rows[0]["name"])
+            sim.curves["mode"] = "day"
+            sim.local_settings["device_faults"] = [
+                {
+                    "dev_type": "ACGenerator",
+                    "dev_name": diesel_name,
+                    "run_stat": 0,
+                    "start_minute": 10,
+                    "end_minute": 20,
+                }
+            ]
+            # 1) t=12 处于故障窗口内，故障前 run_stat=1 进入 _fault_restore，设备被迫停运 0
+            sim.clock.absolute_minute = 12.0
+            sim.clock.minute = 12.0
+            stat_in_fault, _yt = sim._prepare_runtime_inputs(12.0, 12.0, period_seconds=60.0)
+            run_row_in_fault = next(
+                r
+                for r in stat_in_fault.data["RunStat"].data
+                if str(r.get("dev_type")) == "ACGenerator" and str(r.get("dev_name")) == diesel_name
+            )
+            self.assertEqual(str(run_row_in_fault["run_stat"]), "0")
+            self.assertIn(("RunStat", "ACGenerator", diesel_name), sim._fault_restore)
+
+            # 2) 故障期间学员台下发停机指令 run_stat=0
+            sim.apply_student_commands(
+                {
+                    "run_status": [
+                        {"dev_type": "ACGenerator", "dev_name": diesel_name, "run_stat": 0}
+                    ]
+                },
+                source="trainee",
+            )
+
+            # 3) t=21 故障窗口刚解除，必须保持故障期间新下发的 run_stat=0，不能被旧值 "1" 覆盖闪烁
+            sim.clock.absolute_minute = 21.0
+            sim.clock.minute = 21.0
+            stat_after_fault, _yt = sim._prepare_runtime_inputs(21.0, 21.0, period_seconds=60.0)
+            run_row_after_fault = next(
+                r
+                for r in stat_after_fault.data["RunStat"].data
+                if str(r.get("dev_type")) == "ACGenerator" and str(r.get("dev_name")) == diesel_name
+            )
+            self.assertEqual(str(run_row_after_fault["run_stat"]), "0")
+            self.assertNotIn(("RunStat", "ACGenerator", diesel_name), sim._fault_restore)
+
+    def test_apply_realtime_input_books_applies_load_model_only_once(self) -> None:
+        """验证无逐负荷 LoadPower 时 apply_load_model 仅执行一次，不产生平方缩放失真。"""
+        model_book = EBook(
+            {
+                "ACLoad": [
+                    {"idx": "1", "name": "L1", "pbase": "1", "qbase": "1", "pv0": "10", "qv0": "0", "run_stat": "1"}
+                ]
+            }
+        )
+        dev_define = EBook(
+            {
+                "load_temperature": [
+                    {"name": "L1", "temp_base": "20", "temp_factor": "0.05"}
+                ]
+            }
+        )
+        # 温度 30℃ -> temp_scale = 1 + 0.05 * (30 - 20) = 1.5；单次缩放应得 15.0 kW（而非两次平方 22.5 kW）
+        weather_book = EBook({"Weather": [{"air_temp_c": "30"}]})
+        _changed, out_book, _define, _weather = simu_loop.apply_realtime_input_books(
+            model_book,
+            weather_book,
+            EBook({}),
+            EBook({}),
+            dev_define,
+            period_seconds=60.0,
+        )
+        p_out, _q, _pb, _qb = simu_loop._load_power(out_book.data["ACLoad"].data[0])
+        self.assertAlmostEqual(p_out, 15.0, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3086,6 +3086,8 @@ def apply_device_capability_limits(
     dev_define_file: Optional[Path],
     period_seconds: float = DEFAULT_PERIOD_SECONDS,
     active_power_controls: Optional[set[Tuple[str, str]]] = None,
+    *,
+    apply_load_curves: bool = True,
 ) -> int:
     dev_define = _capability_define_book(model_book, dev_define_file)
     if not dev_define.data:
@@ -3099,6 +3101,7 @@ def apply_device_capability_limits(
         dev_define,
         period_seconds,
         active_power_controls,
+        apply_load_curves=apply_load_curves,
     )
 
 
@@ -3549,6 +3552,7 @@ def apply_realtime_inputs(
     changed += apply_mode_file(model_book, mode_file)
     changed += apply_weather_file(model_book, weather_file, dev_define_file)
     changed += apply_yt_ctrl_file(model_book, yt_ctrl_file)
+    # apply_weather_file 已执行过一次负荷曲线/温度缩放，此处禁止重复执行 apply_load_model 避免平方失真。
     changed += apply_device_capability_limits(
         model_book,
         weather_file,
@@ -3556,6 +3560,7 @@ def apply_realtime_inputs(
         dev_define_file,
         period_seconds,
         active_power_controls,
+        apply_load_curves=False,
     )
     return None, changed, model_book
 
@@ -3590,6 +3595,7 @@ def apply_realtime_input_books(
     )
     changed += apply_load_power_targets(model_book, load_power_targets)
     changed += apply_yt_ctrl_book(model_book, ctrl_book)
+    # 负荷曲线已在 apply_weather_book / apply_load_power_targets 完成，不再重复缩放。
     changed += apply_device_capability_limits_book(
         model_book,
         weather_values,
@@ -3597,7 +3603,7 @@ def apply_realtime_input_books(
         dev_define,
         period_seconds,
         active_power_controls,
-        apply_load_curves=not load_power_targets,
+        apply_load_curves=False,
     )
     return changed, model_book, dev_define, weather_values
 

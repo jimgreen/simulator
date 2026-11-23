@@ -989,7 +989,9 @@ class PolarMicrogridSimulator(
             remote_adjustment_cycle_token = self._remote_adjustment_cycle_seq
         self._write_current_weather(minute, absolute_minute)
         self._materialize_active_control_commands(absolute_minute)
-        self._apply_device_faults(minute, absolute_minute)
+        # _materialize_active_control_commands 已按源基线与最新活跃指令重建 runtime_stat_book，
+        # 故障窗口解除当拍不再回写过期的 _fault_restore 旧值，避免覆盖故障期间新下发的控制指令。
+        self._apply_device_faults(minute, absolute_minute, restore_expired=False)
         self._write_modes_file()
         return self._remote_adjustment_boundary_books(
             absolute_minute,

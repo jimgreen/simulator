@@ -345,6 +345,15 @@ class _ClockStepMixin:
             if candidate is None:
                 candidate = self._set_value_from_book(config.dev_stat_book, key)
             actual = self._latest_true_remote_adjustment_value(key)
+            state = self._remote_adjustment_execution.get(key)
+            prev_executed = _to_float((state or {}).get("executed_value"), None)
+            if self._is_renewable_active_power_adjustment(key):
+                # 新能源有功遥调回退锚点与一阶响应一致取 max(实测, 上拍已执行设点)，
+                # 防止夜间/无风实发为 0 时触发回溯误将放开的新能源上限压回 0。
+                if actual is not None and prev_executed is not None:
+                    actual = max(float(actual), float(prev_executed))
+                elif prev_executed is not None:
+                    actual = float(prev_executed)
             if candidate is None or actual is None:
                 continue
             candidate = float(candidate)
@@ -368,6 +377,19 @@ class _ClockStepMixin:
         controls: List[Dict[str, Any]] = []
         for key, (actual, candidate) in candidates.items():
             accepted = actual + (candidate - actual) * float(factor)
+            try:
+                safe_accepted = self._validated_set_command_item(
+                    {
+                        "dev_type": key[0],
+                        "dev_name": key[1],
+                        "set_type": key[2],
+                        "set_value": accepted,
+                    },
+                    strict=True,
+                )
+                accepted = float(safe_accepted["set_value"])
+            except ValueError:
+                accepted = float(actual)
             self._write_boundary_set_value(stat_book, key, accepted)
             self._write_boundary_set_value(yt_ctrl_book, key, accepted)
             controls.append(
@@ -429,6 +451,40 @@ class _ClockStepMixin:
                 }
             raise initial_error
 
+    @staticmethod
+    def _apply_backtrack_controls_to_pending_execution(
+        pending_execution: Dict[Tuple[str, str, str], Dict[str, Any]],
+        before_execution: Mapping[Tuple[str, str, str], Dict[str, Any]],
+        info: Mapping[str, Any],
+        cycle_token: int,
+    ) -> None:
+        """将回溯实际收敛的 accepted 值并入待提交遥调状态，确保受并发保护原子提交且不漏写已弹出键。"""
+        controls = [
+            item
+            for item in info.get("controls", ())
+            if (type(item) is dict or isinstance(item, Mapping))
+        ]
+        for item in controls:
+            key = item.get("key")
+            if not isinstance(key, tuple) or len(key) != 3:
+                continue
+            accepted = float(item.get("accepted", 0.0) or 0.0)
+            state = pending_execution.get(key)
+            if state is not None:
+                state["executed_value"] = accepted
+            else:
+                # 若该键原已达到目标并从 pending 中弹出，但回溯退回至 accepted，需重新保留状态以便下拍继续过渡。
+                prev = before_execution.get(key) or {}
+                target_value = _to_float(
+                    prev.get("target_value", item.get("candidate")),
+                    float(item.get("candidate", accepted) or accepted),
+                )
+                pending_execution[key] = {
+                    "executed_value": accepted,
+                    "target_value": float(target_value if target_value is not None else accepted),
+                    "last_cycle_token": cycle_token,
+                }
+
     def _record_power_flow_backtrack(
         self,
         info: Mapping[str, Any],
@@ -436,13 +492,6 @@ class _ClockStepMixin:
     ) -> None:
         controls = [item for item in info.get("controls", ()) if (type(item) is dict or isinstance(item, Mapping))]
         factor = float(info.get("factor", 0.0) or 0.0)
-        for item in controls:
-            key = item.get("key")
-            if not isinstance(key, tuple) or len(key) != 3:
-                continue
-            state = self._remote_adjustment_execution.get(key)
-            if state is not None:
-                state["executed_value"] = float(item.get("accepted", 0.0) or 0.0)
 
         preview = []
         for item in controls[:8]:
@@ -1947,6 +1996,13 @@ class _ClockStepMixin:
 
                 if execution.runtime_stat_book is not None:
                     self._merge_execution_runtime_stat_book(execution.runtime_stat_book)
+                if backtrack_info is not None:
+                    self._apply_backtrack_controls_to_pending_execution(
+                        pending_remote_adjustment_execution,
+                        before_remote_adjustment_execution,
+                        backtrack_info,
+                        self._remote_adjustment_cycle_seq,
+                    )
                 self._commit_remote_adjustment_execution(
                     before_remote_adjustment_execution,
                     pending_remote_adjustment_execution,
@@ -2121,7 +2177,13 @@ class _ClockStepMixin:
             blocks["LoadPower"] = (RUNTIME_LOAD_POWER_HEADER, load_targets)
         self.weather_book = _make_book(blocks)
 
-    def _apply_device_faults(self, minute: int | float, absolute_minute: int | float) -> None:
+    def _apply_device_faults(
+        self,
+        minute: int | float,
+        absolute_minute: int | float,
+        *,
+        restore_expired: bool = True,
+    ) -> None:
         book = self.runtime_stat_book
         run_block = _ensure_block(book, "RunStat", STAT_HEADERS["RunStat"])
         cb_block = _ensure_block(book, "CbOpenStat", STAT_HEADERS["CbOpenStat"])
@@ -2167,12 +2229,13 @@ class _ClockStepMixin:
         for key, old_value in list(self._fault_restore.items()):
             if key in active_keys:
                 continue
-            block_name, dev_type, dev_name = key
-            block = run_block if block_name == "RunStat" else cb_block
-            value_column = "run_stat" if block_name == "RunStat" else "closed_status_set"
-            row = _find_dev_row(block, dev_type, dev_name)
-            if row is not None:
-                row[value_column] = old_value
+            if restore_expired:
+                block_name, dev_type, dev_name = key
+                block = run_block if block_name == "RunStat" else cb_block
+                value_column = "run_stat" if block_name == "RunStat" else "closed_status_set"
+                row = _find_dev_row(block, dev_type, dev_name)
+                if row is not None:
+                    row[value_column] = old_value
             del self._fault_restore[key]
 
         self.runtime_stat_book = book
