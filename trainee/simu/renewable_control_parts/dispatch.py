@@ -3604,9 +3604,14 @@ def _merge_similar_warnings(warnings: Sequence[str]) -> List[str]:
 def _hydrogen_reason_text(reason: Any) -> str:
     normalized = str(reason or "").strip()
     labels = {
-        "entry_conditions_met_direct_start": "满足启机条件，直接启机",
-        "start_conditions_met": "满足启机条件",
-        "start_conditions_not_met": "未满足启机条件",
+        "entry_conditions_met_direct_start": "已开机带载，加载至启机门槛",
+        "start_conditions_met": "满足运行加载条件",
+        "start_conditions_not_met": "未满足运行条件",
+        "awaiting_manual_start": "已满足运行条件，等待人工下令开机",
+        "hydrogen_soc_safety_stop": "氢储罐 SOC 极限保护停机",
+        "hydrogen_tank_horizon_safety_stop": "氢储罐单拍余量不足，保护停机",
+        "min_dwell_hold": "处于最小驻留冷却期，保持运行",
+        "startup_grace_hold": "处于启机加载过渡期，保持加载",
         "raise_conditions_met": "满足升功率条件",
         "hold_region": "处于回差保持区",
         "upper_power_limit": "已达功率上限",

@@ -109,12 +109,41 @@ NON_NEGATIVE_SCADA_MEAS_TYPES = {
     "WIND_SPEED",
     "SOLAR_IRRADIANCE",
     "PRESSURE",
+    "PRESS",
     "GAS_QUANTITY",
+    "GASQUANTITY",
     "SOC",
-    "I",
     "U",
     "V",
+    "V_FROM",
+    "V_TO",
+    "V_THIRD",
+    "V_GEN",
+    "V_LOAD",
+    "V_AC",
+    "V_DC",
+    "I_AC",
+    "I_GEN",
+    "I_LOAD",
+    "I_THIRD",
 }
+SCADA_STATEFUL_INVENTORY_MEAS_TYPES = {
+    "SOC",
+    "PRESSURE",
+    "PRESS",
+    "GAS_QUANTITY",
+    "GASQUANTITY",
+}
+
+
+def _is_non_negative_scada_measurement(dev_type: str, meas_type: str) -> bool:
+    """判断测点是否属于物理非负幅值量（保留直流支路有向电流的符号）。"""
+    normalized_type = str(meas_type or "").strip().upper()
+    if normalized_type in NON_NEGATIVE_SCADA_MEAS_TYPES:
+        return True
+    if normalized_type in {"I", "I_FROM", "I_TO"}:
+        return not str(dev_type or "").strip().upper().startswith("DC")
+    return False
 GRID_FORMING_STORAGE_CONTROL_TYPES = {
     "V",
     "U",
@@ -902,16 +931,20 @@ def collect_device_operating_states(
                     continue
                 run_stat = _safe_int(row.get("run_stat", 1), 1)
                 key = (str(dev_type), name)
+                existed = key in states
                 state = states.get(key, {
                     "dev_type": str(dev_type),
                     "dev_name": name,
                     "run_stat": run_stat,
                     "dead_island": False,
                 })
-                state["run_stat"] = run_stat
-                if run_stat == 0:
+                # 若求解快照已因上级组合设备/多能耦合联锁将该设备置停（run_stat=0），
+                # 严禁用 model_book 原始未联锁的 run_stat=1 反向覆盖。
+                effective_run_stat = 0 if (run_stat == 0 or (existed and int(state.get("run_stat", 1)) == 0)) else run_stat
+                state["run_stat"] = effective_run_stat
+                if effective_run_stat == 0:
                     state["dead_island"] = False
-                elif key not in states:
+                elif not existed:
                     state["dead_island"] = _terminal_states_dead_island(
                         str(dev_type),
                         _model_terminal_states(
@@ -2252,6 +2285,33 @@ def _apply_real_bus_node_constraints(model_book: EBook) -> int:
     return changed
 
 
+def apply_composite_run_state_propagation(model_book: EBook) -> int:
+    """将组合设备与多能耦合双向停运联锁同步回当前步临时 model_book，保证求解、量测与遥信一致。"""
+    from effective_state import propagate_composite_run_states
+
+    _effective_rows, overrides = propagate_composite_run_states(_ebook_to_efile_rows(model_book))
+    if not overrides:
+        return 0
+    changed = 0
+    for item in overrides:
+        dev_type = str(item.get("dev_type", "")).strip()
+        dev_name = str(item.get("dev_name", "")).strip()
+        dev_idx = item.get("dev_idx")
+        block = model_book.data.get(dev_type)
+        if block is None:
+            continue
+        target = _model_row(model_book, dev_type, dev_name) if dev_name else None
+        if target is None and dev_idx is not None:
+            idx_text = str(dev_idx).strip()
+            for row in block.data:
+                if str(row.get("idx", row.get("id", ""))).strip() == idx_text:
+                    target = row
+                    break
+        if target is not None and "run_stat" in target:
+            changed += _set_row_value(target, "run_stat", "0")
+    return changed
+
+
 def apply_dev_stat_file(model_book: EBook, dev_stat_file: Path) -> int:
     dev_stat_file = Path(dev_stat_file)
     if not dev_stat_file.exists():
@@ -2347,6 +2407,7 @@ def apply_dev_stat_book(model_book: EBook, stat_book: EBook) -> int:
             if run_stat != "":
                 changed += _set_row_value(target, "run_stat", run_stat)
     changed += _apply_real_bus_node_constraints(model_book)
+    changed += apply_composite_run_state_propagation(model_book)
     return changed
 
 
@@ -4203,8 +4264,10 @@ def _measurement_value(
 
     if dev_type == "HydroStorage" or target_type == "HydroStorage":
         field = {
+            "PRESS": "pressure",
             "PRESSURE": "pressure",
             "FLOW": "flow",
+            "GASQUANTITY": "gas_quantity",
             "GAS_QUANTITY": "gas_quantity",
             "SOC": "soc",
         }.get(meas_type)
@@ -4458,6 +4521,8 @@ def build_real_rows_from_data(
         )
         if value is None:
             missing += 1
+            # 缺失测点必须将 valid 置 0，禁止保留 meas.e 中的静态旧默认值伪装为实时有效量测。
+            row[6] = "0"
             if missing_measurements is not None:
                 missing_measurements.append(
                     {
@@ -4470,6 +4535,9 @@ def build_real_rows_from_data(
                 )
             continue
         row[7] = format_number(float(value))
+        if str(row[2]).strip() == "Environment" and str(row[3]).strip() == "weather":
+            # meas.e 静态默认行可能将气象 valid 置 0；运行时已成功计算气象值，应标记本拍有效以参与 SCADA 噪声与策略判断。
+            row[6] = "1"
         updated += 1
     return list(before or []), rows, list(after or []), updated, missing
 
@@ -4506,34 +4574,87 @@ def _row_noise_sigma(row: Sequence[str], noise_std: Optional[float]) -> float:
     return sigma
 
 
+def _measurement_row_is_deterministic_offline_zero(
+    model_book: Optional[EBook],
+    device_state_map: Mapping[Tuple[str, str], Mapping[str, Any]],
+    dev_type: str,
+    dev_name: str,
+    meas_type: str,
+    raw_value: float,
+) -> bool:
+    """判断停机、死岛或分闸设备的零值运行量测是否应保持确定性 0.0（不叠加随机噪声）。"""
+    if raw_value != 0.0 or meas_type in SCADA_STATEFUL_INVENTORY_MEAS_TYPES:
+        return False
+    if dev_type in {"Environment", "Weather"}:
+        return False
+    if (
+        dev_type in HYDROGEN_INLINE_FLOW_DEVICE_TYPES
+        and meas_type == "FLOW"
+        and _hydrogen_inline_flow_is_deterministic_zero(model_book, dev_type, dev_name)
+    ):
+        return True
+    state = device_state_map.get((dev_type, dev_name))
+    if state is not None:
+        if _safe_int(state.get("run_stat", 1), 1) == 0 or bool(state.get("dead_island", False)):
+            return True
+    if model_book is not None:
+        model_row = _model_row(model_book, dev_type, dev_name)
+        if model_row is not None:
+            if not _is_running_row(model_row):
+                return True
+            if dev_type.endswith(("Break", "Switch")):
+                closed_val = closed_status_value(model_row, 1)
+                if _safe_int(closed_val, 1) == 0:
+                    return True
+            if (
+                dev_type in {"HydroSource", "HydroLoad"}
+                and meas_type in {"FLOW", "PRESSURE"}
+                and _hydrogen_conversion_endpoint_is_deterministic_zero(model_book, dev_type, dev_name)
+            ):
+                return True
+    return False
+
+
 def add_noise_to_rows(
     rows: Sequence[Sequence[str]],
     noise_std: Optional[float],
     rng: random.Random,
     median_deviations: Optional[Mapping[str, float]] = None,
     model_book: Optional[EBook] = None,
+    device_states: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> List[List[str]]:
     noisy_rows: List[List[str]] = []
     configured_deviations = median_deviations or {}
+    device_state_map: Dict[Tuple[str, str], Mapping[str, Any]] = {}
+    for item in device_states or ():
+        if not (type(item) is dict or isinstance(item, Mapping)):
+            continue
+        item_type = str(item.get("dev_type", "")).strip()
+        item_name = str(item.get("dev_name", item.get("name", ""))).strip()
+        if item_type and item_name:
+            device_state_map[(item_type, item_name)] = item
     for source_row in rows:
         row = list(source_row)
+        dev_type = str(row[2]).strip() if len(row) > 2 else ""
+        dev_name = str(row[3]).strip() if len(row) > 3 else ""
         meas_type = str(row[4]).upper() if len(row) > 4 else ""
         if meas_type in SIGNAL_MEASUREMENT_TYPES:
             noisy_rows.append(row)
             continue
-        if (
-            len(row) > 7
-            and str(row[2]).strip() in HYDROGEN_INLINE_FLOW_DEVICE_TYPES
-            and meas_type == "FLOW"
-            and (_safe_float(row[7], None) or 0.0) == 0.0
-            and _hydrogen_inline_flow_is_deterministic_zero(
-                model_book,
-                str(row[2]).strip(),
-                str(row[3]).strip(),
-            )
+        if len(row) > 6 and str(row[6]).strip() == "0":
+            # 无效/缺失测点不再注入噪声。
+            noisy_rows.append(row)
+            continue
+        raw_num = _safe_float(row[7], None) if len(row) > 7 else None
+        if raw_num is not None and _measurement_row_is_deterministic_offline_zero(
+            model_book,
+            device_state_map,
+            dev_type,
+            dev_name,
+            meas_type,
+            float(raw_num),
         ):
-            # Closed/offline topology is a deterministic physical zero, not an
-            # energized sensor that should acquire Gaussian noise.
+            # 停机、死岛、分闸开关或断流阀的确定性零值运行量测不叠加随机噪声与偏移。
             noisy_rows.append(row)
             continue
         sigma = _row_noise_sigma(row, noise_std)
@@ -4552,8 +4673,16 @@ def add_noise_to_rows(
                     value += rng.gauss(median_deviation, sigma)
                     # 仅在真值本身非负时截断高斯噪声引入的虚假负值；
                     # 若真值本身因错误策略已跌破零（如氢储罐负储量/负气压），保留负值以暴露错误。
-                    if meas_type in NON_NEGATIVE_SCADA_MEAS_TYPES and raw_value >= 0.0 and value < 0.0:
+                    if _is_non_negative_scada_measurement(dev_type, meas_type) and raw_value >= 0.0 and value < 0.0:
                         value = 0.0
+                    # 电储能 SOC 真值处于合法 [0, 1] 时，防止正向随机噪声导致 SCADA 输出 >100%。
+                    if (
+                        meas_type == "SOC"
+                        and dev_type != "HydroStorage"
+                        and 0.0 <= raw_value <= 1.0
+                        and value > 1.0
+                    ):
+                        value = 1.0
                 row[7] = format_number(value)
             except (IndexError, TypeError, ValueError):
                 pass
@@ -4640,6 +4769,7 @@ def _solve_snapshot_from_book(
     # immediately before topology construction guarantees that both the kernel
     # and the post-solve result commit observe the same closed_status value.
     apply_closed_status_boundaries(model_book, None)
+    apply_composite_run_state_propagation(model_book)
     if solver is solve_hybrid_snapshot:
         return solve_hybrid_snapshot_from_book(model_book, source)
     if solver is solve_ac_snapshot:
@@ -4740,6 +4870,7 @@ def run_once(
             rng,
             config.measurement_median_deviations,
             model_book,
+            device_states=device_states,
         )
         scada_rows = derive_hydrogen_storage_scada_soc(scada_rows, model_book)
         if config.write_output_files:
@@ -4808,6 +4939,7 @@ def run_once(
         rng,
         config.measurement_median_deviations,
         model_book,
+        device_states=device_states,
     )
     scada_rows = derive_hydrogen_storage_scada_soc(scada_rows, model_book)
     if config.write_output_files:

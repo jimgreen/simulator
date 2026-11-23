@@ -1069,6 +1069,15 @@ class SimulatorClusterManager:
             return target_id, self.models_root / target_id
 
     def clone_model(self, source_model_id: Any, new_model_id: Any) -> dict[str, Any]:
+        # 按稳定字典序同时锁定源模型与目标模型，既避免并发拷贝/同名覆盖竞态，又杜绝双模型交叉克隆死锁。
+        first_key, second_key = sorted((str(source_model_id or ""), str(new_model_id or "")))
+        with self.model_operation_lock(first_key):
+            if second_key != first_key:
+                with self.model_operation_lock(second_key):
+                    return self._clone_model_locked(source_model_id, new_model_id)
+            return self._clone_model_locked(source_model_id, new_model_id)
+
+    def _clone_model_locked(self, source_model_id: Any, new_model_id: Any) -> dict[str, Any]:
         _source_id, source_dir = self.model_source_dir(source_model_id)
         target_id = self.validate_new_model_name(new_model_id)
         target_dir = self.models_root / target_id

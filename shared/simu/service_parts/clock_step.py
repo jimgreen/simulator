@@ -183,7 +183,7 @@ class _ClockStepMixin:
                 values[key] = number
         return values
 
-    def _reset_storage_soc_to_initial(self) -> None:
+    def _reset_storage_soc_to_initial(self, *, sync_latest_measurements: bool = True) -> None:
         book = self.runtime_stat_book
         storage_block = book.data.get("StorageSoc") or book.data.get("StorageStatus")
         if storage_block is None:
@@ -206,14 +206,16 @@ class _ClockStepMixin:
         for row in storage_block.data:
             row["soc_curr"] = initial_soc
         self.runtime_stat_book = book
-        self._sync_latest_storage_soc_measurement_rows()
+        if sync_latest_measurements:
+            self._sync_latest_storage_soc_measurement_rows()
 
-    def _reset_hydrogen_storage_state_to_initial(self) -> None:
+    def _reset_hydrogen_storage_state_to_initial(self, *, sync_latest_measurements: bool = True) -> None:
         simu_loop.reset_hydrogen_storage_state_book(
             self.runtime_stat_book,
             self.definition_snapshot.model_book,
         )
-        self._sync_latest_hydrogen_storage_measurement_rows()
+        if sync_latest_measurements:
+            self._sync_latest_hydrogen_storage_measurement_rows()
 
     def _storage_target_aliases(self) -> Dict[str, set[Tuple[str, str]]]:
         return resource_keys_by_alias(
@@ -808,13 +810,28 @@ class _ClockStepMixin:
                     pbase = 1.0
                 active_power = first_active_power_setpoint(state_keys, ("p_set", "pv0"))
                 if active_power is not None:
-                    multiplier = active_power[1]
+                    active_field, active_value = active_power
+                    # p_set 已经是物理有功功率（kW），仅 pv0 为相对于 pbase 的倍数。
+                    if active_field == "p_set":
+                        return float(active_value)
+                    multiplier = active_value
                 elif effective_row is not None:
-                    multiplier = _to_float(target_row.get("pv0", target_row.get("p_set")), None)
+                    if effective_row.get("p_set") not in (None, "", "-"):
+                        p_val = _to_float(effective_row.get("p_set"), None)
+                        if p_val is not None:
+                            return float(p_val)
+                    multiplier = _to_float(target_row.get("pv0"), None)
                 else:
-                    multiplier = first_power_setpoint(state_keys, ("p_set", "pv0"))
+                    p_val = first_power_setpoint(state_keys, ("p_set",))
+                    if p_val is not None:
+                        return float(p_val)
+                    multiplier = first_power_setpoint(state_keys, ("pv0",))
                     if multiplier is None:
-                        multiplier = _to_float(target_row.get("pv0", target_row.get("p_set")), None)
+                        if target_row.get("p_set") not in (None, "", "-"):
+                            p_val = _to_float(target_row.get("p_set"), None)
+                            if p_val is not None:
+                                return float(p_val)
+                        multiplier = _to_float(target_row.get("pv0"), None)
                 return float(pbase) * float(multiplier) if multiplier is not None else None
 
             if category == "converter":
@@ -2065,10 +2082,12 @@ class _ClockStepMixin:
                 self.clock.updated_at = measurement_updated_at
                 if crossed_cycle_start:
                     # 跨周期归零时开启新 run_id 并重置储能/氢罐与自动指令，
-                    # 但保留本拍刚计算完成的有效量测作为无缝过渡帧，避免客户端在瞬间读到空量测帧。
+                    # 但保留本拍刚计算完成的有效量测作为物理一致的过渡帧，不原地覆写过渡帧中的 SOC/氢储量。
                     self.clock.run_id += 1
-                    self._reset_storage_soc_to_initial()
-                    self._reset_hydrogen_storage_state_to_initial()
+                    self._reset_storage_soc_to_initial(sync_latest_measurements=False)
+                    self._reset_hydrogen_storage_state_to_initial(sync_latest_measurements=False)
+                    self._remote_adjustment_execution.clear()
+                    self._fault_restore.clear()
                     if self.clear_commands_on_start_and_reset:
                         cleared = self._remove_automatic_command_history_for_restart()
                     else:
@@ -2080,6 +2099,11 @@ class _ClockStepMixin:
                     self._materialize_active_control_commands(
                         self.clock.absolute_minute,
                         persist=True,
+                    )
+                    self._apply_device_faults(
+                        self.clock.minute,
+                        self.clock.absolute_minute,
+                        restore_expired=False,
                     )
                     if cleared["entries"]:
                         self._append_runtime_log(
@@ -2108,7 +2132,12 @@ class _ClockStepMixin:
                     )
                     self._measurement_delta_history = []
                     self._measurement_delta_definition_signature = definition_signature
+                    self._measurement_delta_definition_count = len(
+                        self.latest_measurements.get("definitions", []) or []
+                    )
+                    self._measurement_delta_definition_revision = self.definition_snapshot.revision
                     self._measurement_delta_step_count = self.clock.step_count
+                    self._measurement_delta_runtime_marker = self._measurement_delta_runtime_state_marker()
                 else:
                     definition_signature = (
                         self._measurement_definition_signature_for_current_revision()

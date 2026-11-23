@@ -470,8 +470,11 @@ class Bridge:
                     if active and name not in current:
                         bdb.execute("UPDATE simulator104_points SET active=0 WHERE rtu_id=? AND kind=? AND source_name=?",
                                     (rtu, kind, name))
-                        db.execute(f"UPDATE {table} SET status=128,refresh_time=? WHERE rtu_id=? AND pnt_no=?",
-                                   (now, rtu, no))
+                        raw_status_sql = ",raw_status=128" if kind == "yc" else ""
+                        db.execute(
+                            f"UPDATE {table} SET status=128{raw_status_sql},refresh_time=? WHERE rtu_id=? AND pnt_no=?",
+                            (now, rtu, no),
+                        )
                         removed_samples.append((kind, no))
                         changed = True
                 known_cache[kind] = {name: no for name, (no, _active) in known.items() if name in current}
@@ -512,14 +515,103 @@ class Bridge:
 
     def execute(self, rtu, kind, number, value):
         base, model, name = self.command_target(rtu, kind, number, value)
-        response = request(base, "/api/external/controls/execute?" + urlencode({"model_id": model}),
-                           {kind + "_names": [name], kind + "_values": [value],
-                            "source": "scdfe_s", "manual_hold": True})
+        # 不再硬编码 manual_hold=True，避免通过 IEC104 下发的设点在仿真周期归零/重启后永久锁死；
+        # 同时收紧单次命令超时，避免模拟台短暂抖动长时间阻塞 IEC104 协议线程。
+        payload = {
+            kind + "_names": [name],
+            kind + "_values": [value],
+            "source": "scdfe_s",
+            "manual_hold": False,
+        }
+        path = "/api/external/controls/execute?" + urlencode({"model_id": model})
+        if request is _DEFAULT_REQUEST:
+            response = request(base, path, payload, timeout=2.5)
+        else:
+            response = request(base, path, payload)
         key = "remote_controls" if kind == "yk" else "remote_adjustments"
         results = response.get(kind + "_results", [])
         if response.get("accepted", {}).get(key) != 1 or (results and not results[0].get("accepted")):
             raise ValueError("仿真模型未接受该指令")
-        LOG.info("模型 %s 已接受 RTU%s %s/%s=%s", model, rtu, kind.upper(), number, value)
+        applied_value = value
+        if results and isinstance(results[0], dict) and results[0].get("value") is not None:
+            try:
+                parsed = float(results[0]["value"])
+                if math.isfinite(parsed):
+                    applied_value = int(round(parsed)) if kind == "yk" else parsed
+            except (TypeError, ValueError):
+                pass
+        LOG.info("模型 %s 已接受 RTU%s %s/%s=%s", model, rtu, kind.upper(), number, applied_value)
+        return applied_value
+
+    def remove_model(self, model_name):
+        """模型被删除时停止并回收对应 RTU 的 IEC104 通道、边车点号映射与内存同步缓存。"""
+        name = str(model_name or "").strip()
+        if not name:
+            return False
+        with self.lock:
+            rtu = self._model_rtu_cache.pop(name, None)
+            self._delta_sync_state.pop(name, None)
+            self.last_errors.pop(name, None)
+        with closing(self._bridge_con()) as bdb, bdb:
+            if rtu is None:
+                row = bdb.execute(
+                    "SELECT rtu_id FROM simulator104_models WHERE model=?",
+                    (name,),
+                ).fetchone()
+                if row is not None:
+                    rtu = int(row[0])
+            if rtu is None:
+                return False
+            bdb.execute("DELETE FROM simulator104_points WHERE rtu_id=?", (rtu,))
+            bdb.execute("DELETE FROM simulator104_models WHERE rtu_id=?", (rtu,))
+        now = time.time_ns() // 1_000_000
+        try:
+            with self.server.store.connection() as db, db:
+                db.execute(
+                    "UPDATE fes_yc_define SET status=128,raw_status=128,refresh_time=? WHERE rtu_id=?",
+                    (now, rtu),
+                )
+                db.execute(
+                    "UPDATE fes_yx_define SET status=128,refresh_time=? WHERE rtu_id=?",
+                    (now, rtu),
+                )
+        except Exception as exc:
+            LOG.warning("清理模型 %s (RTU%s) SCADA 测点质量位失败: %s", name, rtu, exc)
+        with self.lock:
+            self.online.pop(rtu, None)
+            self.models.pop(rtu, None)
+            self._last_samples.pop(rtu, None)
+            self._point_def_cache.pop(rtu, None)
+            self._failure_counts.pop(rtu, None)
+            self.initialized.discard(rtu)
+            self.manual_stopped.discard(rtu)
+            self.pending_reload.discard(rtu)
+            self._invalidated_rtus.discard(rtu)
+            if self._known_rtus is not None:
+                self._known_rtus.discard(rtu)
+            try:
+                channels = self.server.channel_services(rtu_id=rtu)
+                channel = channels.get(f"iec104-rtu-{rtu}")
+                if channel is not None:
+                    try:
+                        if channel.status().get("running"):
+                            channel.stop()
+                    except Exception:
+                        pass
+                    try:
+                        channel.close()
+                    except Exception:
+                        pass
+            except Exception as exc:
+                LOG.warning("停止已删除模型 %s 的 IEC104 通道 RTU%s 失败: %s", name, rtu, exc)
+            cache = getattr(self.server, "_channel_cache", None)
+            if isinstance(cache, dict):
+                cache.pop(f"iec104-rtu-{rtu}", None)
+            svc_cache = getattr(self.server, "_channel_service_cache", None)
+            if isinstance(svc_cache, dict):
+                svc_cache.pop(f"iec104-rtu-{rtu}", None)
+        LOG.info("已回收已删除模型 %s 的 IEC104 通道与点表映射 (RTU%s)", name, rtu)
+        return True
 
     def invalidate_offline(self, seen):
         if self._known_rtus is None:
@@ -666,13 +758,37 @@ class Bridge:
                     and delta_sig == sync_state.get("definition_signature")
                 ):
                     by_index = sync_state["index_meta"]
+                    by_name = sync_state.get("name_meta")
+                    if by_name is None:
+                        by_name = {pt_name: (kind, pt_name) for kind, pt_name in by_index.values()}
+                        sync_state["name_meta"] = by_name
                     points = sync_state["points"]
                     dirty = False
+                    # 稳态期间每隔 5 秒顺带同步一次 yk/yt 控制点定义，感知模拟台增删遥控/遥调点。
+                    now_mono = time.monotonic()
+                    last_ctrl_sync = float(sync_state.get("controls_synced_at", now_mono) or 0.0)
+                    if now_mono - last_ctrl_sync >= 5.0:
+                        try:
+                            ctrl_resp = request(base, "/api/external/controls/names")
+                            if not (ctrl_resp.get("model_id") and ctrl_resp.get("model_id") != name):
+                                for ctrl_kind in ("yk", "yt"):
+                                    fresh_names = {
+                                        str(pt_name)
+                                        for pt_name in (ctrl_resp.get(f"{ctrl_kind}_names") or ())
+                                        if str(pt_name)
+                                    }
+                                    prev_names = set(points[ctrl_kind].keys())
+                                    if fresh_names != prev_names:
+                                        points[ctrl_kind] = {pt: {"name": pt} for pt in sorted(fresh_names)}
+                                        dirty = True
+                            sync_state["controls_synced_at"] = now_mono
+                        except Exception:
+                            pass
                     if delta.get("encoding") == "measurement-arrays-v1":
                         # 紧凑数组协议：frame=False 表示本轮零变更；frame=True 携带全量按索引对齐的 scada/valid 数组
                         if delta.get("frame") is False:
                             sync_state["seq"] = int(delta.get("seq", sync_state["seq"]) or 0)
-                            return points, False
+                            return points, dirty
                         scada_vals = delta.get("scada_values")
                         valid_vals = delta.get("valid_values")
                         if isinstance(scada_vals, list) and len(scada_vals) == len(by_index):
@@ -701,11 +817,15 @@ class Bridge:
                         for row in delta.get("rows") or ():
                             if not isinstance(row, list) or len(row) < 3:
                                 continue
-                            try:
-                                idx = int(row[0])
-                            except (TypeError, ValueError):
-                                continue
-                            meta = by_index.get(idx)
+                            meta = None
+                            if isinstance(row[0], int):
+                                meta = by_index.get(row[0])
+                            else:
+                                raw_key = str(row[0]).strip()
+                                if raw_key.isdigit():
+                                    meta = by_index.get(int(raw_key))
+                                if meta is None:
+                                    meta = by_name.get(raw_key)
                             if meta is None:
                                 continue
                             kind, pt_name = meta
@@ -762,12 +882,34 @@ class Bridge:
             delta_init = request(base, "/api/measurements/delta?after_seq=0&compact=1&trainee_view=1")
             if isinstance(delta_init, dict) and delta_init.get("definition_signature"):
                 if len(index_meta) == int(delta_init.get("count", len(index_meta)) or 0):
+                    # 若建基线两次请求期间模拟台已步进至更高 seq，将 delta_init 的最新值合入 points，
+                    # 确保返回数据与记录的 seq 严格同帧、绝不永久丢帧。
+                    scada_vals = delta_init.get("scada_values")
+                    valid_vals = delta_init.get("valid_values")
+                    if (
+                        delta_init.get("encoding") == "measurement-arrays-v1"
+                        and isinstance(scada_vals, list)
+                        and len(scada_vals) == len(index_meta)
+                    ):
+                        has_valid = isinstance(valid_vals, list) and len(valid_vals) == len(index_meta)
+                        for idx, scada_val in enumerate(scada_vals):
+                            meta = index_meta.get(idx)
+                            if meta is None:
+                                continue
+                            kind, pt_name = meta
+                            points[kind][pt_name] = {
+                                "name": pt_name,
+                                "value": scada_val,
+                                "valid": valid_vals[idx] if has_valid else 1,
+                            }
                     self._delta_sync_state[name] = {
                         "base": base,
                         "seq": int(delta_init.get("seq", 0) or 0),
                         "definition_signature": str(delta_init.get("definition_signature") or ""),
                         "index_meta": index_meta,
+                        "name_meta": {pt_name: (kind, pt_name) for kind, pt_name in index_meta.values()},
                         "points": points,
+                        "controls_synced_at": time.monotonic(),
                     }
         except Exception:
             self._delta_sync_state.pop(name, None)
@@ -967,21 +1109,22 @@ def main(argv=None):
                 except Exception as exc:
                     raise IEC104ServiceError(str(exc)) from exc
             try:
-                bridge.execute(rtu_id, kind, int(point_no), actual)
+                applied = bridge.execute(rtu_id, kind, int(point_no), actual)
             except Exception as exc:
                 raise IEC104ServiceError(str(exc)) from exc
+            effective_value = actual if applied is None else applied
             with self._lock:
                 if self._server is None:
                     raise IEC104ServiceError("指令发送期间模型 IEC104 通道已停止")
                 try:
-                    table, key, fields = self._point_update(kind, int(point_no), actual, rtu_id)
+                    table, key, fields = self._point_update(kind, int(point_no), effective_value, rtu_id)
                     fields["cmd_handle_time"] = fields["refresh_time"]
                     item = self.store.update_row(table, key, fields)
-                    self._server.set_value(kind, int(point_no), value)
+                    self._server.set_value(kind, int(point_no), effective_value)
                 except Exception as exc:
                     raise IEC104ServiceError(str(exc)) from exc
-                self._record("INFO", f"Web 指令已由仿真模型接受：{kind.upper()}/{point_no}={actual}")
-                return {"kind": kind, "pnt_no": int(point_no), "value": actual,
+                self._record("INFO", f"Web 指令已由仿真模型接受：{kind.upper()}/{point_no}={effective_value}")
+                return {"kind": kind, "pnt_no": int(point_no), "value": effective_value,
                         "item": item, "applied_to_simulator": True}
 
     _asset_cache = {}
@@ -1176,6 +1319,9 @@ class _UnavailableScada104Host:
     def channel_logs(self, rtu: int, limit: int = 120) -> list:
         return []
 
+    def remove_model(self, model_name: str) -> bool:
+        return False
+
     def close(self) -> None:
         return
 
@@ -1246,24 +1392,25 @@ class EmbeddedScada104Host:
                     except Exception as exc:
                         raise IEC104ServiceError(str(exc)) from exc
                 try:
-                    host_ref.bridge.execute(rtu_id, kind, int(point_no), actual)
+                    applied = host_ref.bridge.execute(rtu_id, kind, int(point_no), actual)
                 except Exception as exc:
                     raise IEC104ServiceError(str(exc)) from exc
+                effective_value = actual if applied is None else applied
                 with self._lock:
                     if self._server is None:
                         raise IEC104ServiceError("指令发送期间模型 IEC104 通道已停止")
                     try:
-                        table, key, fields = self._point_update(kind, int(point_no), actual, rtu_id)
+                        table, key, fields = self._point_update(kind, int(point_no), effective_value, rtu_id)
                         fields["cmd_handle_time"] = fields["refresh_time"]
                         item = self.store.update_row(table, key, fields)
-                        self._server.set_value(kind, int(point_no), value)
+                        self._server.set_value(kind, int(point_no), effective_value)
                     except Exception as exc:
                         raise IEC104ServiceError(str(exc)) from exc
-                    self._record("INFO", f"Web 指令已由仿真模型接受：{kind.upper()}/{point_no}={actual}")
+                    self._record("INFO", f"Web 指令已由仿真模型接受：{kind.upper()}/{point_no}={effective_value}")
                     return {
                         "kind": kind,
                         "pnt_no": int(point_no),
-                        "value": actual,
+                        "value": effective_value,
                         "item": item,
                         "applied_to_simulator": True,
                     }
@@ -1346,6 +1493,9 @@ class EmbeddedScada104Host:
 
     def set_point_disabled(self, rtu: int, kind: str, pnt_no: int, disabled: bool) -> dict:
         return self.bridge.set_point_disabled(int(rtu), kind, int(pnt_no), bool(disabled))
+
+    def remove_model(self, model_name: str) -> bool:
+        return self.bridge.remove_model(model_name)
 
     def execute_command(self, rtu: int, kind: str, point_no: int, value) -> dict:
         if not self.bridge.is_bound_rtu(int(rtu)):

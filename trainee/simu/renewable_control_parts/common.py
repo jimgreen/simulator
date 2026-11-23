@@ -1004,6 +1004,28 @@ def _hydrogen_pressure_states(
             else _measured(measurements, "HydroStorage", name, ("SOC",))
         )
         soc = _live_soc_ratio(soc_measurement.value) if soc_measurement else None
+        gas_qty_measurement = (
+            _measured(measurements, _device_type(device), name, ("GAS_QUANTITY", "GAS_VOLUME"))
+            if device
+            else _measured(measurements, "HydroStorage", name, ("GAS_QUANTITY", "GAS_VOLUME"))
+        )
+        rated_capacity_nm3 = _positive(
+            (
+                row.get("rated_capacity"),
+                row.get("capacity"),
+                row.get("rated_gas_capacity"),
+                row.get("gas_capacity"),
+            )
+        )
+        gas_quantity_nm3: Optional[float] = (
+            float(gas_qty_measurement.value)
+            if gas_qty_measurement is not None and math.isfinite(gas_qty_measurement.value)
+            else (
+                float(soc) * float(rated_capacity_nm3)
+                if soc is not None and math.isfinite(float(soc)) and rated_capacity_nm3 > EPSILON
+                else None
+            )
+        )
         pressure_min = _number(row.get("pressure_min"))
         pressure_max = _number(row.get("pressure_max"))
         limits_valid = bool(
@@ -1029,6 +1051,8 @@ def _hydrogen_pressure_states(
                 "soc": soc,
                 "socKnown": soc is not None and math.isfinite(float(soc)),
                 "socSource": soc_measurement.source if soc_measurement else "missing",
+                "ratedCapacityNm3": float(rated_capacity_nm3) if rated_capacity_nm3 > EPSILON else None,
+                "gasQuantityNm3": gas_quantity_nm3,
                 "pressureMin": pressure_min,
                 "pressureMax": pressure_max,
                 "pressureDeadband": deadband,

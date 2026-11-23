@@ -285,7 +285,7 @@ def _apply_measurement_array_frame(
         if status is None:
             status = definition.get("status")
         fixed_value = fixed_values[index]
-        if fixed_value is None:
+        if fixed_value is None and status == "fixed":
             fixed_value = definition.get("fixed_value")
         channels = [(scada_rows, scada_values[index])]
         if not scada_only:
@@ -341,15 +341,19 @@ def apply_measurement_delta(
         for row in (merged.get("definitions") or definition_rows)
         if (type(row) is dict or isinstance(row, Mapping)) and str(row.get("name", ""))
     }
-    if payload.get("reset") or scada_only:
+    if payload.get("reset"):
         real_by_name: MutableMapping[str, Dict[str, Any]] = {}
         scada_by_name: MutableMapping[str, Dict[str, Any]] = {}
     else:
-        real_by_name = {
-            str(row.get("name", "")): copy.deepcopy(dict(row))
-            for row in merged.get("real", []) or []
-            if (type(row) is dict or isinstance(row, Mapping)) and str(row.get("name", ""))
-        }
+        real_by_name = (
+            {}
+            if scada_only
+            else {
+                str(row.get("name", "")): copy.deepcopy(dict(row))
+                for row in merged.get("real", []) or []
+                if (type(row) is dict or isinstance(row, Mapping)) and str(row.get("name", ""))
+            }
+        )
         scada_by_name = {
             str(row.get("name", "")): copy.deepcopy(dict(row))
             for row in merged.get("scada", []) or []

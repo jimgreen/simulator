@@ -55,6 +55,22 @@ _UPLOAD_ROUTES = frozenset(
 )
 
 
+def parse_bool_flag(value: Any, default: bool = False) -> bool:
+    """安全解析 JSON/表单布尔参数，防止字符串 'false'/'0' 被 Python bool() 误判为 True。"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().casefold()
+    if text in {"", "0", "false", "no", "off", "null", "none"}:
+        return False
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    return bool(value)
+
+
 def make_simulator_proxy_server(
     server_address: tuple[str, int],
     manager: SimulatorClusterManager,
@@ -248,6 +264,13 @@ def make_simulator_proxy_server(
                     return
                 elif path == "/api/models/delete":
                     deleted = manager.delete_model(model_id)
+                    if iec104_host is not None and callable(getattr(iec104_host, "remove_model", None)):
+                        deleted_id = str(deleted.get("id") or model_id or "").strip()
+                        if deleted_id:
+                            try:
+                                iec104_host.remove_model(deleted_id)
+                            except Exception:
+                                pass
                     self._send_json({"deleted": deleted, **manager.catalog()})
                     return
                 elif path == "/api/models/import-definitions":
@@ -280,7 +303,10 @@ def make_simulator_proxy_server(
                     if rtu_raw is None or pnt_raw is None or "disabled" not in payload:
                         raise ValueError("请提供 rtu_id、kind、pnt_no 与 disabled")
                     result = host.set_point_disabled(
-                        int(rtu_raw), kind, int(pnt_raw), bool(payload["disabled"])
+                        int(rtu_raw),
+                        kind,
+                        int(pnt_raw),
+                        self._parse_bool_flag(payload["disabled"]),
                     )
                     self._send_json({"point": result})
                     return
@@ -330,6 +356,10 @@ def make_simulator_proxy_server(
             return server_module
 
         @staticmethod
+        def _parse_bool_flag(value: Any, default: bool = False) -> bool:
+            return parse_bool_flag(value, default=default)
+
+        @staticmethod
         def _decode_base64(payload: Mapping[str, Any], field: str, description: str) -> bytes:
             raw = str(payload.get(field, ""))
             if not raw:
@@ -342,10 +372,6 @@ def make_simulator_proxy_server(
         def _create_model(self, payload: Mapping[str, Any]) -> None:
             helpers = self._server_helpers()
             name = payload.get("name", payload.get("model_name"))
-            address = manager.validate_service_address(
-                payload.get("service_host"),
-                payload.get("service_port"),
-            )
             model_text = helpers._decode_uploaded_definition_text(
                 self._decode_base64(payload, "data_base64", "model.e data")
             )
@@ -357,6 +383,10 @@ def make_simulator_proxy_server(
             )
             artifacts = preflight["artifacts"]
             with manager.model_operation_lock(name):
+                address = manager.validate_service_address(
+                    payload.get("service_host"),
+                    payload.get("service_port"),
+                )
                 recovered_dir = helpers._recover_incomplete_model_directory(manager, name)
                 target_id = manager.validate_new_model_name(name)
                 target_dir = manager.models_root / target_id
@@ -433,7 +463,7 @@ def make_simulator_proxy_server(
                 )
                 definitions_changed = bool(model_data or diagram_data)
                 if service_was_running and definitions_changed:
-                    if not bool(payload.get("restart_service", False)):
+                    if not self._parse_bool_flag(payload.get("restart_service"), False):
                         raise ValueError(f"模型模拟服务运行中，无法修改: {target_id}")
                     clock_state = manager.simulation_clock_state(target_id)
                     if clock_state != "stopped":
@@ -489,7 +519,10 @@ def make_simulator_proxy_server(
                             target_dir,
                             artifacts,
                             diagram_svg_text=diagram_svg_text,
-                            remove_diagram_when_absent=bool(payload.get("replace_diagram", False)),
+                            remove_diagram_when_absent=self._parse_bool_flag(
+                                payload.get("replace_diagram"),
+                                False,
+                            ),
                             preserve_existing_curves=True,
                         )
                         manager.clear_model_runtime(target_id)

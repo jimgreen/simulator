@@ -2863,11 +2863,17 @@ def calculate_renewable_control_plan(
     # 氢能与主优化器单拍协同：氢能闭环发生非零电功率调节时，将氢能净电注入变更量回代重算主优化器，
     # 使新能源恢复、柴发出力、储能充放与变流器并联均流在同一控制周期内满足精确功率平衡。
     hydrogen_external_injection: Dict[Tuple[str, str], float] = {}
+    hydrogen_external_cmds: List[Dict[str, Any]] = []
     if settings.hydrogen_closed_loop_enabled and not renewable_storage_island:
         for h_cmd in hydrogen_plan.get("commands", []) or []:
             h_delta = _number(h_cmd.get("electricDeltaKw"))
-            h_comp = str(h_cmd.get("electricComponentId", "") or "").strip()
             h_side = str(h_cmd.get("electricSide", "") or "").strip().upper()
+            # 与主优化器 _component_id 口径严格对齐：直流侧优先采用 dcTransferGroupId。
+            h_comp = (
+                str(h_cmd.get("dcTransferGroupId") or h_cmd.get("electricComponentId") or "").strip()
+                if h_side == "DC"
+                else str(h_cmd.get("electricComponentId") or "").strip()
+            )
             if h_delta is None or abs(h_delta) <= 0.05 or not h_comp or h_side not in {"AC", "DC"}:
                 continue
             # 电制氢为负荷（+delta 表示多耗电，净电源注入为 -delta）；燃料电池为电源（+delta 表示多发电）
@@ -2876,6 +2882,7 @@ def calculate_renewable_control_plan(
             hydrogen_external_injection[comp_key] = (
                 hydrogen_external_injection.get(comp_key, 0.0) + signed_injection
             )
+            hydrogen_external_cmds.append(h_cmd)
     if hydrogen_external_injection:
         # 若某电气组件因电制氢增载产生净负荷增加（signed_injection < 0），在回代重算副本中临时释放
         # 仅由首轮柴发低载防倒送导致的向上恢复锁（保留物理自然上限与储能充电安全限电锁），
@@ -2892,7 +2899,12 @@ def calculate_renewable_control_plan(
         coordinated_renewable_rows = []
         for row in renewable_rows:
             row_copy = dict(row)
-            row_comp = str(row_copy.get("gridComponentId", "") or "").strip()
+            row_side = str(row_copy.get("connectionSide", "") or "").strip().upper()
+            row_comp = (
+                str(row_copy.get("dcTransferGroupId") or row_copy.get("gridComponentId") or "").strip()
+                if row_side == "DC"
+                else str(row_copy.get("gridComponentId") or "").strip()
+            )
             if (
                 row_comp in electrolyzer_island_components
                 and row_copy.get("dispatchUpperReason") == "diesel_guard_no_renewable_recovery"
@@ -3009,6 +3021,75 @@ def calculate_renewable_control_plan(
             hydrogen_plan["balanceCorrectionKw"] = (
                 coordinated_diesel_kw - float(hydrogen_plan.get("predictedDieselBeforeKw") or 0.0)
             )
+        else:
+            # 单拍协同回代未通过平衡校核时，保守撤回非硬安全停机的经济性氢能增量，
+            # 防止未配平的氢能阶跃冲击构网储能；硬安全停机（压力/SOC/互锁）无条件保留。
+            rollback_cmds = [
+                h_cmd
+                for h_cmd in hydrogen_external_cmds
+                if not h_cmd.get("hardSafetyStop")
+                and abs(float(_number(h_cmd.get("electricDeltaKw"), 0.0) or 0.0)) > 0.05
+            ]
+            if rollback_cmds:
+                rollback_couplings = {
+                    (str(h_cmd.get("couplingType", "")), str(h_cmd.get("couplingName", "")))
+                    for h_cmd in rollback_cmds
+                }
+                rollback_active_keys = {
+                    (
+                        str(h_cmd.get("activeDevType", "")),
+                        str(h_cmd.get("activeDevName", "")),
+                        str(h_cmd.get("activeSetType", "")),
+                    )
+                    for h_cmd in rollback_cmds
+                }
+                for row in list(command_rows):
+                    if (
+                        row.get("category") == "氢能"
+                        and row.get("commandKind") == "run_status"
+                        and (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+                        in rollback_couplings
+                    ):
+                        command_rows.remove(row)
+                    elif (
+                        row.get("category") == "氢能"
+                        and (
+                            str(row.get("dev_type", "")),
+                            str(row.get("dev_name", "")),
+                            str(row.get("set_type", "")),
+                        )
+                        in rollback_active_keys
+                    ):
+                        row["commandKw"] = float(_number(row.get("currentKw"), 0.0) or 0.0)
+                        row["strategyCommand"] = False
+                # 同步恢复非氢能行至首轮平衡优化目标（撤销 hydrogen.py 中的临时柴发/DCAC 手工修正）
+                non_hydrogen_rows = [
+                    row for row in command_rows if row.get("category") != "氢能"
+                ]
+                _apply_optimization_targets(
+                    non_hydrogen_rows,
+                    optimization_result,
+                    apply_targets=True,
+                )
+                for h_cmd in rollback_cmds:
+                    prev_kw = float(_number(h_cmd.get("currentElectricPowerKw"), 0.0) or 0.0)
+                    h_cmd["electricPowerKw"] = prev_kw
+                    h_cmd["targetElectricPowerKw"] = prev_kw
+                    h_cmd["electricDeltaKw"] = 0.0
+                    h_cmd["action"] = "hold"
+                    h_cmd["controlReason"] = "single_cycle_reoptimization_balance_rejected"
+                hydrogen_plan["singleCycleCoordinated"] = False
+                hydrogen_plan["electricPowerAdjustmentKw"] = sum(
+                    float(_number(r.get("electricDeltaKw"), 0.0) or 0.0)
+                    for r in (hydrogen_plan.get("commands") or [])
+                )
+                hydrogen_plan["targetElectricPowerKw"] = sum(
+                    float(_number(r.get("electricPowerKw"), 0.0) or 0.0)
+                    for r in (hydrogen_plan.get("commands") or [])
+                )
+                hydrogen_plan.setdefault("warnings", []).append(
+                    "氢能经济性增量在单拍主优化器协同校核中无法满足电侧平衡，已保守保持当前氢能功率"
+                )
     strategy_boundary_warnings = _clamp_final_command_rows_to_boundaries(
         command_rows
     )
@@ -3145,7 +3226,8 @@ def calculate_renewable_control_plan(
                 str(row.get("dev_name", "")).strip(),
             )
             run_stat = _number(row.get("run_stat"))
-            if not all(key) or run_stat is None or int(run_stat) not in {0, 1}:
+            # 架构硬防线：自动控制策略仅允许决定关机（run_stat=0），严禁下发开机（run_stat=1）遥控。
+            if not all(key) or run_stat is None or int(run_stat) != 0:
                 continue
             if key not in selected:
                 ordered_keys.append(key)

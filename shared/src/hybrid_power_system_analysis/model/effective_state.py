@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import math
 import re
@@ -9,6 +10,11 @@ from typing import Any, Dict, Hashable, Mapping, Optional, Tuple
 
 
 _TERMINAL_SUFFIX = re.compile(r"_t\d+$", re.IGNORECASE)
+_COUPLING_TABLE_RE = re.compile(
+    r"^(AcE|DcE|Heat|Gas|Hydro|H2|Hydrogen|Steam)2"
+    r"(AcE|DcE|Heat|Gas|Hydro|H2|Hydrogen|Steam)(?:\d+)?$",
+    re.IGNORECASE,
+)
 _KNOWN_REFERENCE_ALIASES = {
     "acunit": ("ACUnit", "ACGenerator"),
     "dcunit": ("DCUnit", "DCGenerator"),
@@ -111,7 +117,7 @@ def _table_aliases(rows: Mapping[str, Mapping[str, Any]]) -> Dict[str, str]:
 
 
 def propagate_composite_run_states(rows):
-    """Return copy-on-write E rows with offline composite ancestors applied.
+    """Return copy-on-write E rows with offline composite ancestors and energy-coupling interlocks applied.
 
     A relationship column uses the model convention ``idx_<child-table>_tN``
     (or ``idx_<child-table>``). The source mapping and its row objects are never
@@ -180,10 +186,16 @@ def propagate_composite_run_states(rows):
                 ),
             )
 
-    parents_by_child: Dict[Tuple[str, Hashable], list[Tuple[str, Hashable]]] = {}
+    # 构建有向停运联锁图：
+    # 1) 上级组合设备停运 -> 下级子设备停运（parent -> child）
+    # 2) 多能耦合设备（如 AcE2Hydro/DcE2Hydro/Hydro2AcE/Hydro2DcE 等）任一端点停运 ->
+    #    耦合父设备停运，并经由 (1) 联锁停运对端端点（child -> parent -> other_child），
+    #    防止单侧停机或故障时对端脱离耦合约束凭空产/耗能。
+    impact_edges: Dict[Tuple[str, Hashable], list[Tuple[str, Hashable]]] = {}
     for parent_key, parent in nodes.items():
         table = rows[parent.table]
         row = table.get("rows", ())[parent.row_pos]
+        is_energy_coupling = _COUPLING_TABLE_RE.match(parent.table) is not None
         for column_pos, child_table in relation_columns.get(parent.table, ()):
             if column_pos >= len(row):
                 continue
@@ -192,39 +204,30 @@ def propagate_composite_run_states(rows):
                 continue
             child_key = (child_table, child_index)
             if child_key in nodes:
-                parents_by_child.setdefault(child_key, []).append(parent_key)
+                impact_edges.setdefault(parent_key, []).append(child_key)
+                if is_energy_coupling:
+                    impact_edges.setdefault(child_key, []).append(parent_key)
 
-    state_cache: Dict[Tuple[str, Hashable], Tuple[bool, Optional[Tuple[str, Hashable]]]] = {}
-
-    def effective_state(key, visiting):
-        cached = state_cache.get(key)
-        if cached is not None:
-            return cached
-        node = nodes[key]
+    blocker_by_key: Dict[Tuple[str, Hashable], Tuple[str, Hashable]] = {}
+    queue: deque[Tuple[str, Hashable]] = deque()
+    for key, node in nodes.items():
         if not node.own_online:
-            result = (False, key)
-            state_cache[key] = result
-            return result
-        if key in visiting:
-            return True, None
-        visiting.add(key)
-        try:
-            for parent_key in parents_by_child.get(key, ()):
-                parent_online, blocker = effective_state(parent_key, visiting)
-                if not parent_online:
-                    result = (False, blocker or parent_key)
-                    state_cache[key] = result
-                    return result
-        finally:
-            visiting.discard(key)
-        result = (True, None)
-        state_cache[key] = result
-        return result
+            blocker_by_key[key] = key
+            queue.append(key)
+
+    while queue:
+        current_key = queue.popleft()
+        blocker_key = blocker_by_key[current_key]
+        for target_key in impact_edges.get(current_key, ()):
+            if target_key in blocker_by_key:
+                continue
+            blocker_by_key[target_key] = blocker_key
+            queue.append(target_key)
 
     changes = []
     for key, node in nodes.items():
-        online, blocker_key = effective_state(key, set())
-        if online or not node.own_online or node.run_stat_col is None or blocker_key is None:
+        blocker_key = blocker_by_key.get(key)
+        if not node.own_online or node.run_stat_col is None or blocker_key is None:
             continue
         blocker = nodes[blocker_key]
         changes.append((node, blocker))
@@ -254,7 +257,7 @@ def propagate_composite_run_states(rows):
                 "dev_name": node.name,
                 "source_run_stat": 1,
                 "effective_run_stat": 0,
-                "reason": "上级组合设备退运",
+                "reason": "关联组合或耦合设备退运",
                 "ancestor_type": blocker.table,
                 "ancestor_idx": blocker.index,
                 "ancestor_name": blocker.name,

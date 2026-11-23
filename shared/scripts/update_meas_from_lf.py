@@ -476,8 +476,14 @@ class Snapshot:
 def _device_is_live(device, *, check_status: bool = False) -> bool:
     if int(getattr(device, "run_stat", 1)) != 1:
         return False
-    if check_status and int(getattr(device, "status", 1)) != 1:
-        return False
+    if check_status:
+        # 遥控开关边界以 closed_status 为准，旧字段 status 仅作兼容回退，
+        # 避免“初始分闸、运行中合闸”的断路器/刀闸被理想支路平衡重构错误剔除。
+        raw_closed = getattr(device, "closed_status", None)
+        if raw_closed in (None, "", "-"):
+            raw_closed = getattr(device, "status", 1)
+        if int(raw_closed) != 1:
+            return False
     return bool(getattr(device, "is_alive", True))
 
 

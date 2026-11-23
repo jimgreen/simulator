@@ -712,16 +712,24 @@ def _active_window(
             return current_day >= start or current_day <= clear
         return current_day == start
 
-    start = int(_to_float(item.get("start_minute", item.get("start", 0)), 0) or 0) % 1440
+    period_minutes = 60.0 if mode == "hour" else 1440.0
+    raw_current = float(minute if absolute_minute is None else absolute_minute) if mode == "hour" else float(minute)
+    current_minute = raw_current % period_minutes
+    start_raw = float(_to_float(item.get("start_minute", item.get("start", 0)), 0.0) or 0.0)
+    start = start_raw % period_minutes
     clear_value = item.get("clear_minute", item.get("end_minute", item.get("clear")))
     if clear_value in (None, ""):
-        return minute >= start
-    clear = int(_to_float(clear_value, 1440) or 1440) % 1440
+        return current_minute >= start - 1e-9
+    clear_raw = float(_to_float(clear_value, period_minutes) or 0.0)
+    if clear_raw - start_raw >= period_minutes - 1e-9:
+        return True
+    clear = clear_raw % period_minutes
+    if abs(start - clear) <= 1e-9:
+        # 零长度窗口（如 start_minute == end_minute）不生效，避免误判为全周期永久故障。
+        return False
     if start < clear:
-        return start <= minute < clear
-    if start > clear:
-        return minute >= start or minute < clear
-    return True
+        return start - 1e-9 <= current_minute < clear - 1e-9
+    return current_minute >= start - 1e-9 or current_minute < clear - 1e-9
 
 
 def _is_trainee_command_source(source: Any) -> bool:
@@ -994,7 +1002,13 @@ def _sender_command_valid_minutes(payload: Mapping[str, Any], item: Optional[Map
     return duration if duration > 0 else None
 
 
-def _normalize_points(points: Any, value_aliases: Sequence[str]) -> List[Dict[str, Any]]:
+def _normalize_points(
+    points: Any,
+    value_aliases: Sequence[str],
+    *,
+    step_minutes: float = 1.0,
+) -> List[Dict[str, Any]]:
+    step = float(step_minutes) if step_minutes and float(step_minutes) > 0.0 else 1.0
     if points is None:
         return []
     if (type(points) is dict or isinstance(points, Mapping)):
@@ -1003,7 +1017,7 @@ def _normalize_points(points: Any, value_aliases: Sequence[str]) -> List[Dict[st
             minutes = []
         normalized: List[Dict[str, Any]] = []
         for idx, minute in enumerate(minutes):
-            row: Dict[str, Any] = {"minute": _to_float(minute, 0.0) or 0.0}
+            row: Dict[str, Any] = {"minute": _to_float(minute, float(idx) * step) or 0.0}
             for key, values in points.items():
                 if key in ("minute", "minutes"):
                     continue
@@ -1020,12 +1034,14 @@ def _normalize_points(points: Any, value_aliases: Sequence[str]) -> List[Dict[st
     if isinstance(points, Sequence) and not isinstance(points, (str, bytes)):
         normalized = []
         for idx, item in enumerate(points):
+            default_minute = float(idx) * step
             if (type(item) is dict or isinstance(item, Mapping)):
                 row = dict(item)
-                row["minute"] = _to_float(row.get("minute", idx), float(idx)) or 0.0
+                parsed_minute = _to_float(row.get("minute"), None)
+                row["minute"] = default_minute if parsed_minute is None else float(parsed_minute)
                 normalized.append(row)
             else:
-                normalized.append({"minute": float(idx), value_aliases[0]: item})
+                normalized.append({"minute": default_minute, value_aliases[0]: item})
         return normalized
     return []
 
@@ -1053,11 +1069,26 @@ def _compile_interpolation_series(
     period_minutes: float,
 ) -> Tuple[Tuple[float, ...], Tuple[float, ...]]:
     pairs: List[Tuple[float, float]] = []
+    has_zero_origin = False
+    deferred_period_end: List[Tuple[float, float]] = []
     for point in points:
         value = _to_float(point.get(key), None)
         if value is None:
             continue
-        pairs.append((float(point.get("minute", 0)) % period_minutes, value))
+        raw_minute = float(point.get("minute", 0))
+        wrapped = raw_minute % period_minutes
+        # 闭区间首尾端点（如 minute=0 与 minute=1440）不应在同一 0.0 时间戳重叠碰撞，
+        # 否则会令 [0, t1) 首段插值错误跳用尾端点值而跳过起点值。
+        if abs(wrapped) <= 1e-9:
+            if abs(raw_minute) <= 1e-9:
+                has_zero_origin = True
+                pairs.append((0.0, value))
+            else:
+                deferred_period_end.append((0.0, value))
+        else:
+            pairs.append((wrapped, value))
+    if not has_zero_origin and deferred_period_end:
+        pairs.extend(deferred_period_end)
     pairs.sort(key=lambda item: item[0])
     return (
         tuple(item[0] for item in pairs),

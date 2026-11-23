@@ -525,6 +525,18 @@ def _storage_variable(
         lower = max(safety_lower, current - step_kw)
         upper = min(safety_upper, current + step_kw)
         normal_step_kw = step_kw
+    at_soc_floor_discharging = bool(
+        soc is not None
+        and soc_min is not None
+        and soc <= soc_min + EPSILON
+        and current > EPSILON
+    )
+    at_soc_ceiling_charging = bool(
+        soc is not None
+        and soc_max is not None
+        and soc >= soc_max - EPSILON
+        and current < -EPSILON
+    )
     return _Variable(
         key=key,
         kind="storage",
@@ -540,6 +552,8 @@ def _storage_variable(
                 forced_boundary_kw is not None
                 and (current < lower - EPSILON or current > upper + EPSILON)
             )
+            or at_soc_floor_discharging
+            or at_soc_ceiling_charging
             or current < safety_lower - EPSILON
             or current > safety_upper + EPSILON
         ),
@@ -848,13 +862,19 @@ def _converter_variable(
         normal_step_kw = math.inf
         lower = minimum
         upper = maximum
-    # 计入双向效率损耗（eff < 1）时，常规单拍约束在同号半区（先归零下一拍再换向），
-    # 杜绝单拍跨零线性化时把能量损耗误算为凭空增益。
+    # 计入双向效率损耗（eff < 1）时，单拍约束在同号半区（先归零下一拍再换向），
+    # 杜绝单拍跨零线性化时把能量损耗误算为凭空增益（常规步长与安全放开区间均遵守）。
+    safety_minimum = minimum
+    safety_maximum = maximum
     if eff < 1.0 - EPSILON:
         if current > EPSILON and lower < 0.0 <= upper:
             lower = 0.0
         elif current < -EPSILON and upper > 0.0 >= lower:
             upper = 0.0
+        if current > EPSILON and safety_minimum < 0.0 <= safety_maximum:
+            safety_minimum = 0.0
+        elif current < -EPSILON and safety_maximum > 0.0 >= safety_minimum:
+            safety_maximum = 0.0
     return _Variable(
         key=key,
         kind="converter",
@@ -866,8 +886,8 @@ def _converter_variable(
         ac_balance_coefficient=ac_balance_coefficient,
         dc_balance_coefficient=dc_balance_coefficient,
         allocation_capacity_kw=allocation_capacity_kw,
-        safety_lower_kw=minimum,
-        safety_upper_kw=maximum,
+        safety_lower_kw=safety_minimum,
+        safety_upper_kw=safety_maximum,
         requires_safety_correction=requires_safety,
         normal_step_kw=normal_step_kw,
     )
@@ -1244,16 +1264,12 @@ def _solve_island(
             feasibility_values = np.asarray(feasibility.x, dtype=float)
     active_lower = normal_lower
     active_upper = normal_upper
-    if not feasibility_success and any(
-        item.kind == "storage" and item.requires_safety_correction
+    has_safety_correction = any(
+        item.kind in {"storage", "diesel"} and item.requires_safety_correction
         for item in ordered
-    ):
-        # A forced SOC correction can turn an initially balanced island into
-        # an excess-generation state that the normal renewable down-step
-        # cannot absorb. Allow emergency curtailment down to the renewable
-        # hard minimum, but keep every other device inside its ordinary
-        # dispatch window. The resulting renewable step override is recorded
-        # below and remains visible to the caller and audit trail.
+    )
+    if not feasibility_success and has_safety_correction:
+        # 阶段 1 应急放开：优先允许新能源应急弃电至硬下限（应对储能过充/满荷），其余设备保持常规爬坡。
         safety_lower = normal_lower.copy()
         for index, item in enumerate(ordered):
             if item.kind == "renewable" and item.safety_lower_kw is not None:
@@ -1271,6 +1287,34 @@ def _solve_island(
                 feasibility_success = True
                 feasibility_values = np.asarray(safety_feasibility.x, dtype=float)
                 active_lower = safety_lower
+        # 阶段 2 应急放开：若仍不可行（例如夜间无新能源且构网储能贴底急需柴发/变流器快速顶上止放），
+        # 放开柴发与变流器爬坡步长至其安全区间，杜绝强留平衡松弛砸向构网储能造成过放告警。
+        if not feasibility_success:
+            emergency_lower = safety_lower.copy()
+            emergency_upper = normal_upper.copy()
+            for index, item in enumerate(ordered):
+                if item.kind in {"diesel", "converter"}:
+                    if item.safety_lower_kw is not None:
+                        emergency_lower[index] = min(emergency_lower[index], item.safety_lower_kw)
+                    if item.safety_upper_kw is not None:
+                        emergency_upper[index] = max(emergency_upper[index], item.safety_upper_kw)
+            if warm_cached is not None and already_feasible(
+                warm_cached, emergency_lower, emergency_upper
+            ):
+                feasibility_success = True
+                feasibility_values = warm_cached.copy()
+                active_lower = emergency_lower
+                active_upper = emergency_upper
+            elif not box_proven_infeasible(emergency_lower, emergency_upper):
+                emergency_feasibility = exact_balance_feasibility(
+                    emergency_lower,
+                    emergency_upper,
+                )
+                if emergency_feasibility.success and emergency_feasibility.x is not None:
+                    feasibility_success = True
+                    feasibility_values = np.asarray(emergency_feasibility.x, dtype=float)
+                    active_lower = emergency_lower
+                    active_upper = emergency_upper
 
     renewable_indexes = [index for index, item in enumerate(ordered) if item.kind == "renewable"]
     diesel_indexes = [index for index, item in enumerate(ordered) if item.kind == "diesel"]

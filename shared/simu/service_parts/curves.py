@@ -186,6 +186,9 @@ class _CurvesMixin:
             )
             if dev_type and dev_name and set_type:
                 keys.add((dev_type, dev_name, set_type))
+                canonical_set_type = RUNTIME_CONTROL_SETPOINT_ALIASES.get((dev_type, set_type))
+                if canonical_set_type:
+                    keys.add((dev_type, dev_name, canonical_set_type))
         return keys
 
     def _inactive_coupling_default_curve_keys(self) -> set[Tuple[str, str, str]]:
@@ -333,7 +336,7 @@ class _CurvesMixin:
             # 针对周/年仿真等上万点单调时间轴使用 O(log N) 二分查找，替代每步 O(N) 线性扫描
             n_points = len(points)
             cache = getattr(self, "_weather_curve_minutes_cache", None)
-            cache_key = (id(points), n_points, period_minutes)
+            cache_key = (self._curve_revision, id(points), n_points, period_minutes)
             if cache is None or cache[0] != cache_key:
                 minutes_arr: list[float] = []
                 monotonic = True
@@ -392,20 +395,37 @@ class _CurvesMixin:
                 time_step_minutes = default_step
             default_point_count = _simulation_mode_point_count(mode)
             point_count = int(_to_float(payload.get("point_count"), default_point_count) or 0)
-            weather_points = _normalize_points(payload.get("weather"), WEATHER_HEADER[1:])
+            weather_points = _normalize_points(
+                payload.get("weather"),
+                WEATHER_HEADER[1:],
+                step_minutes=time_step_minutes,
+            )
             loads_payload = payload.get("loads", {})
             loads: Dict[str, List[Dict[str, Any]]] = {}
             if (type(loads_payload) is dict or isinstance(loads_payload, Mapping)):
                 for name, points in loads_payload.items():
-                    loads[str(name)] = _normalize_points(points, ("p_kw", "value", "load_kw"))
+                    load_key = str(name)
+                    if load_key.startswith("HydroLoad:"):
+                        aliases: Tuple[str, ...] = ("flow_set", "value")
+                    elif load_key.startswith("HeatLoad:"):
+                        aliases = ("heat_power", "value")
+                    else:
+                        aliases = ("p_kw", "value", "load_kw")
+                    loads[load_key] = _normalize_points(
+                        points,
+                        aliases,
+                        step_minutes=time_step_minutes,
+                    )
             elif isinstance(loads_payload, Sequence) and not isinstance(loads_payload, (str, bytes)):
                 for item in loads_payload:
                     if not (type(item) is dict or isinstance(item, Mapping)):
                         continue
                     name = str(item.get("dev_name", item.get("name", "load")))
+                    default_min = float(len(loads.get(name, []))) * time_step_minutes
+                    parsed_min = _to_float(item.get("minute"), None)
                     loads.setdefault(name, []).append(
                         {
-                            "minute": _to_float(item.get("minute", len(loads.get(name, []))), 0.0) or 0.0,
+                            "minute": default_min if parsed_min is None else float(parsed_min),
                             "p_kw": item.get("p_kw", item.get("value", item.get("load_kw", 0))),
                         }
                     )
@@ -424,11 +444,11 @@ class _CurvesMixin:
             }
             if mode != current_mode:
                 self._apply_mode_default_clock_speed(mode, persist=True)
-            self.clock.absolute_minute = _align_minute_to_step(
-                self.clock.absolute_minute,
-                _effective_clock_step(self.clock.step_minutes, self.clock.speed),
-            )
-            self.clock.minute = self.clock.absolute_minute % 1440
+                self.clock.absolute_minute = _align_minute_to_step(
+                    self.clock.absolute_minute,
+                    _effective_clock_step(self.clock.step_minutes, self.clock.speed),
+                )
+            self.clock.minute = self.clock.absolute_minute % 1440.0
             self.clock.updated_at = time.time()
             _write_json(self.curves_file, self.curves)
             self._curve_revision += 1
@@ -969,7 +989,26 @@ class _CurvesMixin:
         self.curves["weather"] = weather
         return weather
 
-    def _ensure_load_curve_points(self, load_name: str, point_count: int, step_minutes: float) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _load_curve_value_field(load_name: str) -> str:
+        prefix, separator, _suffix = str(load_name).partition(":")
+        if separator:
+            if prefix == "HydroLoad":
+                return "flow_set"
+            if prefix == "HeatLoad":
+                return "heat_power"
+        return "p_kw"
+
+    def _ensure_load_curve_points(
+        self,
+        load_name: str,
+        point_count: int,
+        step_minutes: float,
+        *,
+        value_field: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        field = value_field or self._load_curve_value_field(load_name)
+        default_value = DEFAULT_WEATHER["load_kw"] if field == "p_kw" else 0.0
         loads = self.curves.get("loads")
         if not isinstance(loads, dict):
             loads = {}
@@ -980,15 +1019,16 @@ class _CurvesMixin:
             loads[load_name] = points
         while len(points) < point_count:
             index = len(points)
-            points.append({"minute": index * step_minutes, "p_kw": DEFAULT_WEATHER["load_kw"]})
+            points.append({"minute": index * step_minutes, field: default_value})
         if len(points) > point_count:
             del points[point_count:]
         for index, point in enumerate(points):
             if not isinstance(point, dict):
-                point = {"p_kw": point}
+                point = {field: point}
                 points[index] = point
-            point["minute"] = _to_float(point.get("minute"), index * step_minutes) or index * step_minutes
-            point.setdefault("p_kw", DEFAULT_WEATHER["load_kw"])
+            parsed_minute = _to_float(point.get("minute"), None)
+            point["minute"] = index * step_minutes if parsed_minute is None else float(parsed_minute)
+            point.setdefault(field, default_value)
         return points
 
     def _ensure_source_curve_points(
@@ -1076,9 +1116,15 @@ class _CurvesMixin:
                     load_name = curve_key.replace("load:", "", 1)
                     if not load_name:
                         continue
-                    points = self._ensure_load_curve_points(load_name, point_count, step_minutes)
+                    value_field = self._load_curve_value_field(load_name)
+                    points = self._ensure_load_curve_points(
+                        load_name,
+                        point_count,
+                        step_minutes,
+                        value_field=value_field,
+                    )
                     for index, value in enumerate(values[:point_count]):
-                        points[index]["p_kw"] = _to_float(value, 0.0) or 0.0
+                        points[index][value_field] = _to_float(value, 0.0) or 0.0
                     updated.append(curve_key)
                 elif curve_key.startswith("source:"):
                     points = self._ensure_source_curve_points(curve_key, point_count, step_minutes)
@@ -1089,11 +1135,11 @@ class _CurvesMixin:
                     updated.append(curve_key)
             if mode != current_mode:
                 self._apply_mode_default_clock_speed(mode, persist=True)
-            self.clock.absolute_minute = _align_minute_to_step(
-                self.clock.absolute_minute,
-                _effective_clock_step(self.clock.step_minutes, self.clock.speed),
-            )
-            self.clock.minute = self.clock.absolute_minute % 1440
+                self.clock.absolute_minute = _align_minute_to_step(
+                    self.clock.absolute_minute,
+                    _effective_clock_step(self.clock.step_minutes, self.clock.speed),
+                )
+            self.clock.minute = self.clock.absolute_minute % 1440.0
             self.clock.updated_at = time.time()
             _write_json(self.curves_file, self.curves)
             self._curve_revision += 1
@@ -1213,7 +1259,10 @@ class _CurvesMixin:
         load_total = 0.0
         load_count = 0
         if (type(loads) is dict or isinstance(loads, Mapping)):
-            for points in loads.values():
+            for load_name, points in loads.items():
+                if self._load_curve_value_field(str(load_name)) != "p_kw":
+                    # HydroLoad（Nm3/h）与 HeatLoad（kW热）不混入电负荷总功率统计。
+                    continue
                 if not isinstance(points, Sequence) or isinstance(points, (str, bytes)):
                     continue
                 value = self._interpolate_curve_series(

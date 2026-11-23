@@ -1834,5 +1834,366 @@ class Round2ControlHardeningTests(unittest.TestCase):
         )
 
 
+class AuditRound3StrategyTests(unittest.TestCase):
+    """三轮深度审查安全保护、闭环协同与“仅允许关机、禁止自动开机”硬边界验证。"""
+
+    @staticmethod
+    def _load_qinling_snapshot() -> dict:
+        from simu.service import PolarMicrogridSimulator
+
+        settings_json = json.loads((APP_ROOT / "startup.json").read_text(encoding="utf-8"))
+        data_dir = (APP_ROOT / settings_json.get("data_dir", "data")).resolve()
+        model_dir = data_dir / "models" / "秦岭站"
+        if not (model_dir / "model.e").is_file():
+            raise unittest.SkipTest("秦岭站模型不存在")
+        with tempfile.TemporaryDirectory() as td:
+            svc = PolarMicrogridSimulator(
+                sim_dir=model_dir,
+                runtime_dir=Path(td) / "rt",
+                model_id="秦岭站",
+                model_name="秦岭站",
+                noise_std=0.0,
+            )
+            svc.step()
+            return svc.snapshot()
+
+    @staticmethod
+    def _model_block_rows(snap: dict, block_name: str) -> list[dict]:
+        block = snap.get("definitions", {}).get("model", {}).get(block_name)
+        if isinstance(block, dict):
+            rows = block.get("rows", [])
+            return [r for r in rows if isinstance(r, dict)]
+        if isinstance(block, list):
+            return [r for r in block if isinstance(r, dict)]
+        return []
+
+    def test_optimizer_emergency_stage_releases_diesel_step_for_floor_storage(self) -> None:
+        """验证夜间无新能源且构网储能 SOC 贴底仍在放电时，安全阶段放开柴发步长单拍止放。"""
+        topo = resource_topology.ResourceTopology(
+            resources={},
+            dc_transfer_groups={},
+            device_component_ids={},
+            converter_component_ids={},
+        )
+        diesel_rows = [
+            {
+                "dev_type": "ACGenerator",
+                "dev_name": "D1",
+                "online": True,
+                "commandable": True,
+                "stateEligible": True,
+                "connectionSide": "AC",
+                "gridComponentId": "AC_1",
+                "currentKw": 40.0,
+                "minKw": 20.0,
+                "capacityKw": 120.0,
+            }
+        ]
+        # 构网储能 SOC 贴底 0.10（dischargePower=0），但当前仍在放电 50 kW -> 需柴发立刻增发 50 kW（超常规 15%=18 kW 步长）
+        storage_rows = [
+            {
+                "dev_type": "ACGenerator",
+                "dev_name": "GF_ESS",
+                "online": True,
+                "commandable": False,
+                "stateEligible": True,
+                "role": "balance",
+                "connectionSide": "AC",
+                "gridComponentId": "AC_1",
+                "currentKw": 50.0,
+                "chargePower": 100.0,
+                "dischargePower": 0.0,
+                "maxChargePowerKw": 100.0,
+                "maxDischargePowerKw": 100.0,
+                "soc": 0.10,
+                "socMin": 0.10,
+                "socMax": 0.90,
+                "socKnown": True,
+                "capacityKwh": 500.0,
+                "efficiency": 0.95,
+                "controlHorizonMinutes": 1.0,
+            }
+        ]
+        result = renewable_optimization.optimize_topology_islands(
+            topo,
+            renewable_rows=[],
+            diesel_rows=diesel_rows,
+            storage_rows=storage_rows,
+            converter_rows=[],
+            diesel_step_ratio=0.15,
+            diesel_power_protection_ratio=0.03,
+            grid_forming_storage_protection_ratio=0.05,
+        )
+        self.assertTrue(result.all_success)
+        self.assertEqual(len(result.islands), 1)
+        island = result.islands[0]
+        self.assertLessEqual(island.max_balance_delta_kw, 0.1)
+        self.assertAlmostEqual(result.targets[("ACGenerator", "GF_ESS")], 0.0, places=3)
+        self.assertAlmostEqual(result.targets[("ACGenerator", "D1")], 90.0, places=3)
+        self.assertIn(("ACGenerator", "D1"), island.step_override_devices)
+
+    def test_hydrogen_hard_safety_stop_not_blocked_by_zero_diesel_margin_or_dwell(self) -> None:
+        """验证氢罐超压/高SOC硬安全停机在柴发顶在 p_min 且处于最小驻留期时仍强制归零停机。"""
+        from simu.model_semantics import energy_coupling_control_bindings
+        from simu.renewable_control_parts.common import _measurement_index
+        from simu.renewable_control_parts.hydrogen import (
+            _hydrogen_electric_resource_refs,
+            _optimize_hydrogen_within_topology_islands,
+        )
+        from simu.renewable_control_parts.settings import RenewableControlSettings
+
+        snap = self._load_qinling_snapshot()
+        ac_e2h = self._model_block_rows(snap, "AcE2Hydro")
+        self.assertTrue(ac_e2h, "秦岭站模型应包含 AcE2Hydro")
+        e2h_name = str(ac_e2h[0].get("name", ""))
+        bindings = energy_coupling_control_bindings(snap).get(("AcE2Hydro", e2h_name), ())
+        power_binding = next((b for b in bindings if b.get("set_type") == "p_set"), None)
+        self.assertIsNotNone(power_binding)
+        p_dev_type = str(power_binding["target_dev_type"])
+        p_dev_name = str(power_binding["target_dev_name"])
+
+        # 修改快照量测：电制氢在线且当前功率 40 kW，储氢罐 SOC=0.98（触发 SOC 硬安全停机）
+        for m_row in snap.get("measurements", {}).get("scada", []):
+            m_type = str(m_row.get("meas_type", "")).upper()
+            if m_row.get("dev_type") == "AcE2Hydro" and m_row.get("dev_name") == e2h_name and m_type == "RUN_STAT":
+                m_row["value"] = 1
+            elif m_row.get("dev_type") == p_dev_type and m_row.get("dev_name") == p_dev_name and m_type in {"P_LOAD", "P", "P_AC"}:
+                m_row["value"] = 40.0
+            elif m_row.get("dev_type") == "HydroStorage" and m_type == "SOC":
+                m_row["value"] = 0.98
+            elif m_row.get("dev_type") == "HydroStorage" and m_type == "GAS_QUANTITY":
+                m_row["value"] = 980.0
+        for d_row in snap.get("devices", []):
+            if d_row.get("dev_type") == "AcE2Hydro" and d_row.get("dev_name") == e2h_name:
+                d_row["run_stat"] = 1
+
+        measurements = _measurement_index(snap)
+        topo = resource_topology.resolve_resource_topology(
+            snap,
+            _hydrogen_electric_resource_refs(snap),
+        )
+        # 构造一台已经顶在 p_min=30 的柴发（向下裕度 = 0！）
+        command_rows = [
+            {
+                "category": "柴油发电",
+                "dev_type": "ACGenerator",
+                "dev_name": "D_LOCKED_MIN",
+                "online": True,
+                "commandable": True,
+                "currentKw": 30.0,
+                "commandKw": 30.0,
+                "minKw": 30.0,
+                "capacityKw": 100.0,
+                "ratedCapacityKw": 100.0,
+            }
+        ]
+        storage_rows = [
+            {
+                "dev_type": "ACGenerator",
+                "dev_name": "ESS1",
+                "online": True,
+                "soc": 0.80,
+                "socKnown": True,
+            }
+        ]
+        # 同时处于 30s 最小驻留冷却期内（5s 前刚启机）
+        runtime_memory = {
+            "hydrogen_dwell": {
+                f"AcE2Hydro:{e2h_name}": {
+                    "state": "running",
+                    "lastTransitionSimTime": 100.0,
+                }
+            }
+        }
+        h_plan = _optimize_hydrogen_within_topology_islands(
+            snap,
+            measurements,
+            RenewableControlSettings(hydrogen_min_dwell_seconds=30.0),
+            topo,
+            command_rows,
+            storage_rows,
+            diesel_current_kw=30.0,
+            diesel_capacity_kw=100.0,
+            diesel_unit_count=1,
+            diesel_input_valid=True,
+            apply_electrical_corrections=True,
+            runtime_memory=runtime_memory,
+            sim_time_seconds=105.0,
+        )
+        e2h_cmds = [c for c in h_plan.get("commands", []) if c.get("couplingName") == e2h_name]
+        self.assertEqual(len(e2h_cmds), 1)
+        self.assertAlmostEqual(float(e2h_cmds[0]["targetElectricPowerKw"]), 0.0, places=6)
+        self.assertTrue(e2h_cmds[0].get("hardSafetyStop"))
+        self.assertTrue(
+            any(
+                r.get("commandKind") == "run_status"
+                and r.get("dev_name") == e2h_name
+                and r.get("run_stat") == 0
+                for r in command_rows
+            )
+        )
+
+    def test_hydrogen_tank_horizon_prevents_large_step_overdraw(self) -> None:
+        """验证高倍率大步长下剩余储氢量不足支撑一拍最小功率时，燃料电池触发罐容安全停机防止抽负。"""
+        from simu.model_semantics import energy_coupling_control_bindings
+        from simu.renewable_control_parts.common import _measurement_index
+        from simu.renewable_control_parts.hydrogen import (
+            _hydrogen_electric_resource_refs,
+            _optimize_hydrogen_within_topology_islands,
+        )
+        from simu.renewable_control_parts.settings import RenewableControlSettings
+
+        snap = self._load_qinling_snapshot()
+        fc_type = ""
+        fc_rows: list[dict] = []
+        for candidate_type in ("Hydro2AcE", "Hydro2DcE"):
+            rows = self._model_block_rows(snap, candidate_type)
+            if rows:
+                fc_type = candidate_type
+                fc_rows = rows
+                break
+        self.assertTrue(fc_rows, "秦岭站模型应包含燃料电池耦合")
+        fc_name = str(fc_rows[0].get("name", ""))
+        bindings = energy_coupling_control_bindings(snap).get((fc_type, fc_name), ())
+        power_binding = next((b for b in bindings if b.get("set_type") == "p_set"), None)
+        self.assertIsNotNone(power_binding)
+        p_dev_type = str(power_binding["target_dev_type"])
+        p_dev_name = str(power_binding["target_dev_name"])
+
+        # 模拟极高速步长（10 小时控制窗）+ 氢罐 SOC=0.15（未触 0.10 下限但剩余 1 Nm³ 支撑不了 10 小时运行）
+        snap["system_parameters"] = {"effective_step_minutes": 600.0}
+        for m_row in snap.get("measurements", {}).get("scada", []):
+            m_type = str(m_row.get("meas_type", "")).upper()
+            if m_row.get("dev_type") == fc_type and m_row.get("dev_name") == fc_name and m_type == "RUN_STAT":
+                m_row["value"] = 1
+            elif m_row.get("dev_type") == p_dev_type and m_row.get("dev_name") == p_dev_name and m_type in {"P_GEN", "P", "P_AC", "P_DC"}:
+                m_row["value"] = 30.0
+            elif m_row.get("dev_type") == "HydroStorage" and m_type == "SOC":
+                m_row["value"] = 0.15
+            elif m_row.get("dev_type") == "HydroStorage" and m_type == "GAS_QUANTITY":
+                m_row["value"] = 1.0
+        for d_row in snap.get("devices", []):
+            if d_row.get("dev_type") == fc_type and d_row.get("dev_name") == fc_name:
+                d_row["run_stat"] = 1
+
+        measurements = _measurement_index(snap)
+        topo = resource_topology.resolve_resource_topology(
+            snap,
+            _hydrogen_electric_resource_refs(snap),
+        )
+        command_rows: list[dict] = []
+        storage_rows = [{"dev_type": "ACGenerator", "dev_name": "ESS1", "online": True, "soc": 0.25, "socKnown": True}]
+        h_plan = _optimize_hydrogen_within_topology_islands(
+            snap,
+            measurements,
+            RenewableControlSettings(),
+            topo,
+            command_rows,
+            storage_rows,
+            diesel_current_kw=80.0,
+            diesel_capacity_kw=100.0,
+            diesel_unit_count=1,
+            diesel_input_valid=True,
+            apply_electrical_corrections=True,
+        )
+        fc_cmds = [c for c in h_plan.get("commands", []) if c.get("couplingName") == fc_name]
+        self.assertEqual(len(fc_cmds), 1)
+        self.assertAlmostEqual(float(fc_cmds[0]["targetElectricPowerKw"]), 0.0, places=6)
+        self.assertEqual(fc_cmds[0].get("controlReason"), "hydrogen_tank_horizon_safety_stop")
+
+    def test_hydrogen_never_auto_starts_when_offline_and_waits_for_manual_start(self) -> None:
+        """验证电制氢与燃料电池处于关机态且满足全部运行条件时，策略绝不下发 run_stat=1 开机。"""
+        from simu.renewable_control_parts.common import _measurement_index
+        from simu.renewable_control_parts.hydrogen import (
+            _hydrogen_electric_resource_refs,
+            _optimize_hydrogen_within_topology_islands,
+        )
+        from simu.renewable_control_parts.settings import RenewableControlSettings
+
+        snap = self._load_qinling_snapshot()
+        ac_e2h = self._model_block_rows(snap, "AcE2Hydro")
+        self.assertTrue(ac_e2h)
+        e2h_name = str(ac_e2h[0].get("name", ""))
+
+        # 场景 1：电制氢关机（run_stat=0），柴发负载率 20% < 35%，电储 SOC=0.85 > 0.70，氢储 SOC=0.50 < 0.85（全部开机条件满足）
+        for m_row in snap.get("measurements", {}).get("scada", []):
+            m_type = str(m_row.get("meas_type", "")).upper()
+            if m_row.get("dev_type") in {"AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"} and m_type == "RUN_STAT":
+                m_row["value"] = 0
+            elif m_row.get("dev_type") == "HydroStorage" and m_type == "SOC":
+                m_row["value"] = 0.50
+            elif m_row.get("dev_type") == "HydroStorage" and m_type == "GAS_QUANTITY":
+                m_row["value"] = 500.0
+        for d_row in snap.get("devices", []):
+            if d_row.get("dev_type") in {"AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"}:
+                d_row["run_stat"] = 0
+
+        measurements = _measurement_index(snap)
+        topo = resource_topology.resolve_resource_topology(
+            snap,
+            _hydrogen_electric_resource_refs(snap),
+        )
+        command_rows_e2h: list[dict] = []
+        h_plan_e2h = _optimize_hydrogen_within_topology_islands(
+            snap,
+            measurements,
+            RenewableControlSettings(),
+            topo,
+            command_rows_e2h,
+            [{"dev_type": "ACGenerator", "dev_name": "ESS1", "online": True, "soc": 0.85, "socKnown": True}],
+            diesel_current_kw=20.0,
+            diesel_capacity_kw=100.0,
+            diesel_unit_count=1,
+            diesel_input_valid=True,
+            apply_electrical_corrections=True,
+        )
+        # 绝不生成 run_stat=1 开机遥控，也绝不下发非零功率
+        self.assertFalse(any(r.get("run_stat") == 1 for r in command_rows_e2h))
+        self.assertEqual(h_plan_e2h.get("commands", []), [])
+        e2h_traces = [t for t in h_plan_e2h.get("decisionTraces", []) if t.get("couplingName") == e2h_name]
+        self.assertEqual(len(e2h_traces), 1)
+        self.assertEqual(e2h_traces[0].get("controlReason"), "awaiting_manual_start")
+        self.assertEqual(e2h_traces[0].get("action"), "hold")
+
+        # 场景 2：燃料电池关机（run_stat=0），柴发负载率 90% > 50%，电储 SOC=0.20 < 0.30，氢储 SOC=0.50 > 0.30（全部开机条件满足）
+        command_rows_fc: list[dict] = []
+        h_plan_fc = _optimize_hydrogen_within_topology_islands(
+            snap,
+            measurements,
+            RenewableControlSettings(),
+            topo,
+            command_rows_fc,
+            [{"dev_type": "ACGenerator", "dev_name": "ESS1", "online": True, "soc": 0.20, "socKnown": True}],
+            diesel_current_kw=90.0,
+            diesel_capacity_kw=100.0,
+            diesel_unit_count=1,
+            diesel_input_valid=True,
+            apply_electrical_corrections=True,
+        )
+        self.assertFalse(any(r.get("run_stat") == 1 for r in command_rows_fc))
+        self.assertEqual(h_plan_fc.get("commands", []), [])
+        fc_traces = [t for t in h_plan_fc.get("decisionTraces", []) if t.get("mode") == "fuel_cell"]
+        self.assertTrue(fc_traces)
+        self.assertEqual(fc_traces[0].get("controlReason"), "awaiting_manual_start")
+
+    def test_planner_dc_hydrogen_component_key_and_unbalanced_rollback_present(self) -> None:
+        """验证 planner.py 对齐直流氢能 dcTransferGroupId 口径、禁止 run_stat=1 并包含单拍回代失败保守回滚保护。"""
+        planner_src = (
+            REPO_ROOT / "trainee" / "simu" / "renewable_control_parts" / "planner.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'str(h_cmd.get("dcTransferGroupId") or h_cmd.get("electricComponentId") or "").strip()',
+            planner_src,
+        )
+        self.assertIn(
+            "single_cycle_reoptimization_balance_rejected",
+            planner_src,
+        )
+        self.assertIn(
+            "int(run_stat) != 0",
+            planner_src,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

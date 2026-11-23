@@ -1578,7 +1578,13 @@ class _ControlsMixin:
                 candidates[meas_type] = float(value)
         for meas_type in self._remote_adjustment_measurement_types(key):
             if meas_type in candidates:
-                return candidates[meas_type]
+                measured = candidates[meas_type]
+                if dev_type in {"ACLoad", "DCLoad"} and _set_type == "pv0" and meas_type in {"P_LOAD", "P"}:
+                    target_row = self._model_control_row(dev_type, dev_name)
+                    pbase = _to_float((target_row or {}).get("pbase"), 1.0)
+                    if pbase is not None and pbase > 0.0:
+                        return measured / float(pbase)
+                return measured
         return None
 
     @staticmethod
@@ -1602,13 +1608,17 @@ class _ControlsMixin:
         return max(0.0, min(1.0, effective))
 
     def _is_renewable_active_power_adjustment(self, key: Tuple[str, str, str]) -> bool:
-        """判断遥调键是否属于风电/光伏有功上限调节。"""
+        """判断遥调键是否属于风电/光伏有功上限调节（优先依据结构化资源表）。"""
         dev_type, dev_name, set_type = key
         if set_type not in ("p_set", "p_ac_set", "p_dc_set"):
             return False
         if device_role_from_type(dev_type) in {"wind", "pv"}:
             return True
-        block = self.source_model_book.data.get(dev_type)
+        model_book = self.definition_snapshot.model_book
+        for resource in structured_resources(model_book):
+            if resource.technology in {"wind", "pv"} and resource.device_key == (dev_type, dev_name):
+                return True
+        block = model_book.data.get(dev_type)
         if block is None:
             return False
         for row in block.data:
@@ -1645,6 +1655,17 @@ class _ControlsMixin:
         stat_book = simu_loop._clone_ebook(self.runtime_stat_book)
         yt_ctrl_book = simu_loop._clone_ebook(self.yt_ctrl_book)
         active_keys = self._active_remote_adjustment_keys(absolute_minute)
+        ui_override_set_keys = {
+            (k[1], k[2], k[3])
+            for k in self._simulator_ui_control_override_keys()
+            if len(k) == 4 and k[0] == "remote_adjustment"
+        }
+        run_stats_map, _cb_map, _set_map, _soc_map = self._stat_maps()
+        dead_island_keys = {
+            (str(item.get("dev_type", "")), str(item.get("dev_name", item.get("name", ""))))
+            for item in self.latest_device_states
+            if bool(item.get("dead_island", False))
+        }
         working_execution: Dict[Tuple[str, str, str], Dict[str, Any]] = {
             key: dict(value)
             for key, value in self._remote_adjustment_execution.items()
@@ -1658,6 +1679,19 @@ class _ControlsMixin:
         for key in sorted(tracked_keys):
             target = self._set_value_from_book(self.runtime_stat_book, key)
             if target is None:
+                working_execution.pop(key, None)
+                continue
+            if key in ui_override_set_keys and key not in active_keys:
+                # 模拟台 UI 人工固定设点为最高优先级，必须立即生效，不受历史遥调惯性拖慢。
+                working_execution.pop(key, None)
+                continue
+            device_key = (key[0], key[1])
+            device_stopped_or_dead = (
+                int(_to_float(run_stats_map.get(device_key), 1) or 0) == 0
+                or device_key in dead_island_keys
+            )
+            if key not in active_keys and device_stopped_or_dead:
+                # 已取消/过期遥调且设备处于停机或死岛时，直接清理残留状态避免永不弹出污染回溯。
                 working_execution.pop(key, None)
                 continue
             try:
@@ -1701,16 +1735,29 @@ class _ControlsMixin:
                 current = self._latest_true_remote_adjustment_value(key)
                 prev_executed = _to_float(state.get("executed_value"), None)
                 if self._is_renewable_active_power_adjustment(key):
-                    # 新能源遥调本质为有功上限设点：以 max(实测出力, 上拍已执行设点) 作为基线，
-                    # 防止夜间/无风实发为 0 时放开限幅被永久卡在 response_ratio * target。
-                    if current is not None and prev_executed is not None:
-                        baseline = max(float(current), float(prev_executed))
-                    elif prev_executed is not None:
-                        baseline = float(prev_executed)
-                    elif current is not None:
-                        baseline = float(current)
+                    ref_anchor = prev_executed if prev_executed is not None else current
+                    if ref_anchor is not None and float(target) < float(ref_anchor) - 1e-9:
+                        # 新能源下调限电时，以 min(实测出力, 上拍已执行设点) 为锚点，
+                        # 避免实发低于上拍放开上限时产生多拍限电失效的虚假死区。
+                        if current is not None and prev_executed is not None:
+                            baseline = min(float(current), float(prev_executed))
+                        elif current is not None:
+                            baseline = float(current)
+                        elif prev_executed is not None:
+                            baseline = float(prev_executed)
+                        else:
+                            baseline = float(target)
                     else:
-                        baseline = float(target)
+                        # 新能源上调/放开上限时，以 max(实测出力, 上拍已执行设点) 为锚点，
+                        # 防止夜间/无风实发为 0 时放开限幅被永久卡在 response_ratio * target。
+                        if current is not None and prev_executed is not None:
+                            baseline = max(float(current), float(prev_executed))
+                        elif prev_executed is not None:
+                            baseline = float(prev_executed)
+                        elif current is not None:
+                            baseline = float(current)
+                        else:
+                            baseline = float(target)
                 else:
                     baseline = float(current) if current is not None else float(
                         prev_executed if prev_executed is not None else target
@@ -2062,14 +2109,17 @@ class _ControlsMixin:
                 matched = self._command_entry_control_keys(previous) & set(targets)
                 if not matched:
                     continue
-                previous["expires_at_absolute_minute"] = cancel_minute
-                previous["cancelled"] = True
-                previous["cancelled_names"] = [targets[key] for key in sorted(matched)]
-                previous["cancelled_wall_time"] = entry.get("received_wall_time", entry.get("time", ""))
-                previous["cancelled_simu_time"] = entry.get("received_simu_time", minute_to_time(cancel_minute))
-                previous["cancelled_absolute_minute"] = cancel_minute
-                cancelled_keys.update(matched)
-                changed = True
+                removed = self._delete_command_entry_controls(
+                    previous,
+                    matched,
+                    deleted_names=targets,
+                    deleted_wall_time=str(entry.get("received_wall_time", entry.get("time", ""))),
+                    deleted_simu_time=str(entry.get("received_simu_time", minute_to_time(cancel_minute))),
+                    deleted_absolute_minute=float(cancel_minute),
+                )
+                if removed:
+                    cancelled_keys.update(removed)
+                    changed = True
 
             accepted = entry.get("accepted")
             if not isinstance(accepted, dict):
@@ -2413,13 +2463,16 @@ class _ControlsMixin:
                     matched = self._command_entry_control_keys(entry) & set(targets)
                     if not matched:
                         continue
-                    entry["expires_at_absolute_minute"] = current
-                    entry["cancelled"] = True
-                    entry["cancelled_names"] = [targets[key] for key in sorted(matched)]
-                    entry["cancelled_wall_time"] = received_wall_time
-                    entry["cancelled_simu_time"] = received_simu_time
-                    entry["cancelled_absolute_minute"] = current
-                    cancelled_keys.update(matched)
+                    # 复用按控制点精细剔除逻辑，避免取消批量人工指令中的单个点时连带误杀同批其他控制点。
+                    removed = self._delete_command_entry_controls(
+                        entry,
+                        matched,
+                        deleted_names=targets,
+                        deleted_wall_time=received_wall_time,
+                        deleted_simu_time=received_simu_time,
+                        deleted_absolute_minute=current,
+                    )
+                    cancelled_keys.update(removed)
 
             cancelled_remote = sum(1 for key in cancelled_keys if key[0] == "remote_control")
             cancelled_adjustment = sum(1 for key in cancelled_keys if key[0] == "remote_adjustment")
@@ -2513,6 +2566,7 @@ class _ControlsMixin:
             received_simu_time = minute_to_time(self.clock.minute)
             deleted_keys: set[Tuple[str, str, str, str]] = set()
 
+            origin_filter = _cancel_command_origin_filter(payload)
             if eligible_source and targets:
                 target_keys = set(targets)
                 for entry in self.command_history:
@@ -2520,7 +2574,7 @@ class _ControlsMixin:
                         continue
                     if not self._command_entry_can_be_cancelled(entry, current, int(self.clock.run_id)):
                         continue
-                    if _command_origin(entry) == "automatic":
+                    if origin_filter != "all" and _command_origin(entry) != origin_filter:
                         continue
                     matched = self._command_entry_control_keys(entry) & target_keys
                     if not matched:
@@ -3932,6 +3986,7 @@ class _ControlsMixin:
                 }
 
     def control_clock(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        pending_step_minutes: Optional[float] = None
         with self.lock:
             action = str(payload.get("action", "")).lower()
             previous_state = self.clock.state
@@ -4028,6 +4083,7 @@ class _ControlsMixin:
             )
             should_reset_storage_soc = False
             if time_reset_requested and not starts_new_lifecycle:
+                self.clock.run_id += 1
                 self.clock.step_count = 0
                 should_reset_storage_soc = True
             if action == "start":
@@ -4040,6 +4096,7 @@ class _ControlsMixin:
                 self.clock.state = "paused"
             elif action == "stop":
                 self.clock.state = "stopped"
+                self.clock.run_id += 1
                 self.clock.absolute_minute = 0.0
                 self.clock.minute = 0.0
                 self.clock.step_count = 0
@@ -4056,13 +4113,21 @@ class _ControlsMixin:
                 self._reset_storage_soc_to_initial()
                 self._reset_hydrogen_storage_state_to_initial()
             if history_reset_requested:
+                # 新生命周期或重置/停机时清空残留遥调一阶执行态与故障恢复栈，避免污染新周期首拍。
+                self._remote_adjustment_execution.clear()
+                self._fault_restore.clear()
                 self._invalidate_automatic_runtime_state_for_simulation_reset()
             if action in ("start", "stop") or commands_cleared or time_reset_requested:
                 self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
             if action == "step":
-                return self.step(advance_minutes=effective_step)["clock"]
-            self.clock.updated_at = time.time()
-            return self.clock.as_dict()
+                if previous_state == "stopped" and self.clock.step_count == 0 and not history_reset_requested:
+                    self.clock.run_id += 1
+                pending_step_minutes = effective_step
+            else:
+                self.clock.updated_at = time.time()
+                return self.clock.as_dict()
+        # 必须在释放 self.lock 后再调用 self.step()，严格维持 _step_lock -> lock 锁序以杜绝 AB-BA 死锁。
+        return self.step(advance_minutes=pending_step_minutes)["clock"]
 
     @staticmethod
     def _external_book_signature_payload(book: EBook) -> List[Dict[str, Any]]:
@@ -5174,6 +5239,8 @@ class _ControlsMixin:
                     value,
                 )
             requested["set_values"][set_type] = _json_scalar(value)
+            # 模拟台人工固定设点时，立即清除对应控制点残留的一阶遥调执行态。
+            self._remote_adjustment_execution.pop((dev_type, dev_name, set_type), None)
             changed = True
 
         if not changed:
@@ -5186,7 +5253,11 @@ class _ControlsMixin:
             self.clock.absolute_minute,
             additional_ui_overrides=priority_override_keys,
         )
-        self._apply_device_faults(self.clock.minute, self.clock.absolute_minute)
+        self._apply_device_faults(
+            self.clock.minute,
+            self.clock.absolute_minute,
+            restore_expired=False,
+        )
         run_stats, _cb_status, set_values, _soc_values = self._stat_maps()
         cb_status_set = self._closed_status_set_map()
         key = (dev_type, dev_name)

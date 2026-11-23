@@ -6,6 +6,8 @@ import json
 import random
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -578,6 +580,389 @@ class ClosedLoopSimulationAuditTests(unittest.TestCase):
         )
         p_out, _q, _pb, _qb = simu_loop._load_power(out_book.data["ACLoad"].data[0])
         self.assertAlmostEqual(p_out, 15.0, places=6)
+
+
+class ClosedLoopSimulationAuditRound3Tests(unittest.TestCase):
+    """三轮深度审查（两批合并 11 项修复）专项回归验证。"""
+
+    def test_control_clock_step_no_abba_deadlock_with_concurrent_step(self) -> None:
+        """验证 control_clock({'action': 'step'}) 先释放 self.lock 再调 step()，彻底消除 AB-BA 死锁。"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim = _make_simulator(tmp_dir)
+            entered_kernel = threading.Event()
+            release_kernel = threading.Event()
+            orig_execute = sim._execute_kernel
+
+            def slowed_execute(config):
+                entered_kernel.set()
+                release_kernel.wait(timeout=5.0)
+                return orig_execute(config)
+
+            errors: list[BaseException] = []
+
+            def worker_step() -> None:
+                try:
+                    sim.step(advance_seconds=1.0, return_snapshot=False)
+                except BaseException as exc:  # pragma: no cover
+                    errors.append(exc)
+
+            def worker_control_step() -> None:
+                try:
+                    sim.control_clock({"action": "step"})
+                except BaseException as exc:  # pragma: no cover
+                    errors.append(exc)
+
+            sim._execute_kernel = slowed_execute  # type: ignore[method-assign]
+            t1 = threading.Thread(target=worker_step)
+            t1.start()
+            self.assertTrue(entered_kernel.wait(timeout=5.0))
+
+            # 此时 t1 持有 _step_lock 并在锁外执行潮流；启动 t2 调用 control_clock("step")
+            t2 = threading.Thread(target=worker_control_step)
+            t2.start()
+            # 稍作等待让 t2 进入 control_clock 并释放 self.lock 后排队等待 _step_lock
+            time.sleep(0.15)
+            # 放行潮流；若存在 AB-BA 死锁，t1 在获取 self.lock 时将与 t2 永久互锁
+            release_kernel.set()
+            t1.join(timeout=10.0)
+            t2.join(timeout=10.0)
+            self.assertFalse(t1.is_alive(), "后台 step 线程发生死锁")
+            self.assertFalse(t2.is_alive(), "control_clock(step) 线程发生死锁")
+            self.assertEqual(errors, [])
+
+    def test_energy_coupling_bidirectional_interlock_and_state_echo(self) -> None:
+        """验证电氢耦合设备任一端点停运时联锁停运耦合父设备与对端端点，且状态回显不被 1 覆写。"""
+        from effective_state import propagate_composite_run_states
+
+        rows = {
+            "AcE2Hydro": {
+                "header_list": ["idx", "name", "idx_acload_t1", "idx_h2_unit_t2", "run_stat"],
+                "rows": [[1, "E2H-1", 10, 20, 1]],
+            },
+            "ACLoad": {
+                "header_list": ["idx", "name", "run_stat"],
+                "rows": [[10, "E2H-1_ACLoad", 0]],
+            },
+            "HydroSource": {
+                "header_list": ["idx", "name", "run_stat"],
+                "rows": [[20, "E2H-1_H2Src", 1]],
+            },
+        }
+        effective, overrides = propagate_composite_run_states(rows)
+        self.assertEqual(effective["AcE2Hydro"]["rows"][0][4], 0)
+        self.assertEqual(effective["HydroSource"]["rows"][0][2], 0)
+        overridden_types = {item["dev_type"] for item in overrides}
+        self.assertEqual(overridden_types, {"AcE2Hydro", "HydroSource"})
+
+        # 验证 collect_device_operating_states 不再用未联锁的 model_book run_stat=1 覆盖快照 run_stat=0
+        fake_dev = SimpleNamespace(name="E2H-1_ACLoad", run_stat=0, is_alive=True)
+        fake_snap = SimpleNamespace(
+            ac=SimpleNamespace(nodes=[], loads=[fake_dev]),
+            dc=None,
+            ac_devices={},
+            dc_devices={},
+            dcac_converters=[],
+            acac_converters=[],
+        )
+        book_with_stale_one = EBook({"ACLoad": [{"idx": "10", "name": "E2H-1_ACLoad", "run_stat": "1"}]})
+        states = simu_loop.collect_device_operating_states(fake_snap, book_with_stale_one)
+        load_state = next(s for s in states if s["dev_type"] == "ACLoad" and s["dev_name"] == "E2H-1_ACLoad")
+        self.assertEqual(load_state["run_stat"], 0)
+
+    def test_weather_scada_preserves_fault_and_no_signal_torn_frame(self) -> None:
+        """验证步进后 SCADA 气象故障不被 _with_weather_measurements 覆写，且未步进前遥控不制造遥信撕裂帧。"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim = _make_simulator(tmp_dir)
+            sim.local_settings["measurement_faults"] = [
+                {
+                    "dev_type": "Environment",
+                    "dev_name": "weather",
+                    "meas_type": "WIND_SPEED",
+                    "fault_type": "bias",
+                    "bias": 50.0,
+                    "start_minute": 0,
+                    "end_minute": 1440,
+                }
+            ]
+            sim.step(advance_seconds=1.0, return_snapshot=False)
+            meas = sim.measurements()
+            real_wind = next(
+                r for r in meas["real"] if r["dev_type"] == "Environment" and r["meas_type"] == "WIND_SPEED"
+            )
+            scada_wind = next(
+                r for r in meas["scada"] if r["dev_type"] == "Environment" and r["meas_type"] == "WIND_SPEED"
+            )
+            self.assertGreater(float(scada_wind["value"]) - float(real_wind["value"]), 40.0)
+
+            # 下发遥控停机但尚未步进潮流时，上一拍已计算帧的 RUN_STAT 不应提前跳变制造与满发功率冲突的撕裂帧
+            diesel_rows = [
+                row
+                for row in sim.source_model_book.data["ACGenerator"].data
+                if "diesel" in str(row.get("dev_type", "")).lower()
+            ]
+            self.assertTrue(diesel_rows)
+            diesel_name = str(diesel_rows[0]["name"])
+            before_run = next(
+                r
+                for r in meas["scada"]
+                if r["dev_type"] == "ACGenerator" and r["dev_name"] == diesel_name and r["meas_type"] == "RUN_STAT"
+            )["value"]
+            sim.apply_student_commands(
+                {"run_status": [{"dev_type": "ACGenerator", "dev_name": diesel_name, "run_stat": 0}]},
+                source="trainee",
+            )
+            after_cmd_meas = sim.measurements()
+            before_step_run = next(
+                r
+                for r in after_cmd_meas["scada"]
+                if r["dev_type"] == "ACGenerator" and r["dev_name"] == diesel_name and r["meas_type"] == "RUN_STAT"
+            )["value"]
+            self.assertEqual(before_step_run, before_run)
+
+    def test_ideal_edge_closed_status_and_scada_noise_bounds_and_missing_valid(self) -> None:
+        """验证理想支路识别 closed_status、带后缀交流非负/SOC上界/停机去噪以及缺失测点置 valid=0。"""
+        from update_meas_from_lf import _device_is_live
+
+        # 初始 status=0 但遥控合闸 closed_status=1 时必须判定为 live
+        reclosed_breaker = SimpleNamespace(run_stat=1, status=0, closed_status=1, is_alive=True)
+        self.assertTrue(_device_is_live(reclosed_breaker, check_status=True))
+        opened_breaker = SimpleNamespace(run_stat=1, status=1, closed_status=0, is_alive=True)
+        self.assertFalse(_device_is_live(opened_breaker, check_status=True))
+
+        # 校验非负带后缀交流幅值、直流有向电流保负、满电 SOC 上界截断、停机零值去噪
+        model_book = EBook(
+            {
+                "ACGenerator": [
+                    {"idx": "1", "name": "G_STOP", "run_stat": "0"},
+                    {"idx": "2", "name": "G_RUN", "run_stat": "1"},
+                ]
+            }
+        )
+        rows = [
+            ["1", "i_ac_zero", "ACGenerator", "G_RUN", "I_GEN", "1", "1", "0.0"],
+            ["2", "v_from_zero", "ACBranch", "B1", "V_FROM", "1", "1", "0.0"],
+            ["3", "dc_i_zero", "DCBranch", "DB1", "I_FROM", "1", "1", "0.0"],
+            ["4", "soc_full", "ACGenerator", "G_RUN", "SOC", "1", "1", "1.0"],
+            ["5", "stopped_p", "ACGenerator", "G_STOP", "P_GEN", "1", "1", "0.0"],
+        ]
+        # 负偏置测试非负截断与直流保负
+        neg_scada = simu_loop.add_noise_to_rows(
+            rows,
+            noise_std=0.0,
+            rng=random.Random(1),
+            median_deviations={"i_ac_zero": -5.0, "v_from_zero": -2.0, "dc_i_zero": -3.0, "stopped_p": -4.0},
+            model_book=model_book,
+        )
+        self.assertEqual(float(neg_scada[0][7]), 0.0)
+        self.assertEqual(float(neg_scada[1][7]), 0.0)
+        self.assertAlmostEqual(float(neg_scada[2][7]), -3.0, places=6)
+        self.assertEqual(float(neg_scada[4][7]), 0.0)
+
+        # 正偏置测试电储能 SOC 上界截断 1.0
+        pos_scada = simu_loop.add_noise_to_rows(
+            rows,
+            noise_std=0.0,
+            rng=random.Random(1),
+            median_deviations={"soc_full": 0.08},
+            model_book=model_book,
+        )
+        self.assertEqual(float(pos_scada[3][7]), 1.0)
+
+        # 缺失测点必须将 valid 置 0
+        empty_snap = SimpleNamespace(
+            value=lambda *_args: None,
+            ac_devices={},
+            dc_devices={},
+            fluid_results={},
+            coupling_results=(),
+        )
+        _b, real_rows, _a, updated, missing = simu_loop.build_real_rows_from_data(
+            [["1", "missing_pt", "ACBranch", "NO_SUCH", "P_FROM", "1", "1", "999.0"]],
+            empty_snap,
+        )
+        self.assertEqual(updated, 0)
+        self.assertEqual(missing, 1)
+        self.assertEqual(real_rows[0][6], "0")
+
+    def test_cancel_student_commands_partial_and_delta_scada_only_and_trim(self) -> None:
+        """验证单点取消不误杀同批控制点；非 compact scada_only 保留未变测点；历史裁剪触发 reset。"""
+        from simu.measurement_delta import apply_measurement_delta
+
+        # 1) apply_measurement_delta 非 compact + scada_only=True 保留未变测点
+        defs = [{"idx": 1, "name": "M1", "valid": 1}, {"idx": 2, "name": "M2", "valid": 1}]
+        base_meas = {
+            "definitions": defs,
+            "scada": [{"idx": 1, "name": "M1", "value": 10.0, "valid": 1}, {"idx": 2, "name": "M2", "value": 20.0, "valid": 1}],
+        }
+        delta_payload = {
+            "reset": False,
+            "value_channels": ["scada"],
+            "items": [{"name": "M1", "scada_value": 15.0, "valid": 1}],
+        }
+        merged = apply_measurement_delta(base_meas, defs, delta_payload)
+        by_name = {r["name"]: r["value"] for r in merged["scada"]}
+        self.assertEqual(by_name, {"M1": 15.0, "M2": 20.0})
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim = _make_simulator(tmp_dir)
+            gens = [str(r["name"]) for r in sim.source_model_book.data["ACGenerator"].data[:2]]
+            self.assertEqual(len(gens), 2)
+            # 2) 单批下发两个人工遥调点，仅取消第 1 个，第 2 个必须保持生效
+            sim.apply_student_commands(
+                {
+                    "command_origin": "manual",
+                    "set_values": [
+                        {"dev_type": "ACGenerator", "dev_name": gens[0], "set_type": "p_set", "set_value": 10.0},
+                        {"dev_type": "ACGenerator", "dev_name": gens[1], "set_type": "p_set", "set_value": 15.0},
+                    ],
+                },
+                source="trainee-ui",
+            )
+            sim.cancel_student_commands(
+                {"cancel_commands": [{"dev_type": "ACGenerator", "dev_name": gens[0], "set_type": "p_set"}]},
+                source="trainee-ui",
+            )
+            active_keys = sim._active_remote_adjustment_keys(sim.clock.absolute_minute)
+            self.assertNotIn(("ACGenerator", gens[0], "p_set"), active_keys)
+            self.assertIn(("ACGenerator", gens[1], "p_set"), active_keys)
+
+            # 3) 历史滚动裁剪后 after < oldest_seq - 1 必须返回 reset=True
+            sim.step(advance_seconds=1.0, return_snapshot=False)
+            sim._measurement_delta_seq = 500
+            sim._measurement_delta_history = [{"seq": 301, "items": [], "keys": []}]
+            sim._measurement_delta_step_count = sim.clock.step_count
+            sim._measurement_delta_definition_revision = sim.definition_snapshot.revision
+            sim._measurement_delta_runtime_marker = sim._measurement_delta_runtime_state_marker()
+            resp = sim.measurement_delta(after_seq=50, compact=False)
+            self.assertTrue(resp["reset"])
+
+    def test_remote_adjustment_renewable_curtail_down_and_active_window(self) -> None:
+        """验证新能源下调限电无虚高上限死区，以及 _active_window 支持 hour 模式与零长窗口。"""
+        from simu.service_parts.common import _active_window
+
+        # hour 模式跨第 1 小时后按 60 分钟周期循环，且零长度窗口不生效
+        self.assertTrue(_active_window({"start_minute": 10, "end_minute": 20}, 75.0, 75.0, "hour"))
+        self.assertFalse(_active_window({"start_minute": 10, "end_minute": 20}, 85.0, 85.0, "hour"))
+        self.assertFalse(_active_window({"start_minute": 10, "end_minute": 10}, 15.0, 15.0, "day"))
+        self.assertTrue(_active_window({"start_minute": 0, "end_minute": 1440}, 720.0, 720.0, "day"))
+
+        # 新能源下调限电：实测 30 kW，上拍放开上限 100 kW，现下调限电 20 kW -> 从 30 kW 直接向 20 kW 响应（<30 kW），不卡在 76 kW
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim = _make_simulator(tmp_dir)
+            sim.remote_adjustment_response_ratio = 0.5
+            wind_rows = [
+                row
+                for row in sim.source_model_book.data["ACGenerator"].data
+                if "wind" in str(row.get("dev_type", "")).lower()
+            ]
+            self.assertTrue(wind_rows)
+            wind_name = str(wind_rows[0]["name"])
+            key = ("ACGenerator", wind_name, "p_set")
+            # 秦岭站单台交流风电额定上限约 10 kW：上拍放开上限 10.0，当前实测 6.0，下调限电 2.0 -> 从 min(6.0, 10.0)=6.0 响应至 4.0（非 6.0）
+            sim.apply_student_commands(
+                {
+                    "run_status": [{"dev_type": "ACGenerator", "dev_name": wind_name, "run_stat": 1}],
+                    "set_values": [{"dev_type": "ACGenerator", "dev_name": wind_name, "set_type": "p_set", "set_value": 2.0}],
+                },
+                source="trainee",
+            )
+            sim._remote_adjustment_execution[key] = {
+                "executed_value": 10.0,
+                "target_value": 10.0,
+                "last_cycle_token": 1,
+            }
+            sim._latest_true_remote_adjustment_value = lambda k: 6.0 if k == key else None  # type: ignore[method-assign]
+            _stat, _yt, pending = sim._remote_adjustment_boundary_books(
+                0.0,
+                2,
+                period_seconds=1.0,
+                return_next_state=True,
+            )
+            self.assertAlmostEqual(pending[key]["executed_value"], 4.0, places=6)
+
+    def test_curves_clock_monotonic_step_minutes_closed_endpoint_and_hydro_load(self) -> None:
+        """验证编辑曲线不跳空时钟、step_minutes 展开、闭区间首段插值以及 HydroLoad 字段写读一致。"""
+        from simu.service_parts.common import _interpolate, _normalize_points
+
+        pts = _normalize_points([10.0, 20.0, 30.0], ("value",), step_minutes=60.0)
+        self.assertEqual([p["minute"] for p in pts], [0.0, 60.0, 120.0])
+
+        # 闭区间 0..1440 同时提供时，[0, 60) 必须从 minute=0 的 100 插值到 minute=60 的 200，而不是跳用 minute=1440 的 999
+        interp = _interpolate(
+            [{"minute": 0, "v": 100.0}, {"minute": 60, "v": 200.0}, {"minute": 1440, "v": 999.0}],
+            30.0,
+            "v",
+            0.0,
+            period_minutes=1440.0,
+        )
+        self.assertAlmostEqual(float(interp), 150.0, places=6)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim = _make_simulator(tmp_dir)
+            sim.clock.speed = 60
+            sim.clock.absolute_minute = 5.0 / 60.0
+            sim.clock.minute = sim.clock.absolute_minute
+            sim.update_curve_series({"series": {"load:HydroLoad:氢负荷-1": [12.5, 15.0]}})
+            # 未切换模式编辑曲线，时钟不得跳空对齐到 1.0 分钟
+            self.assertAlmostEqual(sim.clock.absolute_minute, 5.0 / 60.0, places=9)
+            self.assertEqual(sim.curves["loads"]["HydroLoad:氢负荷-1"][0].get("flow_set"), 12.5)
+            self.assertNotIn("p_kw", sim.curves["loads"]["HydroLoad:氢负荷-1"][0])
+
+    def test_scada104_baseline_merges_delta_init_and_proxy_bool_parser(self) -> None:
+        """验证 scada104 建基线合入 delta_init 防丢帧，以及代理布尔字符串解析正确。"""
+        import scada104 as scada104_mod
+        from simu.simulator_proxy import make_simulator_proxy_server
+
+        bridge = scada104_mod.Bridge.__new__(scada104_mod.Bridge)
+        bridge._delta_sync_state = {}
+
+        def fake_pool_request(base, path, payload=None, *, timeout=5.0):
+            if path.startswith("/api/measurements?"):
+                return {
+                    "definitions": [{"idx": 1, "name": "P1", "meas_type": "P"}],
+                    "scada": [{"idx": 1, "name": "P1", "value": 10.0, "valid": 1}],
+                }
+            if path == "/api/external/controls/names":
+                return {"model_id": "m1", "yk_names": [], "yt_names": []}
+            if path.startswith("/api/measurements/delta"):
+                # 模拟两次请求间隙模拟台已步进至 seq=2、值变为 42.0
+                return {
+                    "encoding": "measurement-arrays-v1",
+                    "seq": 2,
+                    "count": 1,
+                    "definition_signature": "sig-1",
+                    "scada_values": [42.0],
+                    "valid_values": [1],
+                }
+            raise AssertionError(path)
+
+        with patch.object(scada104_mod._HTTP_POOL, "request_json", side_effect=fake_pool_request):
+            points, dirty = bridge._read_points_for_model("http://127.0.0.1:18711", "m1")
+        self.assertTrue(dirty)
+        self.assertEqual(points["yc"]["P1"]["value"], 42.0)
+        self.assertEqual(bridge._delta_sync_state["m1"]["seq"], 2)
+
+        # 验证 Bridge.execute 不强制 manual_hold=True 且回传模拟台安全限幅后的实际值
+        captured_payloads: list[dict] = []
+
+        def fake_exec_request(base, path, payload=None, *, timeout=5.0):
+            captured_payloads.append(dict(payload or {}))
+            return {"accepted": {"remote_adjustments": 1}, "yt_results": [{"accepted": True, "value": 80.0}]}
+
+        bridge.command_target = lambda rtu, kind, number, value: ("http://127.0.0.1:18711", "m1", "YT_G1")  # type: ignore[method-assign]
+        with patch.object(scada104_mod._HTTP_POOL, "request_json", side_effect=fake_exec_request):
+            applied = bridge.execute(1, "yt", 1, 150.0)
+        self.assertEqual(applied, 80.0)
+        self.assertFalse(captured_payloads[0].get("manual_hold"))
+
+        # 验证代理布尔字符串解析："false"/"0" 必须解析为 False
+        from simu.simulator_proxy import parse_bool_flag
+
+        self.assertFalse(parse_bool_flag("false"))
+        self.assertFalse(parse_bool_flag("0"))
+        self.assertFalse(parse_bool_flag("off"))
+        self.assertTrue(parse_bool_flag("true"))
+        self.assertTrue(parse_bool_flag("1"))
 
 
 if __name__ == "__main__":

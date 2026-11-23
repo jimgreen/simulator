@@ -208,6 +208,9 @@ class _MeasurementsMixin:
 
         def sync_rows(rows: List[List[str]]) -> None:
             nonlocal changed
+            if not rows:
+                # 尚未完成首拍潮流计算时，不向空列表注入半残氢储罐行，保持冷启动帧完整一致。
+                return
             populated_keys: set[Tuple[str, str]] = set()
             for row in rows:
                 if len(row) < len(MEAS_HEADER):
@@ -570,11 +573,13 @@ class _MeasurementsMixin:
             }
 
         max_idx = -1
-        for rows in normalized.values():
+        for channel, rows in normalized.items():
             for row in rows:
                 idx = int(_to_float(row.get("idx"), -1) or -1)
                 max_idx = max(max_idx, idx)
-                if not self._is_weather_measurement_row(row):
+                if channel != "definitions" or not self._is_weather_measurement_row(row):
+                    # real/scada 通道中已由本拍仿真内核生成的气象行保留其真实/加噪/故障/状态值，
+                    # 严禁被无噪声当前气象值覆盖抹除。
                     continue
                 meas_type = str(row.get("meas_type", "")).upper()
                 value = weather_values.get(meas_type)
@@ -630,11 +635,11 @@ class _MeasurementsMixin:
             }
 
         max_idx = -1
-        for rows in normalized.values():
+        for channel, rows in normalized.items():
             for row in rows:
                 idx = int(_to_float(row.get("idx"), -1) or -1)
                 max_idx = max(max_idx, idx)
-                if self._is_signal_measurement_row(row):
+                if channel == "definitions" and self._is_signal_measurement_row(row):
                     self._apply_signal_measurement_value(row, values)
 
         definition_by_key = {
@@ -675,10 +680,12 @@ class _MeasurementsMixin:
                 key = self._signal_measurement_key(definition_row)
                 target = by_key.get(key)
                 if target is None:
+                    # 仅补充该通道缺失的遥信行；已由本拍潮流产出的遥信行保持与同帧功率同步，
+                    # 同时保留 SCADA 通道上的遥信故障/固定状态覆盖，避免未步进前产生撕裂帧。
                     target = dict(definition_row)
                     rows.append(target)
                     by_key[key] = target
-                self._apply_signal_measurement_value(target, values)
+                    self._apply_signal_measurement_value(target, values)
             normalized[channel] = rows
         return normalized
 
@@ -797,7 +804,14 @@ class _MeasurementsMixin:
                 if row is None:
                     continue
                 row["weight"] = definition.get("weight", row.get("weight"))
-                row["valid"] = definition.get("valid", row.get("valid"))
+                row_valid = int(_to_float(row.get("valid"), 1) or 0)
+                if self._is_weather_measurement_row(definition):
+                    # 气象测点在 meas.e 静态定义中初始 valid 可能为 0，实时有效性由本拍气象求解与人工状态覆盖决定。
+                    row["valid"] = row_valid
+                else:
+                    def_valid = int(_to_float(definition.get("valid"), 1) or 0)
+                    # 保留本拍潮流计算缺失或故障置零的 valid=0，仅在定义禁用时同步降为 0。
+                    row["valid"] = 0 if (def_valid == 0 or row_valid == 0) else 1
         measurements = self._with_realtime_measurements(
             {"definitions": definitions, "real": real, "scada": scada},
             in_place=True,
@@ -814,12 +828,18 @@ class _MeasurementsMixin:
             or self._source_measurement_statuses
         )
         if has_overrides:
-            for channel_rows in measurements.values():
+            for channel_name, channel_rows in measurements.items():
                 for row in channel_rows:
+                    row_valid = int(_to_float(row.get("valid"), 1) or 0)
                     status, fixed_value = self._measurement_status_override(row)
-                    row["status"] = status
-                    row["fixed_value"] = fixed_value
-                    row["valid"] = MEASUREMENT_STATUS_VALIDITY.get(status, int(_to_float(row.get("valid"), 0) or 0))
+                    if channel_name != "definitions" and status == "normal" and row_valid == 0:
+                        row["status"] = "invalid"
+                        row["fixed_value"] = None
+                        row["valid"] = 0
+                    else:
+                        row["status"] = status
+                        row["fixed_value"] = fixed_value
+                        row["valid"] = MEASUREMENT_STATUS_VALIDITY.get(status, row_valid)
         else:
             # 快路径：无自定义状态覆盖时直接按 valid 字段映射，免去每步数千次字典查表。
             for channel_rows in measurements.values():
@@ -859,7 +879,17 @@ class _MeasurementsMixin:
             real_value = real.get("value") if real else None
             scada_value = scada.get("value") if scada else None
             value = scada_value if scada is not None else real_value
-            valid = definition.get("valid", 0)
+            sample_row = scada if scada is not None else real
+            valid = (
+                sample_row.get("valid", definition.get("valid", 0))
+                if sample_row is not None
+                else definition.get("valid", 0)
+            )
+            status = (
+                sample_row.get("status", definition.get("status", _measurement_status_from_valid(valid)))
+                if sample_row is not None
+                else definition.get("status", _measurement_status_from_valid(valid))
+            )
             items[key] = {
                 "name": name,
                 "value": _json_scalar(value),
@@ -867,7 +897,7 @@ class _MeasurementsMixin:
                 "scada_value": _json_scalar(scada_value),
                 "valid": int(_to_float(valid, 0) or 0),
                 "weight": _json_scalar(definition.get("weight", "")),
-                "status": str(definition.get("status", _measurement_status_from_valid(valid))),
+                "status": str(status),
                 "fixed_value": _json_scalar(definition.get("fixed_value")),
                 **self._external_update_time_fields(time_payload),
             }
@@ -1048,11 +1078,20 @@ class _MeasurementsMixin:
             elif after == self._measurement_delta_seq:
                 items = []
             else:
-                history = [
-                    entry
-                    for entry in self._measurement_delta_history
-                    if int(entry.get("seq", 0)) > after
-                ]
+                oldest_seq = (
+                    int(self._measurement_delta_history[0].get("seq", 0))
+                    if self._measurement_delta_history
+                    else 0
+                )
+                history = (
+                    []
+                    if (not self._measurement_delta_history or after < oldest_seq - 1)
+                    else [
+                        entry
+                        for entry in self._measurement_delta_history
+                        if int(entry.get("seq", 0)) > after
+                    ]
+                )
                 if not history:
                     items = list(current.values())
                     reset = True

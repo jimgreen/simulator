@@ -624,7 +624,11 @@ class _DefinitionsMixin:
         self._ensure_runtime_stat_book()
         if materialize_controls:
             self._materialize_active_control_commands(self.clock.absolute_minute)
-            self._apply_device_faults(self.clock.minute, self.clock.absolute_minute)
+            self._apply_device_faults(
+                self.clock.minute,
+                self.clock.absolute_minute,
+                restore_expired=False,
+            )
         return next_snapshot
 
     def manual_definition_changes(self) -> Dict[str, Any]:
