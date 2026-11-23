@@ -282,12 +282,26 @@ def _hydrogen_island_pressure_state(
     resource_topology: ResourceTopology,
     pressure_by_island: Mapping[str, Sequence[Mapping[str, Any]]],
     flow_key: Tuple[str, str],
+    *,
+    flow_node: Any = None,
+    allow_offline_endpoint: bool = False,
 ) -> Tuple[str, Sequence[Mapping[str, Any]], str]:
     island_id = str(
         resource_topology.hydrogen_device_island_ids.get(flow_key, "")
     )
     if flow_key in set(resource_topology.hydrogen_invalid_devices):
         return "", (), "氢端设备节点或稳定身份无效"
+    if not island_id and allow_offline_endpoint:
+        # 耦合设备处于停机态时，模拟台会级联停运氢端设备，需按其所接活动氢节点反查归属氢岛。
+        node_text = str(flow_node if flow_node is not None else "").strip()
+        if node_text:
+            matched_islands = [
+                candidate_id
+                for candidate_id, island in resource_topology.hydrogen_islands.items()
+                if node_text in island.node_ids
+            ]
+            if len(matched_islands) == 1:
+                island_id = matched_islands[0]
     if not island_id:
         return "", (), "氢端设备未接入唯一有效氢网分岛"
     tanks = tuple(pressure_by_island.get(island_id, ()))
@@ -565,17 +579,17 @@ def _row_electrical_island_id(
     )
 
 
-def _island_electric_storage_soc(
+def _island_electric_storage_soc_stats(
     storage_rows: Sequence[Mapping[str, Any]],
     topology_island_id: str,
     optimization_result: Optional[RenewableDispatchOptimizationResult],
     warned_keys: set[Tuple[str, str]],
     warnings_out: List[str],
-) -> Optional[float]:
-    """按电气拓扑岛聚合在线电储平均 SOC，个别测点无效时仅剔除坏数并告警。"""
+) -> Tuple[Optional[float], Optional[float]]:
+    """按电气拓扑岛聚合在线电储的平均 SOC 与最低单机 SOC，个别测点无效时仅剔除坏数并告警。"""
     online_storage = [row for row in storage_rows if row.get("online")]
     if not online_storage:
-        return None
+        return None, None
     has_topology_tags = any(
         bool(_row_electrical_island_id(row, optimization_result))
         for row in online_storage
@@ -593,7 +607,7 @@ def _island_electric_storage_soc(
     else:
         scoped_storage = online_storage
     if not scoped_storage:
-        return None
+        return None, None
 
     known_soc: List[float] = []
     for row in scoped_storage:
@@ -611,8 +625,26 @@ def _island_electric_storage_soc(
                     f"电储{dev_key[1] or dev_key[0]} SOC量测无效，已在同岛氢能SOC均值计算中剔除"
                 )
     if not known_soc:
-        return None
-    return sum(known_soc) / len(known_soc)
+        return None, None
+    return sum(known_soc) / len(known_soc), min(known_soc)
+
+
+def _island_electric_storage_soc(
+    storage_rows: Sequence[Mapping[str, Any]],
+    topology_island_id: str,
+    optimization_result: Optional[RenewableDispatchOptimizationResult],
+    warned_keys: set[Tuple[str, str]],
+    warnings_out: List[str],
+) -> Optional[float]:
+    """按电气拓扑岛聚合在线电储平均 SOC（兼容旧调用）。"""
+    avg_soc, _ = _island_electric_storage_soc_stats(
+        storage_rows,
+        topology_island_id,
+        optimization_result,
+        warned_keys,
+        warnings_out,
+    )
+    return avg_soc
 
 
 def _optimize_hydrogen_within_topology_islands(
@@ -1116,32 +1148,15 @@ def _optimize_hydrogen_within_topology_islands(
             flow_type = str(flow_binding.get("target_dev_type", ""))
             flow_name = str(flow_binding.get("target_dev_name", ""))
             flow_key = (flow_type, flow_name)
-            # 业务硬边界前置：耦合设备已停机时模拟台会级联禁用端点，直接输出待人工开机状态而不刷无效氢岛报错。
-            if not coupling_online:
-                if hydrogen_dwell_memory is not None:
-                    dwell_key_off = f"{coupling_type}:{coupling_name}"
-                    off_entry = hydrogen_dwell_memory.get(dwell_key_off)
-                    if isinstance(off_entry, dict):
-                        off_entry["couplingOnline"] = False
-                diagnostics["decisionTraces"].append(
-                    {
-                        "mode": "electrolyzer" if is_electrolyzer else "fuel_cell",
-                        "couplingType": coupling_type,
-                        "couplingName": coupling_name,
-                        "action": "hold",
-                        "currentElectricPowerKw": 0.0,
-                        "targetElectricPowerKw": 0.0,
-                        "electricDeltaKw": 0.0,
-                        "controlReason": "awaiting_manual_start",
-                        "blockers": ["当前处于停机状态，自动策略禁止开机，等待人工下令开机"],
-                    }
-                )
-                continue
+            power_row = model_rows.get((power_type, power_name), {})
+            flow_row = model_rows.get((flow_type, flow_name), {})
             hydrogen_island_id, island_tanks, topology_error = (
                 _hydrogen_island_pressure_state(
                     resource_topology,
                     pressure_by_island,
                     flow_key,
+                    flow_node=flow_row.get("node"),
+                    allow_offline_endpoint=not coupling_online,
                 )
             )
             partial_pressure_invalid = bool(topology_error and island_tanks)
@@ -1248,26 +1263,89 @@ def _optimize_hydrogen_within_topology_islands(
                     used_nm3 = island_planned_discharge_flow_nm3h.get(hydrogen_island_id, 0.0) * control_horizon_hours
                     remaining_nm3 = max(0.0, conservative_available_nm3 - used_nm3)
                     tank_horizon_max_flow_nm3h = remaining_nm3 / control_horizon_hours
-            power_row = model_rows.get((power_type, power_name), {})
-            flow_row = model_rows.get((flow_type, flow_name), {})
             power_device = devices.get((power_type, power_name))
             flow_device = devices.get((flow_type, flow_name))
-            if (
-                not power_device
-                or not flow_device
-                or not _is_online(power_device, measurements)
+            if not power_device or not flow_device:
+                continue
+            if coupling_online and (
+                not _is_online(power_device, measurements)
                 or not _is_online(flow_device, measurements)
             ):
                 continue
             power_connection = hydrogen_electric_connections.get(
                 (power_type, power_name)
             )
+            electric_side = ""
+            electric_component_id = ""
+            dc_group_id = ""
             if (
-                power_connection is None
-                or power_connection.connection_side not in {"AC", "DC"}
-                or not power_connection.actively_connected
-                or not power_connection.grid_component_id
+                power_connection is not None
+                and power_connection.connection_side in {"AC", "DC"}
+                and power_connection.actively_connected
+                and power_connection.grid_component_id
             ):
+                electric_side = power_connection.connection_side
+                electric_component_id = power_connection.grid_component_id
+                dc_group_id = (
+                    power_connection.dc_transfer_group_id
+                    if electric_side == "DC"
+                    else ""
+                )
+            elif (
+                not coupling_online
+                and power_connection is not None
+                and power_connection.connection_side in {"AC", "DC"}
+            ):
+                # 耦合设备处于停机态时，电端设备常随耦合设备级联置 run_stat=0；
+                # 通过节点所属活动电气分量校核上游断路器闭合且母线带电后，允许评估自动开机。
+                candidate_component_id = str(
+                    resource_topology.device_component_ids.get(
+                        (power_type, power_name), ""
+                    )
+                    or ""
+                ).strip()
+                if power_connection.connection_side == "DC":
+                    if (
+                        candidate_component_id
+                        and candidate_component_id in resource_topology.dc_transfer_groups
+                    ):
+                        electric_side = "DC"
+                        electric_component_id = candidate_component_id
+                        dc_group_id = candidate_component_id
+                else:
+                    active_ac_components: set[str] = {
+                        str(conn.grid_component_id).strip()
+                        for conn in resource_topology.resources.values()
+                        if conn.actively_connected
+                        and conn.connection_side == "AC"
+                        and str(conn.grid_component_id).strip()
+                    }
+                    for group in resource_topology.dc_transfer_groups.values():
+                        active_ac_components.update(
+                            str(cid).strip()
+                            for cid in group.ac_component_ids
+                            if str(cid).strip()
+                        )
+                    for row in (*command_rows, *storage_rows):
+                        if row.get("online") is False:
+                            continue
+                        cid = str(row.get("gridComponentId", "") or "").strip()
+                        if cid:
+                            active_ac_components.add(cid)
+                    if optimization_result is not None:
+                        for island in optimization_result.islands:
+                            active_ac_components.update(
+                                str(cid).strip()
+                                for cid in island.component_ids
+                                if str(cid).strip()
+                            )
+                    if candidate_component_id and (
+                        not active_ac_components
+                        or candidate_component_id in active_ac_components
+                    ):
+                        electric_side = "AC"
+                        electric_component_id = candidate_component_id
+            if not electric_side or not electric_component_id:
                 topology_label = (
                     power_connection.topology_status_label
                     if power_connection is not None
@@ -1278,16 +1356,6 @@ def _optimize_hydrogen_within_topology_islands(
                     f"并网侧拓扑无效（{topology_label}），已按 fail closed 禁止自动调节"
                 )
                 continue
-            # The final real-bus side is resolved from the active graph, exactly
-            # like wind/PV.  Converter crossings are part of active_path; no
-            # endpoint type or device-name prefix is used as a side heuristic.
-            electric_side = power_connection.connection_side
-            electric_component_id = power_connection.grid_component_id
-            dc_group_id = (
-                power_connection.dc_transfer_group_id
-                if electric_side == "DC"
-                else ""
-            )
             coefficient_field = "e2h_coeff" if is_electrolyzer else "h2e_coeff"
             coefficient = _number(coupling.get(coefficient_field))
             if coefficient is None or coefficient <= EPSILON:
@@ -1434,13 +1502,15 @@ def _optimize_hydrogen_within_topology_islands(
                 electric_component_id,
                 dc_group_id,
             )
-            # 按氢能电端所属电气拓扑岛独立聚合电储 SOC、柴发负载/容量与氢能互锁态
-            electric_storage_soc = _island_electric_storage_soc(
-                storage_rows,
-                topology_island_id,
-                optimization_result,
-                warned_invalid_storage_soc,
-                diagnostics["warnings"],
+            # 按氢能电端所属电气拓扑岛独立聚合电储平均/最低 SOC、柴发负载/容量与氢能互锁态
+            electric_storage_soc, electric_storage_soc_min = (
+                _island_electric_storage_soc_stats(
+                    storage_rows,
+                    topology_island_id,
+                    optimization_result,
+                    warned_invalid_storage_soc,
+                    diagnostics["warnings"],
+                )
             )
             if (
                 diesel_has_topology_tags
@@ -1507,6 +1577,7 @@ def _optimize_hydrogen_within_topology_islands(
                     else fuel_cell_diesel_stop_minimum_ratio
                 ),
                 "electricStorageSocAverage": electric_storage_soc,
+                "electricStorageSocMin": electric_storage_soc_min,
                 "hydrogenStorageSocAverage": hydrogen_storage_soc,
                 "startThresholdKw": start_threshold_kw,
                 "stopThresholdKw": stop_threshold_kw,
@@ -1570,11 +1641,32 @@ def _optimize_hydrogen_within_topology_islands(
                 h2_stop_limit = settings.electrolyzer_hydrogen_storage_soc_stop_minimum
                 h2_deadband = max(0.0, float(settings.hydrogen_pressure_deadband_ratio))
                 electrolyzer_h2_raise_limit = max(0.0, h2_stop_limit - h2_deadband)
+                # 单机最低 SOC 防亏电保护门槛：防止某侧高 SOC 拉高全岛均值、掩盖短板侧储能被持续制氢抽干
+                min_soc_stop_floor = max(
+                    settings.soc_min,
+                    min(
+                        settings.electrolyzer_storage_soc_stop_maximum,
+                        settings.soc_min + 0.10,
+                    ),
+                )
+                min_soc_start_floor = min(
+                    settings.electrolyzer_storage_soc_start_minimum,
+                    min_soc_stop_floor + 0.05,
+                )
+                min_soc_below_stop_floor = bool(
+                    electric_storage_soc_min is not None
+                    and electric_storage_soc_min < min_soc_stop_floor - EPSILON
+                )
+                min_soc_below_start_floor = bool(
+                    electric_storage_soc_min is not None
+                    and electric_storage_soc_min < min_soc_start_floor - EPSILON
+                )
                 electrolyzer_raise_allowed = bool(
                     diesel_raise_margin_kw > EPSILON
                     and electric_storage_soc is not None
                     and electric_storage_soc
                     > settings.electrolyzer_storage_soc_start_minimum + EPSILON
+                    and not min_soc_below_start_floor
                     and hydrogen_storage_soc is not None
                     and hydrogen_storage_soc
                     < electrolyzer_h2_raise_limit - EPSILON
@@ -1589,6 +1681,7 @@ def _optimize_hydrogen_within_topology_islands(
                         and electric_storage_soc
                         < settings.electrolyzer_storage_soc_stop_maximum - EPSILON
                     )
+                    or min_soc_below_stop_floor
                     or (
                         hydrogen_storage_soc is not None
                         and hydrogen_storage_soc > h2_stop_limit + EPSILON
@@ -1670,62 +1763,28 @@ def _optimize_hydrogen_within_topology_islands(
                 )
                 diagnostics["decisionTraces"].append(decision_trace)
                 continue
-            # 业务硬边界：学员台控制策略只能决定关机（停机）与已开机设备调功，禁止自动决定开机（开机等待人工下令）。
-            if not coupling_online:
-                ready_for_manual_start = bool(
-                    not hard_safety_blocked
-                    and not conflict_stops_device
-                    and (
-                        (is_electrolyzer and electrolyzer_raise_allowed)
-                        or (
-                            not is_electrolyzer
-                            and fuel_cell_decision is not None
-                            and fuel_cell_decision.action == "start"
-                        )
-                    )
-                )
-                if ready_for_manual_start:
-                    diagnostics["warnings"].append(
-                        f"{coupling_name} 已满足运行条件，但自动策略禁止开机，等待人工下令开机"
-                    )
-                    decision_trace.update(
-                        {
-                            "action": "hold",
-                            "targetElectricPowerKw": 0.0,
-                            "controlReason": "awaiting_manual_start",
-                            "blockers": ["自动策略禁止开机，等待人工下令开机"],
-                        }
-                    )
-                else:
-                    stopped_reason = (
-                        "pressure_safety_stop"
-                        if pressure_blocked
-                        else "hydrogen_soc_safety_stop"
-                        if soc_safety_blocked
-                        else "hydrogen_tank_horizon_safety_stop"
-                        if tank_horizon_blocked
-                        else (
-                            "start_conditions_not_met"
-                            if is_electrolyzer
-                            else (
-                                fuel_cell_decision.reason
-                                if fuel_cell_decision is not None
-                                else "start_conditions_not_met"
-                            )
-                        )
-                    )
-                    decision_trace.update(
-                        {
-                            "action": "hold",
-                            "targetElectricPowerKw": 0.0,
-                            "controlReason": stopped_reason,
-                            "blockers": ["当前处于停机状态，等待人工下令开机"],
-                        }
-                    )
-                diagnostics["decisionTraces"].append(decision_trace)
-                continue
 
             is_hard_safety_stop = bool(conflict_stops_device or hard_safety_blocked)
+            if not coupling_online and is_hard_safety_stop:
+                stopped_reason = (
+                    f"simultaneous_operation_stop_{scoped_conflict_stop_mode}"
+                    if conflict_stops_device
+                    else "pressure_safety_stop"
+                    if pressure_blocked
+                    else "hydrogen_soc_safety_stop"
+                    if soc_safety_blocked
+                    else "hydrogen_tank_horizon_safety_stop"
+                )
+                decision_trace.update(
+                    {
+                        "action": "hold",
+                        "targetElectricPowerKw": 0.0,
+                        "controlReason": stopped_reason,
+                        "blockers": ["安全保护或氢能互锁触发，保持停机"],
+                    }
+                )
+                diagnostics["decisionTraces"].append(decision_trace)
+                continue
             if conflict_stops_device and current_power > EPSILON:
                 requested_delta_kw = -current_power
                 device_action = "hydrogen_interlock_stop"
@@ -1864,6 +1923,8 @@ def _optimize_hydrogen_within_topology_islands(
                         < settings.electrolyzer_storage_soc_stop_maximum - EPSILON
                     ):
                         reduce_reasons.append("electric_storage_soc_below_stop_threshold")
+                    if min_soc_below_stop_floor:
+                        reduce_reasons.append("electric_storage_min_soc_below_protection_floor")
                     if (
                         hydrogen_storage_soc
                         > settings.electrolyzer_hydrogen_storage_soc_stop_minimum
@@ -1899,6 +1960,11 @@ def _optimize_hydrogen_within_topology_islands(
                             start_blockers.append(
                                 f"电储 SOC {electric_storage_soc * 100:.1f}%、未达 "
                                 f"{settings.electrolyzer_storage_soc_start_minimum * 100:.0f}% 启机线"
+                            )
+                        if min_soc_below_start_floor and electric_storage_soc_min is not None:
+                            start_blockers.append(
+                                f"单机最低电储 SOC {electric_storage_soc_min * 100:.1f}%、低于 "
+                                f"{min_soc_start_floor * 100:.0f}% 防亏电门槛"
                             )
                         if (
                             hydrogen_storage_soc
@@ -2305,9 +2371,10 @@ def _optimize_hydrogen_within_topology_islands(
             )
             set_value = target_power if active_set_type == "p_set" else target_flow
             run_stat_target: Optional[int] = None
-            # 自动策略只允许决定关机（run_stat=0），严禁下发开机遥控（run_stat=1）。
             if target_power <= EPSILON and coupling_online:
                 run_stat_target = 0
+            elif target_power > EPSILON and not coupling_online:
+                run_stat_target = 1
             emit_analog_setpoint = True
             if run_stat_target is not None:
                 coupling_key = (coupling_type, coupling_name)
@@ -2351,9 +2418,10 @@ def _optimize_hydrogen_within_topology_islands(
                         diagnostics["decisionTraces"].append(decision_trace)
                         continue
                 else:
-                    # 下发停机遥控（run_stat=0）时不再同时向遥调端下发 set_value=0.0，
-                    # 防止模拟台按 p_min/flow_min 将 0.0 抬升为正下限造成矛盾指令与合闸带载冲击。
-                    emit_analog_setpoint = False
+                    # 仅下发停机遥控（run_stat=0）时抑制 set_value=0.0 遥调，避免模拟台按 p_min/flow_min 抬升；
+                    # 下发开机遥控（run_stat=1）时保留模拟量设点，同步设定安全起步功率/流量。
+                    if run_stat_target == 0:
+                        emit_analog_setpoint = False
                     command_rows.append(
                         {
                             "category": "氢能",

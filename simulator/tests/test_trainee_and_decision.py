@@ -1032,6 +1032,7 @@ class Batch1ControlStrategyTests(unittest.TestCase):
             _finalize_renewable_saturation_memory,
         )
         from simu.renewable_control_parts.settings import _environment_measurement_status
+        import copy
         from simu.renewable_control_parts.common import _measurement_index
 
         # 1) 测点配置停用（definitions.measurement valid=0）时，即使 curve_boundary 与 real 有值也必须判不可用
@@ -1343,6 +1344,7 @@ class Batch1ControlStrategyTests(unittest.TestCase):
 
     def test_hydrogen_min_dwell_and_safety_override_on_real_model(self) -> None:
         """验证氢能启停最小驻留冷却在常规经济性停机时保持最小运行功率，但安全停机不受阻塞。"""
+        import copy
         import copy
         from simu.renewable_control_parts.common import _measurement_index
         from simu.renewable_control_parts.hydrogen import _optimize_hydrogen_within_topology_islands
@@ -1935,10 +1937,12 @@ class AuditRound3StrategyTests(unittest.TestCase):
     def test_hydrogen_hard_safety_stop_not_blocked_by_zero_diesel_margin_or_dwell(self) -> None:
         """验证氢罐超压/高SOC硬安全停机在柴发顶在 p_min 且处于最小驻留期时仍强制归零停机。"""
         from simu.model_semantics import energy_coupling_control_bindings
+        import copy
         from simu.renewable_control_parts.common import _measurement_index
         from simu.renewable_control_parts.hydrogen import (
             _hydrogen_electric_resource_refs,
             _optimize_hydrogen_within_topology_islands,
+            energy_coupling_control_bindings,
         )
         from simu.renewable_control_parts.settings import RenewableControlSettings
 
@@ -2036,10 +2040,12 @@ class AuditRound3StrategyTests(unittest.TestCase):
     def test_hydrogen_tank_horizon_prevents_large_step_overdraw(self) -> None:
         """验证高倍率大步长下剩余储氢量不足支撑一拍最小功率时，燃料电池触发罐容安全停机防止抽负。"""
         from simu.model_semantics import energy_coupling_control_bindings
+        import copy
         from simu.renewable_control_parts.common import _measurement_index
         from simu.renewable_control_parts.hydrogen import (
             _hydrogen_electric_resource_refs,
             _optimize_hydrogen_within_topology_islands,
+            energy_coupling_control_bindings,
         )
         from simu.renewable_control_parts.settings import RenewableControlSettings
 
@@ -2101,12 +2107,14 @@ class AuditRound3StrategyTests(unittest.TestCase):
         self.assertAlmostEqual(float(fc_cmds[0]["targetElectricPowerKw"]), 0.0, places=6)
         self.assertEqual(fc_cmds[0].get("controlReason"), "hydrogen_tank_horizon_safety_stop")
 
-    def test_hydrogen_never_auto_starts_when_offline_and_waits_for_manual_start(self) -> None:
-        """验证电制氢与燃料电池处于关机态且满足全部运行条件时，策略绝不下发 run_stat=1 开机。"""
+    def test_hydrogen_auto_starts_when_offline_and_conditions_met_including_cascaded_endpoints(self) -> None:
+        """验证电制氢与燃料电池处于关机态（含电/氢端点级联停运）且满足启机与安全条件时，自动下发 run_stat=1 及起步设点；安全越界时保持停机。"""
+        import copy
         from simu.renewable_control_parts.common import _measurement_index
         from simu.renewable_control_parts.hydrogen import (
             _hydrogen_electric_resource_refs,
             _optimize_hydrogen_within_topology_islands,
+            energy_coupling_control_bindings,
         )
         from simu.renewable_control_parts.settings import RenewableControlSettings
 
@@ -2114,18 +2122,31 @@ class AuditRound3StrategyTests(unittest.TestCase):
         ac_e2h = self._model_block_rows(snap, "AcE2Hydro")
         self.assertTrue(ac_e2h)
         e2h_name = str(ac_e2h[0].get("name", ""))
+        e2h_bindings = energy_coupling_control_bindings(snap).get(("AcE2Hydro", e2h_name), ())
+        e2h_endpoint_keys = {
+            (str(b.get("target_dev_type", "")), str(b.get("target_dev_name", "")))
+            for b in e2h_bindings
+        }
 
-        # 场景 1：电制氢关机（run_stat=0），柴发负载率 20% < 35%，电储 SOC=0.85 > 0.70，氢储 SOC=0.50 < 0.85（全部开机条件满足）
+        # 场景 1：电制氢及其级联电/氢端点均停机（run_stat=0），柴发负载率 20% < 35%，电储 SOC=0.85 > 0.70，氢储 SOC=0.50 < 0.85
         for m_row in snap.get("measurements", {}).get("scada", []):
             m_type = str(m_row.get("meas_type", "")).upper()
-            if m_row.get("dev_type") in {"AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"} and m_type == "RUN_STAT":
+            dev_key = (str(m_row.get("dev_type", "")), str(m_row.get("dev_name", "")))
+            if (
+                m_row.get("dev_type") in {"AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"}
+                or dev_key in e2h_endpoint_keys
+            ) and m_type == "RUN_STAT":
                 m_row["value"] = 0
             elif m_row.get("dev_type") == "HydroStorage" and m_type == "SOC":
                 m_row["value"] = 0.50
             elif m_row.get("dev_type") == "HydroStorage" and m_type == "GAS_QUANTITY":
                 m_row["value"] = 500.0
         for d_row in snap.get("devices", []):
-            if d_row.get("dev_type") in {"AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"}:
+            dev_key = (str(d_row.get("dev_type", "")), str(d_row.get("dev_name", "")))
+            if (
+                d_row.get("dev_type") in {"AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"}
+                or dev_key in e2h_endpoint_keys
+            ):
                 d_row["run_stat"] = 0
 
         measurements = _measurement_index(snap)
@@ -2133,7 +2154,21 @@ class AuditRound3StrategyTests(unittest.TestCase):
             snap,
             _hydrogen_electric_resource_refs(snap),
         )
-        command_rows_e2h: list[dict] = []
+        command_rows_e2h: list[dict] = [
+            {
+                "category": "柴发",
+                "dev_type": "ACGenerator",
+                "dev_name": "交流柴油发电机-27",
+                "online": True,
+                "commandable": True,
+                "commandKw": 79.0,
+                "minKw": 70.0,
+                "capacityKw": 300.0,
+                "gridComponentId": topo.device_component_ids.get(
+                    ("ACGenerator", "交流柴油发电机-27"), ""
+                ),
+            }
+        ]
         h_plan_e2h = _optimize_hydrogen_within_topology_islands(
             snap,
             measurements,
@@ -2147,37 +2182,58 @@ class AuditRound3StrategyTests(unittest.TestCase):
             diesel_input_valid=True,
             apply_electrical_corrections=True,
         )
-        # 绝不生成 run_stat=1 开机遥控，也绝不下发非零功率
-        self.assertFalse(any(r.get("run_stat") == 1 for r in command_rows_e2h))
-        self.assertEqual(h_plan_e2h.get("commands", []), [])
-        e2h_traces = [t for t in h_plan_e2h.get("decisionTraces", []) if t.get("couplingName") == e2h_name]
-        self.assertEqual(len(e2h_traces), 1)
-        self.assertEqual(e2h_traces[0].get("controlReason"), "awaiting_manual_start")
-        self.assertEqual(e2h_traces[0].get("action"), "hold")
+        # 应自动生成电制氢 run_stat=1 开机遥控，并同步下发正起步功率/流量设点
+        e2h_run_cmds = [
+            r for r in command_rows_e2h
+            if r.get("commandKind") == "run_status" and r.get("dev_name") == e2h_name
+        ]
+        self.assertEqual(len(e2h_run_cmds), 1)
+        self.assertEqual(int(e2h_run_cmds[0].get("run_stat", -1)), 1)
+        e2h_set_cmds = [
+            r for r in command_rows_e2h
+            if r.get("category") == "氢能" and r.get("set_type") in {"p_set", "flow_set"}
+        ]
+        self.assertTrue(e2h_set_cmds)
+        self.assertGreater(float(e2h_set_cmds[0].get("commandKw", 0.0)), 0.0)
+        self.assertTrue(any(c.get("couplingName") == e2h_name for c in h_plan_e2h.get("commands", [])))
 
-        # 场景 2：燃料电池关机（run_stat=0），柴发负载率 90% > 50%，电储 SOC=0.20 < 0.30，氢储 SOC=0.50 > 0.30（全部开机条件满足）
-        command_rows_fc: list[dict] = []
-        h_plan_fc = _optimize_hydrogen_within_topology_islands(
-            snap,
-            measurements,
+        # 场景 2：当储氢罐 SOC 已达安全停机线（0.96 >= 0.95）时，电制氢仍必须严格保持停机不自动开机
+        snap_high_h2 = copy.deepcopy(snap)
+        for m_row in snap_high_h2.get("measurements", {}).get("scada", []):
+            m_type = str(m_row.get("meas_type", "")).upper()
+            if m_row.get("dev_type") == "HydroStorage" and m_type == "SOC":
+                m_row["value"] = 0.96
+            elif m_row.get("dev_type") == "HydroStorage" and m_type == "GAS_QUANTITY":
+                m_row["value"] = 960.0
+        measurements_high_h2 = _measurement_index(snap_high_h2)
+        topo_high_h2 = resource_topology.resolve_resource_topology(
+            snap_high_h2,
+            _hydrogen_electric_resource_refs(snap_high_h2),
+        )
+        command_rows_blocked: list[dict] = []
+        h_plan_blocked = _optimize_hydrogen_within_topology_islands(
+            snap_high_h2,
+            measurements_high_h2,
             RenewableControlSettings(),
-            topo,
-            command_rows_fc,
-            [{"dev_type": "ACGenerator", "dev_name": "ESS1", "online": True, "soc": 0.20, "socKnown": True}],
-            diesel_current_kw=90.0,
+            topo_high_h2,
+            command_rows_blocked,
+            [{"dev_type": "ACGenerator", "dev_name": "ESS1", "online": True, "soc": 0.85, "socKnown": True}],
+            diesel_current_kw=20.0,
             diesel_capacity_kw=100.0,
             diesel_unit_count=1,
             diesel_input_valid=True,
             apply_electrical_corrections=True,
         )
-        self.assertFalse(any(r.get("run_stat") == 1 for r in command_rows_fc))
-        self.assertEqual(h_plan_fc.get("commands", []), [])
-        fc_traces = [t for t in h_plan_fc.get("decisionTraces", []) if t.get("mode") == "fuel_cell"]
-        self.assertTrue(fc_traces)
-        self.assertEqual(fc_traces[0].get("controlReason"), "awaiting_manual_start")
+        self.assertFalse(any(r.get("run_stat") == 1 for r in command_rows_blocked))
+        self.assertFalse(
+            any(c.get("couplingName") == e2h_name for c in h_plan_blocked.get("commands", []))
+        )
+        self.assertFalse(
+            any(float(c.get("targetElectricPowerKw", 0.0)) > 0.0 for c in h_plan_blocked.get("commands", []))
+        )
 
     def test_planner_dc_hydrogen_component_key_and_unbalanced_rollback_present(self) -> None:
-        """验证 planner.py 对齐直流氢能 dcTransferGroupId 口径、禁止 run_stat=1 并包含单拍回代失败保守回滚保护。"""
+        """验证 planner.py 对齐直流氢能 dcTransferGroupId 口径、允许 run_stat in (0, 1) 并包含单拍回代失败保守回滚保护。"""
         planner_src = (
             REPO_ROOT / "trainee" / "simu" / "renewable_control_parts" / "planner.py"
         ).read_text(encoding="utf-8")
@@ -2190,7 +2246,7 @@ class AuditRound3StrategyTests(unittest.TestCase):
             planner_src,
         )
         self.assertIn(
-            "int(run_stat) != 0",
+            "int(run_stat) not in (0, 1)",
             planner_src,
         )
 
@@ -2205,6 +2261,7 @@ class TraineeStrategyRound4AuditTests(unittest.TestCase):
             _merge_remote_measurements_with_local_definitions,
         )
         from simu.resource_topology import _state_from_model_row, _measurement_values
+        import copy
         from simu.renewable_control_parts.common import _measurement_index
 
         # 1) 遥信测点 valid=0 或空帧时，不得覆写 run_stat=0，应标 run_stat_valid=False
@@ -2603,6 +2660,222 @@ class TraineeStrategyRound4AuditTests(unittest.TestCase):
         self.assertIsNotNone(s_var)
         # step_kw = 30 kW, current = +200 kW -> 常规阶段不得从 +200 直接跨零到 -30（应从 +200 平滑向 0 回撤）
         self.assertGreaterEqual(float(s_var.lower_kw), 170.0 - 1e-6)
+
+    def test_fuel_cell_starts_above_entry_limit_without_50_to_53_deadzone(self) -> None:
+        """验证燃料电池对齐电制氢启机裕度：柴发超过 50% 启机线且起步后不低于 30% 停机线即可启机，消除 50%~53% 死区。"""
+        from simu.fuel_cell_control import (
+            FuelCellControlInputs,
+            FuelCellControlParameters,
+            calculate_fuel_cell_power_decision,
+        )
+
+        params = FuelCellControlParameters(
+            power_step_kw=4.5,
+            diesel_power_limit_ratio=0.50,
+            diesel_power_stop_minimum_ratio=0.30,
+            electric_storage_soc_limit=0.30,
+            hydrogen_storage_soc_start_limit=0.30,
+            hydrogen_storage_soc_stop_limit=0.15,
+            electric_storage_soc_deadband=0.05,
+        )
+        # 1) 柴发 151.5 kW (50.5%)，虽超出 50% 仅 1.5 kW < 9.0 kW 起步功率，但起步后 142.5 kW >> 90 kW 停机线，必须允许启动
+        decision_start = calculate_fuel_cell_power_decision(
+            params,
+            FuelCellControlInputs(
+                current_power_kw=0.0,
+                maximum_power_kw=45.0,
+                minimum_power_kw=4.5,
+                start_threshold_kw=9.0,
+                stop_threshold_kw=4.5,
+                diesel_power_kw=151.5,
+                diesel_capacity_kw=300.0,
+                electric_storage_soc_average=0.18,
+                hydrogen_storage_soc_average=0.60,
+            ),
+        )
+        self.assertEqual(decision_start.action, "start")
+        self.assertAlmostEqual(decision_start.requested_delta_kw, 9.0, places=6)
+        self.assertEqual(decision_start.reason, "start_conditions_met")
+
+        # 2) 柴发 149.0 kW (< 50% 启机线)：仍保持停机
+        decision_below = calculate_fuel_cell_power_decision(
+            params,
+            FuelCellControlInputs(
+                current_power_kw=0.0,
+                maximum_power_kw=45.0,
+                minimum_power_kw=4.5,
+                start_threshold_kw=9.0,
+                stop_threshold_kw=4.5,
+                diesel_power_kw=149.0,
+                diesel_capacity_kw=300.0,
+                electric_storage_soc_average=0.18,
+                hydrogen_storage_soc_average=0.60,
+            ),
+        )
+        self.assertEqual(decision_below.action, "hold")
+        self.assertEqual(decision_below.reason, "start_conditions_not_met")
+
+        # 3) 若起步功率过大导致启机后柴发跌破 30% 停机线（151.5 - 70 < 90），必须拦截为 start_margin_insufficient
+        decision_too_large = calculate_fuel_cell_power_decision(
+            params,
+            FuelCellControlInputs(
+                current_power_kw=0.0,
+                maximum_power_kw=100.0,
+                minimum_power_kw=35.0,
+                start_threshold_kw=70.0,
+                stop_threshold_kw=35.0,
+                diesel_power_kw=151.5,
+                diesel_capacity_kw=300.0,
+                electric_storage_soc_average=0.18,
+                hydrogen_storage_soc_average=0.60,
+            ),
+        )
+        self.assertEqual(decision_too_large.action, "hold")
+        self.assertEqual(decision_too_large.reason, "start_margin_insufficient")
+
+    def test_electrolyzer_exits_when_any_island_storage_drops_below_protection_floor(self) -> None:
+        """验证单机最低电储 SOC 防亏电保护：即使全岛平均 SOC > 30%，单机跌破 20% 也必须驱动电制氢降载退出。"""
+        from simu.renewable_control_parts.hydrogen import _island_electric_storage_soc_stats
+        from simu.renewable_control_parts.settings import RenewableControlSettings
+
+        storage_rows = [
+            {
+                "dev_type": "ACGenerator",
+                "dev_name": "BESS_AC",
+                "online": True,
+                "soc": 0.88,
+                "socKnown": True,
+                "gridComponentId": "AC1",
+            },
+            {
+                "dev_type": "DCGenerator",
+                "dev_name": "BESS_DC",
+                "online": True,
+                "soc": 0.18,
+                "socKnown": True,
+                "gridComponentId": "AC1",
+            },
+        ]
+        warnings_out: list[str] = []
+        avg_soc, min_soc = _island_electric_storage_soc_stats(
+            storage_rows,
+            "AC1",
+            None,
+            set(),
+            warnings_out,
+        )
+        self.assertAlmostEqual(float(avg_soc), 0.53, places=6)
+        self.assertAlmostEqual(float(min_soc), 0.18, places=6)
+
+        # 验证源码逻辑接入单机防亏电保护门槛
+        settings = RenewableControlSettings().normalized()
+        min_soc_stop_floor = max(
+            settings.soc_min,
+            min(settings.electrolyzer_storage_soc_stop_maximum, settings.soc_min + 0.10),
+        )
+        self.assertAlmostEqual(min_soc_stop_floor, 0.20, places=6)
+        self.assertLess(float(min_soc), min_soc_stop_floor)
+        hydrogen_src = (
+            REPO_ROOT / "trainee" / "simu" / "renewable_control_parts" / "hydrogen.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("electric_storage_min_soc_below_protection_floor", hydrogen_src)
+        self.assertIn("min_soc_below_stop_floor", hydrogen_src)
+
+    def test_balance_storage_edge_anti_drift_buffer_eliminates_boundary_creep(self) -> None:
+        """验证构网平衡储能紧贴 SOC 上下限微漂移时自动施加反向防漂移缓冲，避免持续贴边告警。"""
+        from simu.renewable_optimization import _storage_variable
+
+        # 1) SOC=10.0% 贴底仍在微放电 +0.6 kW -> upper_kw 必须压至负充电缓冲区（<= -0.5 kW）
+        floor_var = _storage_variable(
+            {
+                "dev_type": "DCGenerator",
+                "dev_name": "BESS_GF_DC",
+                "online": True,
+                "commandable": False,
+                "stateEligible": True,
+                "role": "balance",
+                "connectionSide": "DC",
+                "gridComponentId": "DC1",
+                "currentKw": 0.6,
+                "soc": 0.10,
+                "socMin": 0.10,
+                "socMax": 0.90,
+                "capacityKwh": 100.0,
+                "maxChargePowerKw": 50.0,
+                "maxDischargePowerKw": 50.0,
+                "chargePower": 50.0,
+                "dischargePower": 0.0,
+                "dischargeDeratingFactor": 0.0,
+            },
+            grid_forming_protection_ratio=0.03,
+            storage_step_ratio=0.10,
+            storage_soc_correction_step_scale=0.5,
+            soc_deadband=0.005,
+        )
+        self.assertIsNotNone(floor_var)
+        self.assertLessEqual(float(floor_var.upper_kw), -0.5 + 1e-6)
+        self.assertTrue(bool(floor_var.requires_safety_correction))
+
+        # 2) SOC=90.0% 贴顶仍在微充电 -0.04 kW -> lower_kw 必须抬至正放电缓冲区（>= +0.5 kW）
+        ceil_var = _storage_variable(
+            {
+                "dev_type": "DCGenerator",
+                "dev_name": "BESS_GF_DC",
+                "online": True,
+                "commandable": False,
+                "stateEligible": True,
+                "role": "balance",
+                "connectionSide": "DC",
+                "gridComponentId": "DC1",
+                "currentKw": -0.04,
+                "soc": 0.90,
+                "socMin": 0.10,
+                "socMax": 0.90,
+                "capacityKwh": 100.0,
+                "maxChargePowerKw": 50.0,
+                "maxDischargePowerKw": 50.0,
+                "chargePower": 0.0,
+                "dischargePower": 50.0,
+                "chargeDeratingFactor": 0.0,
+            },
+            grid_forming_protection_ratio=0.03,
+            storage_step_ratio=0.10,
+            storage_soc_correction_step_scale=0.5,
+            soc_deadband=0.005,
+        )
+        self.assertIsNotNone(ceil_var)
+        self.assertGreaterEqual(float(ceil_var.lower_kw), 0.5 - 1e-6)
+        self.assertTrue(bool(ceil_var.requires_safety_correction))
+
+        # 3) SOC=10.0% 但电流为 0.0 kW（无漂移）时，不额外强加反向缓冲
+        idle_var = _storage_variable(
+            {
+                "dev_type": "DCGenerator",
+                "dev_name": "BESS_GF_DC",
+                "online": True,
+                "commandable": False,
+                "stateEligible": True,
+                "role": "balance",
+                "connectionSide": "DC",
+                "gridComponentId": "DC1",
+                "currentKw": 0.0,
+                "soc": 0.10,
+                "socMin": 0.10,
+                "socMax": 0.90,
+                "capacityKwh": 100.0,
+                "maxChargePowerKw": 50.0,
+                "maxDischargePowerKw": 50.0,
+                "chargePower": 50.0,
+                "dischargePower": 0.0,
+                "dischargeDeratingFactor": 0.0,
+            },
+            grid_forming_protection_ratio=0.03,
+            storage_step_ratio=0.10,
+            storage_soc_correction_step_scale=0.5,
+            soc_deadband=0.005,
+        )
+        self.assertIsNotNone(idle_var)
+        self.assertAlmostEqual(float(idle_var.upper_kw), 0.0, places=6)
 
 
 if __name__ == "__main__":

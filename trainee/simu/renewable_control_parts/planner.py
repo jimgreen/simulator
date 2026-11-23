@@ -3438,8 +3438,8 @@ def calculate_renewable_control_plan(
                 str(row.get("dev_name", "")).strip(),
             )
             run_stat = _number(row.get("run_stat"))
-            # 架构硬防线：自动控制策略仅允许决定关机（run_stat=0），严禁下发开机（run_stat=1）遥控。
-            if not all(key) or run_stat is None or int(run_stat) != 0:
+            # 允许自动控制策略下发氢能停机（run_stat=0）与开机（run_stat=1）遥控。
+            if not all(key) or run_stat is None or int(run_stat) not in (0, 1):
                 continue
             if key not in selected:
                 ordered_keys.append(key)

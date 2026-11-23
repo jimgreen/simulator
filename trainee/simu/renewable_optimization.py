@@ -491,6 +491,7 @@ def _storage_variable(
     # satisfy the ordinary step limit.
     step_lower = max(safety_lower, current - step_kw)
     step_upper = min(safety_upper, current + step_kw)
+    anti_drift_applied = False
     if forced_direct_reversal and forced_direction == "charge":
         if current > step_kw + EPSILON:
             # 深度放电越下限时，常规阶段先按步长快速向零/充电方向回撤，避免单拍跨零数倍步长硬反转。
@@ -530,12 +531,47 @@ def _storage_variable(
         upper = step_upper
         normal_step_kw = step_kw
     elif row.get("role") == "balance":
-        # Grid-forming storage is a balancing source. It is constrained by
-        # its guarded power range and SOC limits. Normal balancing is not
-        # step-limited, but the forced SOC branch above is step-limited.
+        # 构网平衡储能受保护区间与 SOC 边界约束；当直流侧构网储能紧贴 SOC 上下限且因 DCAC 变流器
+        # 线性效率/潮流网损偏差仍在向越界方向微小漂移（0.02 ~ 5.0 kW）时，施加温和反向防漂移缓冲，
+        # 避免长期卡边触发边界告警，同时不干扰交流构网储能或大功率应急工况。
         lower = safety_lower
         upper = safety_upper
         normal_step_kw = math.inf
+        side_tag = str(row.get("connectionSide", "")).strip().upper()
+        edge_band = max(0.002, soc_deadband)
+        anti_drift_cap_kw = step_kw * 0.25 if step_kw > EPSILON else 2.0
+        if (
+            side_tag == "DC"
+            and soc is not None
+            and soc_min is not None
+            and soc <= soc_min + edge_band + EPSILON
+            and 0.02 < current <= 5.0
+            and safety_lower < -EPSILON
+        ):
+            anti_drift_charge_kw = min(
+                -safety_lower,
+                max(0.5, min(anti_drift_cap_kw, current * 1.5 + 0.5)),
+            )
+            candidate_upper = min(upper, -anti_drift_charge_kw)
+            if candidate_upper >= lower - EPSILON:
+                upper = candidate_upper
+                anti_drift_applied = True
+        elif (
+            side_tag == "DC"
+            and soc is not None
+            and soc_max is not None
+            and soc >= soc_max - edge_band - EPSILON
+            and -5.0 <= current < -0.02
+            and safety_upper > EPSILON
+        ):
+            anti_drift_discharge_kw = min(
+                safety_upper,
+                max(0.5, min(anti_drift_cap_kw, abs(current) * 1.5 + 0.5)),
+            )
+            candidate_lower = max(lower, anti_drift_discharge_kw)
+            if candidate_lower <= upper + EPSILON:
+                lower = candidate_lower
+                anti_drift_applied = True
     elif current < safety_lower - EPSILON:
         lower = safety_lower
         upper = safety_lower
@@ -577,6 +613,7 @@ def _storage_variable(
             )
             or at_soc_floor_discharging
             or at_soc_ceiling_charging
+            or anti_drift_applied
             or current < safety_lower - EPSILON
             or current > safety_upper + EPSILON
         ),
@@ -1393,6 +1430,40 @@ def _solve_island(
                     feasibility_values = np.asarray(emergency_feasibility.x, dtype=float)
                     active_lower = emergency_lower
                     active_upper = emergency_upper
+            # 阶段 3 兜底：若极端孤岛无足够外部余量满足构网储能贴边防漂移软缓冲，
+            # 退回构网储能硬安全边界（仍严守 0 kW 禁止越界方向），确保优化问题保持可行。
+            if not feasibility_success:
+                relaxed_lower = emergency_lower.copy()
+                relaxed_upper = emergency_upper.copy()
+                changed_balance_bound = False
+                for index, item in enumerate(ordered):
+                    if item.kind == "storage" and not item.storage_forced_direction:
+                        if (
+                            item.safety_lower_kw is not None
+                            and item.safety_lower_kw < relaxed_lower[index] - EPSILON
+                        ):
+                            relaxed_lower[index] = item.safety_lower_kw
+                            changed_balance_bound = True
+                        if (
+                            item.safety_upper_kw is not None
+                            and item.safety_upper_kw > relaxed_upper[index] + EPSILON
+                        ):
+                            relaxed_upper[index] = item.safety_upper_kw
+                            changed_balance_bound = True
+                if changed_balance_bound and not box_proven_infeasible(
+                    relaxed_lower, relaxed_upper
+                ):
+                    relaxed_feasibility = exact_balance_feasibility(
+                        relaxed_lower,
+                        relaxed_upper,
+                    )
+                    if relaxed_feasibility.success and relaxed_feasibility.x is not None:
+                        feasibility_success = True
+                        feasibility_values = np.asarray(
+                            relaxed_feasibility.x, dtype=float
+                        )
+                        active_lower = relaxed_lower
+                        active_upper = relaxed_upper
 
     renewable_indexes = [index for index, item in enumerate(ordered) if item.kind == "renewable"]
     diesel_indexes = [index for index, item in enumerate(ordered) if item.kind == "diesel"]

@@ -140,11 +140,16 @@ def calculate_fuel_cell_power_decision(
                 diesel_raise_margin_kw=diesel_raise_margin_kw,
                 diesel_reduce_margin_kw=diesel_reduce_margin_kw,
             )
-        # Starting is a state transition, not a normal ramp.  Move directly to
-        # minimum running power plus one step and ignore the regular ramp limit.
+        # 启机属于状态切换而非普通爬坡：柴发启机线是准入条件，只需校核起步降载后不跌破停机线，
+        # 对齐电制氢启机裕度语义，消除 50%~53% 启机死区。
         required_start = max(0.0, start_threshold - current_power)
+        diesel_stop_headroom_kw = (
+            max(maximum_power, start_threshold)
+            if diesel_capacity <= EPSILON
+            else max(0.0, diesel_power - diesel_stop_limit * diesel_capacity)
+        )
         if (
-            required_start > diesel_raise_margin_kw + EPSILON
+            required_start > diesel_stop_headroom_kw + EPSILON
             or start_threshold > maximum_power + EPSILON
         ):
             return FuelCellControlDecision(
