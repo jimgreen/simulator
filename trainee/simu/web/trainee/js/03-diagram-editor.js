@@ -2060,7 +2060,13 @@ function resetDiagramInteractions(container) {
   removeDiagramFlowArrows(container);
   container.classList.remove("is-diagram-panning");
   container.querySelectorAll(".is-diagram-selected").forEach((element) => element.classList.remove("is-diagram-selected"));
+  if (interaction) {
+    interaction.selectedElements = null;
+    interaction.flowArrowStaticRefKey = "";
+    interaction.flowArrowStaticRefMap = null;
+  }
   diagramDeviceIndexCache.delete(container);
+  diagramDeviceElementsCache.delete(container);
   diagramMetricBindingCache.delete(container);
   diagramRealtimeBindingCache.delete(container);
   diagramViewportCache.delete(container);
@@ -2141,6 +2147,45 @@ function beginDiagramPan(container, event) {
   return true;
 }
 
+function scheduleDiagramViewBoxApply(viewport, container) {
+  if (!viewport?.svg) return;
+  if (viewport._viewBoxRaf) return;
+  viewport._viewBoxRaf = requestAnimationFrame(() => {
+    viewport._viewBoxRaf = 0;
+    const cur = viewport.current;
+    if (cur && viewport.svg) {
+      viewport.svg.setAttribute("viewBox", `${cur.x} ${cur.y} ${cur.width} ${cur.height}`);
+    }
+    if (container) updateDiagramToolbarState(container);
+  });
+}
+
+function zoomDiagramByFactor(container, factor) {
+  const viewport = diagramViewportState(container);
+  if (!viewport?.svg || !viewport.current || !viewport.original) return false;
+  const focus = {
+    x: viewport.current.x + viewport.current.width / 2,
+    y: viewport.current.y + viewport.current.height / 2,
+  };
+  const next = diagramZoomViewBox(viewport.current, viewport.original, focus, factor);
+  const changed = ["x", "y", "width", "height"].some((key) => Math.abs(Number(next[key]) - Number(viewport.current[key])) > 1e-7);
+  if (!changed) return false;
+  viewport.current = { ...next };
+  scheduleDiagramViewBoxApply(viewport, container);
+  return true;
+}
+
+function resetDiagramViewport(container = $("modelDiagramCanvas")) {
+  const viewport = diagramViewportState(container);
+  if (!viewport) return false;
+  fitDiagramViewport(viewport);
+  updateDiagramToolbarState(container);
+  return true;
+}
+if (typeof window !== "undefined") {
+  window.resetDiagramViewport = resetDiagramViewport;
+}
+
 function moveDiagramPan(container, event) {
   const interaction = diagramInteractionCache.get(container);
   const drag = interaction?.drag;
@@ -2161,7 +2206,7 @@ function moveDiagramPan(container, event) {
     y: point.y - drag.startPoint.y,
   });
   viewport.current = { ...next };
-  viewport.svg.setAttribute("viewBox", `${next.x} ${next.y} ${next.width} ${next.height}`);
+  scheduleDiagramViewBoxApply(viewport, container);
   event.preventDefault();
   return true;
 }
@@ -2210,7 +2255,7 @@ function zoomDiagramAtPointer(container, event) {
   const changed = ["x", "y", "width", "height"].some((key) => Math.abs(Number(next[key]) - Number(viewport.current[key])) > 1e-7);
   if (!changed) return false;
   viewport.current = { ...next };
-  svg.setAttribute("viewBox", `${next.x} ${next.y} ${next.width} ${next.height}`);
+  scheduleDiagramViewBoxApply(viewport, container);
   event.preventDefault();
   return true;
 }
@@ -2479,35 +2524,182 @@ function initDiagramInteractions(container) {
 
 
 
+function diagramToolbarTranslate(text) {
+  return typeof translatePhrase === "function" ? translatePhrase(text) : text;
+}
+
+function updateDiagramToolbarState(container = $("modelDiagramCanvas")) {
+  const panel = container?.closest?.(".model-diagram-panel");
+  const bar = panel?.querySelector?.(".diagram-floating-toolbar");
+  if (!bar) return;
+  const prefs = normalizeDiagramDisplayPreferences(diagramDisplayPreferences);
+  const flowBtn = bar.querySelector('[data-diagram-tool="flow"]');
+  if (flowBtn) {
+    flowBtn.classList.toggle("is-active", prefs.flowArrows !== false);
+    flowBtn.setAttribute("aria-pressed", prefs.flowArrows !== false ? "true" : "false");
+  }
+  const measBtn = bar.querySelector('[data-diagram-tool="meas"]');
+  if (measBtn) {
+    measBtn.classList.toggle("is-active", prefs.measurements !== false);
+    measBtn.setAttribute("aria-pressed", prefs.measurements !== false ? "true" : "false");
+  }
+  const zoomBtn = bar.querySelector('[data-diagram-tool="zoom-reset"]');
+  if (zoomBtn) {
+    const vp = diagramViewportState(container);
+    const pct = vp?.original?.width && vp?.current?.width
+      ? Math.round((vp.original.width / vp.current.width) * 100)
+      : 100;
+    zoomBtn.textContent = `${pct}%`;
+  }
+}
+
+function refreshDiagramSearchOptions(container) {
+  const panel = container?.closest?.(".model-diagram-panel");
+  const datalist = panel?.querySelector?.("#diagramDeviceSearchList");
+  if (!datalist) return;
+  const devices = diagramDeviceIndex(container);
+  const seen = new Set();
+  const frag = document.createDocumentFragment();
+  devices.forEach((info) => {
+    const nm = String(info?.devName || "").trim();
+    if (!nm || seen.has(nm)) return;
+    seen.add(nm);
+    const opt = document.createElement("option");
+    opt.value = nm;
+    frag.appendChild(opt);
+  });
+  datalist.replaceChildren(frag);
+}
+
+function ensureDiagramFloatingToolbar(container) {
+  const panel = container?.closest?.(".model-diagram-panel");
+  if (!panel) return;
+  let bar = panel.querySelector(".diagram-floating-toolbar");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.className = "diagram-floating-toolbar";
+    bar.setAttribute("role", "toolbar");
+    bar.setAttribute("aria-label", diagramToolbarTranslate("接线图工具栏"));
+    bar.innerHTML = `
+      <input type="search" class="diagram-tool-search" list="diagramDeviceSearchList" placeholder="${diagramToolbarTranslate("定位设备...")}" aria-label="${diagramToolbarTranslate("定位设备")}" />
+      <datalist id="diagramDeviceSearchList"></datalist>
+      <span class="diagram-tool-sep" aria-hidden="true"></span>
+      <button type="button" class="diagram-tool-btn" data-diagram-tool="flow" title="${diagramToolbarTranslate("显示或隐藏潮流方向箭头")}">${diagramToolbarTranslate("潮流")}</button>
+      <button type="button" class="diagram-tool-btn" data-diagram-tool="meas" title="${diagramToolbarTranslate("显示或隐藏量测值")}">${diagramToolbarTranslate("量测")}</button>
+      <span class="diagram-tool-sep" aria-hidden="true"></span>
+      <button type="button" class="diagram-tool-btn" data-diagram-tool="zoom-out" title="${diagramToolbarTranslate("缩小")} (-)">−</button>
+      <button type="button" class="diagram-tool-btn diagram-tool-zoom" data-diagram-tool="zoom-reset" title="${diagramToolbarTranslate("适应画布")} (0 / F)">100%</button>
+      <button type="button" class="diagram-tool-btn" data-diagram-tool="zoom-in" title="${diagramToolbarTranslate("放大")} (+)">+</button>
+      <button type="button" class="diagram-tool-btn" data-diagram-tool="fit" title="${diagramToolbarTranslate("适应画布")} (F)">${diagramToolbarTranslate("适应")}</button>
+    `;
+    const head = panel.querySelector(".panel-head");
+    if (head) head.appendChild(bar);
+    else panel.prepend(bar);
+
+    const searchInput = bar.querySelector(".diagram-tool-search");
+    const runSearch = () => {
+      const q = String(searchInput?.value || "").trim();
+      if (!q) return;
+      const ok = focusDiagramDeviceByName(container, q);
+      if (!ok && typeof showUiToast === "function") {
+        showUiToast(`${diagramToolbarTranslate("未找到设备")}: ${q}`, "warn", 1600);
+      }
+    };
+    searchInput?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        runSearch();
+      }
+    });
+    searchInput?.addEventListener("change", runSearch);
+
+    bar.addEventListener("click", (event) => {
+      const btn = event.target instanceof Element ? event.target.closest("[data-diagram-tool]") : null;
+      if (!btn) return;
+      const action = btn.dataset.diagramTool;
+      if (action === "zoom-in") {
+        zoomDiagramByFactor(container, 0.82);
+      } else if (action === "zoom-out") {
+        zoomDiagramByFactor(container, 1.22);
+      } else if (action === "zoom-reset" || action === "fit") {
+        resetDiagramViewport(container);
+      } else if (action === "flow") {
+        diagramDisplayPreferences = saveDiagramDisplayPreferences({
+          ...diagramDisplayPreferences,
+          flowArrows: diagramDisplayPreferences.flowArrows === false,
+        });
+        applyDiagramDisplayPreferences(container, diagramDisplayPreferences);
+        updateDiagramRealtimeBindings(container, state.snapshot || {});
+        updateDiagramToolbarState(container);
+      } else if (action === "meas") {
+        diagramDisplayPreferences = saveDiagramDisplayPreferences({
+          ...diagramDisplayPreferences,
+          measurements: diagramDisplayPreferences.measurements === false,
+        });
+        applyDiagramDisplayPreferences(container, diagramDisplayPreferences);
+        updateDiagramRealtimeBindings(container, state.snapshot || {});
+        updateDiagramToolbarState(container);
+      }
+    });
+
+    if (!window.__polarDiagramShortcutsBound) {
+      window.__polarDiagramShortcutsBound = true;
+      document.addEventListener("keydown", (event) => {
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        if (typeof currentPageName === "function" && currentPageName() !== "diagram") return;
+        const active = document.activeElement;
+        if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT" || active.isContentEditable)) {
+          return;
+        }
+        const activeCanvas = $("modelDiagramCanvas");
+        if (!activeCanvas || !activeCanvas.querySelector("svg")) return;
+        if (event.key === "+" || event.key === "=") {
+          event.preventDefault();
+          zoomDiagramByFactor(activeCanvas, 0.82);
+        } else if (event.key === "-" || event.key === "_") {
+          event.preventDefault();
+          zoomDiagramByFactor(activeCanvas, 1.22);
+        } else if (event.key === "0" || event.key === "f" || event.key === "F") {
+          event.preventDefault();
+          resetDiagramViewport(activeCanvas);
+        }
+      });
+    }
+  }
+  updateDiagramToolbarState(container);
+}
+
 function updateDiagramRealtimeBindings(container = $("modelDiagramCanvas"), snapshot = state.snapshot || {}) {
   if (!container) return;
   updateDiagramDeviceVisualStates(container, snapshot);
   const measurementMaps = diagramMeasurementMaps(snapshot);
   updateDiagramSwitchVisualStates(container, measurementMaps);
-  const maps = { ...measurementMaps, controls: diagramControlMap(snapshot) };
-  const bindings = diagramRealtimeBindings(container);
-  bindings.measurements.forEach(({ element, name }) => {
-    setDiagramElementValue(
-      element,
-      diagramBindingValue(name, maps, "scada"),
-    );
-  });
-  bindings.scada.forEach(({ element, name }) => {
-    setDiagramElementValue(element, diagramBindingValue(name, maps, "scada"));
-  });
-  bindings.real.forEach(({ element, name }) => {
-    setDiagramElementValue(element, null);
-  });
-  bindings.controls.forEach(({ element, name }) => {
-    setDiagramElementValue(element, diagramBindingValue(name, maps, "control"));
-  });
-  bindings.metrics.forEach((binding) => {
-    setDiagramElementValue(
-      binding.element,
-      diagramMetricBindingValue(binding, maps),
-      binding.metricType,
-    );
-  });
+  if (diagramDisplayPreferences?.measurements !== false) {
+    const maps = { ...measurementMaps, controls: diagramControlMap(snapshot) };
+    const bindings = diagramRealtimeBindings(container);
+    bindings.measurements.forEach(({ element, name }) => {
+      setDiagramElementValue(
+        element,
+        diagramBindingValue(name, maps, "scada"),
+      );
+    });
+    bindings.scada.forEach(({ element, name }) => {
+      setDiagramElementValue(element, diagramBindingValue(name, maps, "scada"));
+    });
+    bindings.real.forEach(({ element, name }) => {
+      setDiagramElementValue(element, null);
+    });
+    bindings.controls.forEach(({ element, name }) => {
+      setDiagramElementValue(element, diagramBindingValue(name, maps, "control"));
+    });
+    bindings.metrics.forEach((binding) => {
+      setDiagramElementValue(
+        binding.element,
+        diagramMetricBindingValue(binding, maps),
+        binding.metricType,
+      );
+    });
+  }
   updateDiagramFlowArrows(container, snapshot, measurementMaps);
   refreshDiagramTooltip(container, snapshot);
 }
@@ -2541,6 +2733,8 @@ function renderModelDiagramPage(snapshot = state.snapshot || {}) {
     }
   }
   initDiagramInteractions(canvas);
+  ensureDiagramFloatingToolbar(canvas);
+  if (diagramChanged) refreshDiagramSearchOptions(canvas);
   const prefKey = JSON.stringify(diagramDisplayPreferences || {});
   const bindingKey = [
     diagramChanged ? "changed" : "same",
@@ -2553,13 +2747,17 @@ function renderModelDiagramPage(snapshot = state.snapshot || {}) {
   if (diagramChanged || canvas.dataset.lastDiagramPrefKey !== prefKey) {
     canvas.dataset.lastDiagramPrefKey = prefKey;
     applyDiagramDisplayPreferences(canvas, diagramDisplayPreferences);
+    updateDiagramToolbarState(canvas);
   }
   if (summary) summary.textContent = `${modelName} · ${diagram.filename || "diagram.svg"}`;
   if (diagramChanged || canvas.dataset.lastDiagramBindingKey !== bindingKey) {
     canvas.dataset.lastDiagramBindingKey = bindingKey;
     updateDiagramRealtimeBindings(canvas, activeSnapshot);
   }
-  if (diagramChanged) fitDiagramViewport(diagramViewportState(canvas));
+  if (diagramChanged) {
+    fitDiagramViewport(diagramViewportState(canvas));
+    updateDiagramToolbarState(canvas);
+  }
 }
 
 window.addEventListener("storage", (event) => {

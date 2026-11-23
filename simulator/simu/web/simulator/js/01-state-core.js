@@ -1619,24 +1619,6 @@ function initPrecisionUiChrome() {
   }
   initClockControlPopover();
   syncClockTriggerSummary($("simState")?.textContent || "stopped");
-  // 为所有左侧设备树面板注入一键折叠/展开按钮，最大化表格与曲线可视空间。
-  document.querySelectorAll(".device-tree-panel").forEach((aside) => {
-    const head = aside.querySelector(".panel-head");
-    if (!head || head.querySelector(".tree-collapse-btn")) return;
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "tree-collapse-btn";
-    btn.dataset.i18n = "tree.collapse";
-    btn.textContent = typeof t === "function" ? t("tree.collapse") : "收起";
-    btn.title = typeof t === "function" ? t("tree.toggleTitle") : "折叠/展开左侧设备树面板";
-    btn.addEventListener("click", () => {
-      const collapsed = aside.classList.toggle("is-collapsed");
-      btn.dataset.i18n = collapsed ? "tree.expand" : "tree.collapse";
-      btn.textContent = typeof t === "function" ? t(btn.dataset.i18n) : (collapsed ? "展开" : "收起");
-      requestAnimationFrame(redrawActiveSimulatorCharts);
-    });
-    head.appendChild(btn);
-  });
   const dismissBtn = $("powerFlowFailureDismiss");
   const badgeBtn = $("topbarAlertBadge");
   if (dismissBtn) {

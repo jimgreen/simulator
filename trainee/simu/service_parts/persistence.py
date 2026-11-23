@@ -342,7 +342,7 @@ class _PersistenceMixin:
 
     def _write_runtime_logs(self) -> None:
         with self._runtime_log_persistence_lock:
-            _write_json(self.runtime_logs_file, self.runtime_logs[-RUNTIME_LOG_HISTORY_LIMIT:])
+            _write_json(self.runtime_logs_file, self.runtime_logs[-RUNTIME_LOG_HISTORY_LIMIT:], compact=True)
             if self.runtime_logs_journal_file.exists():
                 self.runtime_logs_journal_file.unlink()
             self._runtime_log_journal_entry_count = 0
@@ -570,7 +570,6 @@ class _PersistenceMixin:
             "model_id": self.model_id,
             "model_name": self.model_name,
             "items": selected,
-            "logs": selected,
             "latest_seq": latest_seq,
             "oldest_seq": oldest_seq,
             "total": len(rows),
@@ -1064,8 +1063,10 @@ class _PersistenceMixin:
             log_limit = max(0, int(runtime_log_limit))
         except (TypeError, ValueError):
             log_limit = 300
-        logs = self.runtime_logs[-log_limit:] if log_limit else []
-        summary_measurements = measurements if include_measurements else (self.latest_measurements or {})
+        with self._runtime_log_persistence_lock:
+            logs = self.runtime_logs[-log_limit:] if log_limit else []
+        # 优先复用 latest_measurements 引用以命中 _latest_power_summary 缓存
+        summary_measurements = self.latest_measurements if self.latest_measurements else (measurements if include_measurements else {})
         snapshot = {
             "model": self.model_info(),
             "clock": self.clock.as_dict(),

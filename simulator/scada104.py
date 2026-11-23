@@ -71,6 +71,7 @@ class _LoopbackKeepAlivePool:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._slots: dict[tuple[str, int], tuple[threading.RLock, http.client.HTTPConnection]] = {}
+        self._etag_cache: dict[tuple[str, int, str], tuple[str, Any]] = {}
 
     def _get_slot(self, host: str, port: int, timeout: float):
         key = (host, port)
@@ -103,6 +104,13 @@ class _LoopbackKeepAlivePool:
             "Accept-Encoding": "gzip",
             "Connection": "keep-alive",
         }
+        cache_key = (host, port, path)
+        cached_entry = None
+        if method == "GET":
+            with self._lock:
+                cached_entry = self._etag_cache.get(cache_key)
+            if cached_entry is not None:
+                headers["If-None-Match"] = cached_entry[0]
         if body is not None:
             headers["Content-Type"] = "application/json"
             headers["Content-Length"] = str(len(body))
@@ -124,6 +132,7 @@ class _LoopbackKeepAlivePool:
                     reason = str(resp.reason or "")
                     will_close = bool(getattr(resp, "will_close", False))
                     is_gzip = str(resp.getheader("Content-Encoding", "")).lower() == "gzip"
+                    resp_etag = str(resp.getheader("ETag", "") or "").strip()
             except (OSError, http.client.HTTPException) as exc:
                 last_exc = exc
                 self._discard(host, port, conn)
@@ -140,12 +149,20 @@ class _LoopbackKeepAlivePool:
                 raise
             if will_close:
                 self._discard(host, port, conn)
+            if status == 304 and cached_entry is not None:
+                return cached_entry[1]
             if is_gzip and raw:
                 raw = gzip.decompress(raw)
             if status >= 400:
                 text = raw.decode("utf-8", errors="replace")
                 raise OSError(f"HTTP {status} {reason}: {text[:200]}")
-            return json.loads(raw.decode("utf-8")) if raw else {}
+            parsed_body = json.loads(raw.decode("utf-8")) if raw else {}
+            if method == "GET" and resp_etag:
+                with self._lock:
+                    if len(self._etag_cache) >= 256:
+                        self._etag_cache.clear()
+                    self._etag_cache[cache_key] = (resp_etag, parsed_body)
+            return parsed_body
         raise last_exc or OSError("HTTP request failed")
 
     def close(self) -> None:
@@ -707,9 +724,11 @@ class Bridge:
             except Exception:
                 self._delta_sync_state.pop(name, None)
 
-        # 全量建基线：一次拉取 measurements + controls，复用同一份 definitions 构建 index_meta
+        # 全量建基线：一次拉取 measurements + /api/external/controls/names，复用同一份 definitions 构建 index_meta
         m = request(base, "/api/measurements?trainee_view=1")
-        c = request(base, "/api/controls")
+        c = request(base, "/api/external/controls/names")
+        if c.get("model_id") and c.get("model_id") != name:
+            raise ValueError("模型服务标识与教员台目录不一致")
         points = {"yc": {}, "yx": {}, "yk": {}, "yt": {}}
         index_meta = {}
         meas_defs = m.get("definitions") or []
@@ -724,12 +743,20 @@ class Bridge:
                 "value": cur.get("value", 0),
                 "valid": cur.get("valid", 0),
             }
-        for row in c.get("remote_controls", []):
-            pt_name = str(row.get("name", ""))
-            points["yk"][pt_name] = {"name": pt_name}
-        for row in c.get("remote_adjustments", []):
-            pt_name = str(row.get("name", ""))
-            points["yt"][pt_name] = {"name": pt_name}
+        for kind in ("yk", "yt"):
+            for pt_name in c.get(f"{kind}_names") or ():
+                pt_text = str(pt_name)
+                if pt_text:
+                    points[kind][pt_text] = {"name": pt_text}
+        # 兼容极早期返回 remote_controls/remote_adjustments 的桩响应
+        for row in c.get("remote_controls") or ():
+            pt_name = str(row.get("name", "") if isinstance(row, dict) else row)
+            if pt_name:
+                points["yk"].setdefault(pt_name, {"name": pt_name})
+        for row in c.get("remote_adjustments") or ():
+            pt_name = str(row.get("name", "") if isinstance(row, dict) else row)
+            if pt_name:
+                points["yt"].setdefault(pt_name, {"name": pt_name})
         # 尝试建立增量同步基线（静默容错，老版本服务自动回退全量）
         try:
             delta_init = request(base, "/api/measurements/delta?after_seq=0&compact=1&trainee_view=1")

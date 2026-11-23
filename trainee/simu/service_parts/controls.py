@@ -347,6 +347,13 @@ class _ControlsMixin:
         self._trim_command_history()
         self._compact_command_history_payloads(self.command_history)
 
+    def _bump_command_mutation_seq(self) -> int:
+        next_seq = int(getattr(self, "_command_mutation_seq", 0) or 0) + 1
+        self._command_mutation_seq = next_seq
+        self._command_signature_cache = None
+        self._device_runtime_supplement_cache = None
+        return next_seq
+
     def _clear_command_history(self) -> Dict[str, int]:
         control_keys: set[Tuple[str, str, str, str]] = set()
         for entry in self.command_history:
@@ -361,6 +368,7 @@ class _ControlsMixin:
         self._last_command_response_index = 0
         self._strategy_generation_entries = {}
         self._strategy_generation_index_token = self._command_history_identity_token()
+        self._bump_command_mutation_seq()
         _write_json(self.commands_file, [], compact=True)
         self._command_history_persisted_signature = self._command_history_signature([])
         return cleared
@@ -385,6 +393,7 @@ class _ControlsMixin:
             )
             self._strategy_generation_entries = {}
             self._strategy_generation_index_token = self._command_history_identity_token()
+            self._bump_command_mutation_seq()
         self._force_control_targets_after_automatic_removal(removed_keys)
         self._write_command_history()
 
@@ -1843,6 +1852,9 @@ class _ControlsMixin:
             cancelled_entries += 1
             cancelled_keys.update(entry_keys)
 
+        if cancelled_entries:
+            self._bump_command_mutation_seq()
+
         self._force_control_targets_after_automatic_removal(cancelled_keys)
 
         return {
@@ -2175,6 +2187,9 @@ class _ControlsMixin:
             entry["cancelled_run_id"] = int(self.clock.run_id)
             cancelled_entries += 1
             cancelled_keys.update(entry_keys)
+
+        if cancelled_entries:
+            self._bump_command_mutation_seq()
         if retained_entries:
             self._strategy_generation_entries[strategy_id] = retained_entries
         else:

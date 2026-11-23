@@ -1628,6 +1628,18 @@ def _model_row(model_book: EBook, dev_type: str, name: str) -> Optional[dict]:
     block = model_book.data.get(dev_type)
     if block is None:
         return None
+    rows = getattr(block, "rows", None)
+    if isinstance(rows, list):
+        n = len(rows)
+        sig = (n, id(rows[0]) if n else 0, id(rows[-1]) if n else 0)
+        cached = getattr(block, "_simu_rows_by_name_cache", None)
+        if cached is None or cached[0] != sig:
+            cached = (sig, _rows_by_name(block))
+            try:
+                setattr(block, "_simu_rows_by_name_cache", cached)
+            except Exception:
+                return cached[1].get(str(name))
+        return cached[1].get(str(name))
     return _rows_by_name(block).get(str(name))
 
 
@@ -3335,12 +3347,53 @@ def apply_realtime_input_books(
     return changed, model_book, dev_define, weather_values
 
 
+_THREAD_STDOUT_LOCAL = threading.local()
+_STDOUT_PROXY_LOCK = threading.Lock()
+_STDOUT_PROXY_INSTALLED = False
+
+
+class _ThreadLocalSuppressStdoutProxy:
+    """线程安全的 stdout 静默代理，避免多模型并发潮流求解互相覆盖进程全局 sys.stdout。"""
+
+    def __init__(self, wrapped: Any) -> None:
+        self._wrapped = wrapped
+
+    def write(self, data: str) -> int:
+        if getattr(_THREAD_STDOUT_LOCAL, "suppress_depth", 0) > 0:
+            return len(data)
+        return self._wrapped.write(data)
+
+    def flush(self) -> None:
+        if getattr(_THREAD_STDOUT_LOCAL, "suppress_depth", 0) > 0:
+            return
+        self._wrapped.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._wrapped, name)
+
+
+@contextlib.contextmanager
+def _suppress_thread_stdout() -> Any:
+    global _STDOUT_PROXY_INSTALLED
+    if not _STDOUT_PROXY_INSTALLED:
+        with _STDOUT_PROXY_LOCK:
+            if not _STDOUT_PROXY_INSTALLED and not isinstance(sys.stdout, _ThreadLocalSuppressStdoutProxy):
+                sys.stdout = _ThreadLocalSuppressStdoutProxy(sys.stdout)  # type: ignore[assignment]
+            _STDOUT_PROXY_INSTALLED = True
+    prev = int(getattr(_THREAD_STDOUT_LOCAL, "suppress_depth", 0) or 0)
+    _THREAD_STDOUT_LOCAL.suppress_depth = prev + 1
+    try:
+        yield
+    finally:
+        _THREAD_STDOUT_LOCAL.suppress_depth = prev
+
+
 def solve_ac_snapshot(e_file: Path) -> Tuple[Snapshot, str]:
     network = ACPowerNetwork()
     network.read_from_file(e_file)
     network.topo()
     calc = ACPowerFlowCalc(network)
-    with contextlib.redirect_stdout(io.StringIO()):
+    with _suppress_thread_stdout():
         rc = calc.run()
     if rc != 0 or not calc.converged:
         raise RuntimeError(f"AC load flow failed for {e_file}: rc={rc}, iter={calc.iterations}, normF={calc.normF:.3e}")
@@ -3356,7 +3409,7 @@ def solve_ac_snapshot_from_book(model_book: EBook, source: Optional[Path] = None
     network.read_from_model(_ebook_to_efile_rows(model_book))
     network.topo()
     calc = ACPowerFlowCalc(network)
-    with contextlib.redirect_stdout(io.StringIO()):
+    with _suppress_thread_stdout():
         rc = calc.run()
     if rc != 0 or not calc.converged:
         raise RuntimeError(
@@ -3373,7 +3426,7 @@ def solve_ac_snapshot_from_book(model_book: EBook, source: Optional[Path] = None
 def solve_hybrid_snapshot(e_file: Path) -> Tuple[Snapshot, str]:
     network = _read_lf_network_from_file(e_file)
     calc = HybridPowerFlowCalc(network, verbose=False)
-    with contextlib.redirect_stdout(io.StringIO()):
+    with _suppress_thread_stdout():
         rc = calc.run()
     if rc != 0 or not calc.converged:
         raise RuntimeError(
@@ -3444,7 +3497,7 @@ def solve_hybrid_snapshot_from_book(model_book: EBook, source: Optional[Path] = 
     repair_fixed_boundary_setpoints(model_book)
     network = _read_lf_network_from_book(model_book, source_path)
     calc = HybridPowerFlowCalc(network, verbose=False)
-    with contextlib.redirect_stdout(io.StringIO()):
+    with _suppress_thread_stdout():
         rc = calc.run()
     if rc != 0 or not calc.converged:
         raise RuntimeError(
@@ -4585,7 +4638,7 @@ def run_loop(
         if config.loop_count is not None and count >= config.loop_count:
             break
         sleep_seconds = max(0.0, float(config.period_seconds) - (time.monotonic() - started))
-        logger.info("等待 %.3f 秒后进入下一轮仿真", sleep_seconds)
+        logger.debug("等待 %.3f 秒后进入下一轮仿真", sleep_seconds)
         time.sleep(sleep_seconds)
     logger.info("仿真循环结束，共完成 %s 轮", count)
     return 0

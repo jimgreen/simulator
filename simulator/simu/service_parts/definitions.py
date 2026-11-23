@@ -185,7 +185,6 @@ class _DefinitionsMixin:
             ):
                 return self._latest_power_summary_cache_value
 
-        empty_summary = self._power_flow_summary([])
         for source in ("scada", "real"):
             rows = measurements.get(source, [])
             if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
@@ -195,7 +194,7 @@ class _DefinitionsMixin:
                 result = {"source": source, **summary}
                 break
         else:
-            result = {"source": "", **empty_summary}
+            result = {"source": "", **self._power_flow_summary([])}
         if cache_key is not None:
             self._latest_power_summary_cache_key = cache_key
             self._latest_power_summary_cache_value = result
@@ -1156,10 +1155,17 @@ class _DefinitionsMixin:
             return payload
         try:
             stat = path.stat()
+            cache_key = (str(path), stat.st_mtime_ns, stat.st_size)
+            cached = getattr(self, "_model_diagram_cache", None)
+            if cached is not None and cached[0] == cache_key:
+                svg_text = cached[1]
+            else:
+                svg_text = path.read_text(encoding="utf-8-sig")
+                self._model_diagram_cache = (cache_key, svg_text)
             payload.update(
                 {
                     "present": True,
-                    "svg": path.read_text(encoding="utf-8-sig"),
+                    "svg": svg_text,
                     "updated_at": stat.st_mtime,
                     "size": stat.st_size,
                 }
@@ -1182,11 +1188,14 @@ class _DefinitionsMixin:
     def _summary(self, measurements: Mapping[str, Sequence[Mapping[str, Any]]]) -> Dict[str, Any]:
         scada = measurements.get("scada", [])
         valid = [item for item in scada if item.get("valid", 0) == 1]
-        measurement_alarms = [
-            item
-            for item in scada
-            if item.get("value") is not None and abs(float(item.get("value") or 0.0)) > 1e4
-        ]
+        measurement_alarms = []
+        for item in scada:
+            raw_val = item.get("value")
+            if raw_val is None:
+                continue
+            num_val = _to_float(raw_val, None)
+            if num_val is None or abs(num_val) > 1e4:
+                measurement_alarms.append(item)
         compute_status = str(self.latest_compute.get("status", "") or "").strip().lower()
         power_flow_alarm_count = int(compute_status in {"failed", "timeout"})
         return {

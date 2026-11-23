@@ -44,7 +44,7 @@
         }
       } catch (_e) {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20261123-split-v3" />
+    <link rel="stylesheet" href="/styles.css?v=20261123-audit-v2" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -787,116 +787,6 @@
                 <div id="hourlyCurveTable" class="curve-table-wrap" data-curve-role="hourly-table"></div>
               </section>
             </div>
-          </div>
-        </section>
-
-        <section class="page-section" data-page="faults">
-          <div class="fault-page-layout">
-            <div class="sub-tabs" role="tablist" aria-label="故障设置子页面">
-              <button data-fault-tab="devices" class="is-active" role="tab" aria-selected="true">设备</button>
-              <button data-fault-tab="measurements" role="tab" aria-selected="false">量测</button>
-            </div>
-
-            <section class="fault-tab-panel is-active" data-fault-panel="devices" role="tabpanel">
-              <div class="fault-split-layout">
-                <aside class="panel fault-tree-panel">
-                  <div class="panel-head">
-                    <h2>设备树</h2>
-                    <span id="faultDeviceTreeSummary">0 类 · 0 台</span>
-                  </div>
-                  <label class="device-tree-filter">
-                    <input type="search" data-device-tree-filter-scope="faultDevice" aria-label="过滤设备故障设备树" placeholder="过滤设备" autocomplete="off" />
-                  </label>
-                  <div id="faultDeviceTree" class="fault-tree device-tree" aria-label="设备故障设备树">
-                    <button
-                      type="button"
-                      class="tree-node tree-root is-active"
-                      data-fault-device-tree-type="all"
-                      data-fault-device-tree-name=""
-                    >
-                      <span>全部设备</span>
-                      <strong>0</strong>
-                    </button>
-                  </div>
-                </aside>
-
-                <section class="panel fault-table-panel">
-                  <div class="panel-head">
-                    <h2>设备故障</h2>
-                    <div class="panel-actions">
-                      <span id="deviceFaultSummary">待同步</span>
-                      <button id="saveDeviceFaults" class="primary">保存</button>
-                    </div>
-                  </div>
-                  <div class="sr-only">设备名称 运行状态 故障启始时刻 结束时刻</div>
-                  <div id="deviceFaultTable" class="fault-table-wrap" data-fault-role="device-table"></div>
-                </section>
-              </div>
-            </section>
-
-            <section class="fault-tab-panel" data-fault-panel="measurements" role="tabpanel">
-              <div class="fault-split-layout">
-                <aside class="panel fault-tree-panel">
-                  <div class="panel-head">
-                    <h2>设备树</h2>
-                    <span id="faultMeasurementTreeSummary">0 类 · 0 台</span>
-                  </div>
-                  <label class="device-tree-filter">
-                    <input type="search" data-device-tree-filter-scope="faultMeasurement" aria-label="过滤量测故障设备树" placeholder="过滤设备" autocomplete="off" />
-                  </label>
-                  <div id="faultMeasurementTree" class="fault-tree device-tree" aria-label="量测故障设备树">
-                    <button
-                      type="button"
-                      class="tree-node tree-root is-active"
-                      data-fault-measurement-tree-type="all"
-                      data-fault-measurement-tree-name=""
-                    >
-                      <span>全部设备</span>
-                      <strong>0</strong>
-                    </button>
-                  </div>
-                </aside>
-
-                <section class="panel fault-table-panel">
-                  <div class="panel-head">
-                    <h2>量测故障</h2>
-                    <div class="panel-actions">
-                      <span id="measurementFaultSummary">待同步</span>
-                      <button id="saveMeasurementFaults" class="primary">保存</button>
-                    </div>
-                  </div>
-                  <div class="sr-only">量测状态 正常 死数 0值 中值 误差</div>
-                  <div id="measurementFaultTable" class="fault-table-wrap" data-fault-role="measurement-table"></div>
-                </section>
-              </div>
-            </section>
-          </div>
-        </section>
-
-        <section class="page-section" data-page="modes">
-          <div class="mode-page-layout">
-            <aside class="panel mode-tree-panel">
-              <div class="panel-head">
-                <h2>设备树</h2>
-                <span id="modeTreeSummary">0 类</span>
-              </div>
-              <label class="device-tree-filter">
-                <input type="search" data-device-tree-filter-scope="mode" aria-label="过滤运行模式设备树" placeholder="过滤设备" autocomplete="off" />
-              </label>
-              <div id="modeDeviceTree" class="device-tree" aria-label="运行模式设备树"></div>
-            </aside>
-
-            <section class="panel mode-table-panel">
-              <div class="panel-head">
-                <h2>运行模式</h2>
-                <div class="panel-actions">
-                  <span id="modeTableSummary">0 台设备</span>
-                  <button id="pushModes" class="primary">下发</button>
-                </div>
-              </div>
-              <div class="sr-only">设备类型 设备名称 当前状态 当前模式 运行模式</div>
-              <div id="modeDeviceTable" class="mode-table-wrap"></div>
-            </section>
           </div>
         </section>
 
@@ -1896,15 +1786,15 @@
       </div>
     </dialog>
     <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
-    <script defer src="/js/00-i18n.js?v=20261123-split-v3"></script>
-    <script defer src="/js/01-state-core.js?v=20261123-split-v3"></script>
-    <script defer src="/js/02-api-models.js?v=20261123-split-v3"></script>
-    <script defer src="/js/03-diagram-core.js?v=20261123-split-v3"></script>
-    <script defer src="/js/04-diagram-editor.js?v=20261123-split-v3"></script>
-    <script defer src="/js/05-curves.js?v=20261123-split-v3"></script>
-    <script defer src="/js/06-overview-runtime.js?v=20261123-split-v3"></script>
-    <script defer src="/js/07-measurements-faults.js?v=20261123-split-v3"></script>
-    <script defer src="/js/08-ux-enhancements.js?v=20261123-split-v3"></script>
-    <script defer src="/js/09-scada104.js?v=20261123-split-v3"></script>
+    <script defer src="/js/00-i18n.js?v=20261123-audit-v2"></script>
+    <script defer src="/js/01-state-core.js?v=20261123-audit-v2"></script>
+    <script defer src="/js/02-api-models.js?v=20261123-audit-v2"></script>
+    <script defer src="/js/03-diagram-core.js?v=20261123-audit-v2"></script>
+    <script defer src="/js/04-diagram-editor.js?v=20261123-audit-v2"></script>
+    <script defer src="/js/05-curves.js?v=20261123-audit-v2"></script>
+    <script defer src="/js/06-overview-runtime.js?v=20261123-audit-v2"></script>
+    <script defer src="/js/07-measurements-faults.js?v=20261123-audit-v2"></script>
+    <script defer src="/js/08-ux-enhancements.js?v=20261123-audit-v2"></script>
+    <script defer src="/js/09-scada104.js?v=20261123-audit-v2"></script>
   </body>
 </html>

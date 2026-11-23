@@ -330,6 +330,41 @@ class _CurvesMixin:
         points = self.curves.get("weather", [])
         if isinstance(points, Sequence) and not isinstance(points, (str, bytes)) and points:
             target = target_minute % period_minutes
+            # 针对周/年仿真等上万点单调时间轴使用 O(log N) 二分查找，替代每步 O(N) 线性扫描
+            n_points = len(points)
+            cache = getattr(self, "_weather_curve_minutes_cache", None)
+            cache_key = (id(points), n_points, period_minutes)
+            if cache is None or cache[0] != cache_key:
+                minutes_arr: list[float] = []
+                monotonic = True
+                prev_m = -1.0
+                for idx, point in enumerate(points):
+                    if not (type(point) is dict or isinstance(point, Mapping)):
+                        monotonic = False
+                        break
+                    pm = float(_to_float(point.get("minute", idx), float(idx)) or 0.0) % period_minutes
+                    if idx > 0 and pm < prev_m:
+                        monotonic = False
+                        break
+                    minutes_arr.append(pm)
+                    prev_m = pm
+                cache = (cache_key, minutes_arr if monotonic and len(minutes_arr) == n_points else None)
+                self._weather_curve_minutes_cache = cache
+            minutes_arr = cache[1]
+            if minutes_arr is not None:
+                import bisect
+
+                pos = bisect.bisect_left(minutes_arr, target)
+                candidates = {pos % n_points, (pos - 1) % n_points, 0, n_points - 1}
+                best_index = 0
+                best_distance = period_minutes + 1.0
+                for idx in candidates:
+                    dist = abs(minutes_arr[idx] - target)
+                    dist = min(dist, period_minutes - dist)
+                    if dist < best_distance or (dist == best_distance and idx < best_index):
+                        best_index = idx
+                        best_distance = dist
+                return best_index + 1
             best_index = 0
             best_distance = period_minutes
             for idx, point in enumerate(points):

@@ -1433,11 +1433,16 @@ function renderGridModelParamTable() {
   const container = $("modelParamTable");
   if (!container) return;
   const devices = gridModelDevices();
-  const rev = state.snapshot?.definitions?.revision ?? state.snapshot?.definition_revision ?? 0;
-  const renderKey = `${state.activeModelId}|${rev}|${devices.length}|${state.selectedModelGroup}|${state.selectedModelDevice}|${state.modelSearch}|${state.activeModelParamTab}`;
+  const rev = state.snapshot?.static_meta?.definitions?.revision ?? state.snapshot?.definitions?.revision ?? 0;
+  const filterKey = JSON.stringify(state.modelDeviceFilter || { dev_type: "all", dev_name: "" });
+  const editSeq = Number(state.localDefinitionEditSeq || 0);
+  const renderKey = `${state.activeModelId}|${rev}|${editSeq}|${devices.length}|${filterKey}|${state.activeModelParamTab}`;
   if (container.dataset.renderKey === renderKey && container.childElementCount > 0) {
     return;
   }
+  const prevScrollEl = container.querySelector(".model-param-table-wrap, .model-param-tab-page");
+  const prevScrollTop = prevScrollEl ? prevScrollEl.scrollTop : container.scrollTop;
+  const prevScrollLeft = prevScrollEl ? prevScrollEl.scrollLeft : container.scrollLeft;
   const rows = filteredGridModelDevices(devices).map(modelAttributeRecordForDevice);
   const groups = groupedModelAttributeRecords(rows);
   const availableTabs = groups.map(([devType]) => devType);
@@ -1449,11 +1454,16 @@ function renderGridModelParamTable() {
   $("modelParamSummary").textContent = groups.length > 1
     ? `${gridModelFilterLabel()} · ${rows.length}/${devices.length} 台 · ${groups.length} 个分页`
     : `${gridModelFilterLabel()} · ${rows.length}/${devices.length} 台 · ${activeColumnCount} 列属性`;
-  container.dataset.renderKey = `${state.activeModelId}|${rev}|${devices.length}|${state.selectedModelGroup}|${state.selectedModelDevice}|${state.modelSearch}|${state.activeModelParamTab}`;
+  container.dataset.renderKey = `${state.activeModelId}|${rev}|${editSeq}|${devices.length}|${filterKey}|${state.activeModelParamTab}`;
   if (!devices.length) {
     container.innerHTML = '<div class="empty-state">暂无电网模型数据</div>';
     return;
   }
+  requestAnimationFrame(() => {
+    const nextScrollEl = container.querySelector(".model-param-table-wrap, .model-param-tab-page") || container;
+    if (prevScrollTop) nextScrollEl.scrollTop = prevScrollTop;
+    if (prevScrollLeft) nextScrollEl.scrollLeft = prevScrollLeft;
+  });
   if (!rows.length) {
     container.innerHTML = '<div class="empty-state">当前筛选无模型参数</div>';
     return;
@@ -2436,7 +2446,11 @@ function updateRuntimeCommandTableLiveCells(rows) {
     tableRow.classList.toggle("is-selected", selected);
     tableRow.dataset.runtimeCommandRowLabel = runtimeCommandTraceLabel(row);
     tableRow.querySelectorAll("[data-runtime-command-live-field]").forEach((cell) => {
-      cell.innerHTML = runtimeCommandLiveCellHtml(row, cell.dataset.runtimeCommandLiveField || "");
+      const nextHtml = runtimeCommandLiveCellHtml(row, cell.dataset.runtimeCommandLiveField || "");
+      if (cell.dataset.lastHtml !== nextHtml) {
+        cell.dataset.lastHtml = nextHtml;
+        cell.innerHTML = nextHtml;
+      }
     });
   }
   return true;

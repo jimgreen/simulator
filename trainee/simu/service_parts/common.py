@@ -563,16 +563,13 @@ def _read_json(path: Path, default: Any) -> Any:
 
 
 def _write_json(path: Path, payload: Any, *, compact: bool = False) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":") if compact else None,
-            indent=None if compact else 2,
-        ),
-        encoding="utf-8",
+    content = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":") if compact else None,
+        indent=None if compact else 2,
     )
+    atomic_write_text(path, content)
 
 
 def _safe_model_id(value: Any) -> str:

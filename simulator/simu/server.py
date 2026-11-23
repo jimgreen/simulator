@@ -154,7 +154,10 @@ def _advance_clock_if_due(service: PolarMicrogridSimulator, last_step: float) ->
     interval_seconds = max(0.1, float(getattr(service, "compute_interval_seconds", CLOCK_BASE_INTERVAL_SECONDS) or CLOCK_BASE_INTERVAL_SECONDS))
     if now - last_step < interval_seconds:
         return last_step
-    # Do not catch up by elapsed wall time: one completed solve advances one logical simulation step.
+    # 按理想节拍推进下次调度基线，消除求解耗时与 50ms 唤醒带来的系统性时钟漂移；严重落后时对齐当前时刻防止追赶风暴。
+    scheduled_step = last_step + interval_seconds
+    if now - scheduled_step > interval_seconds * 2.0:
+        scheduled_step = now
     speed = max(1.0, float(clock.get("speed", 1) or 1))
     advance_seconds = max(1e-9, float(clock.get("effective_step_seconds", speed) or speed))
     try:
@@ -167,17 +170,34 @@ def _advance_clock_if_due(service: PolarMicrogridSimulator, last_step: float) ->
         record_log = getattr(service, "_append_runtime_log", None)
         if callable(record_log):
             try:
-                record_log("error", "clock", f"仿真步进异常，已自动暂停时钟：{exc}")
+                record_log(
+                    "潮流计算",
+                    "clock",
+                    "步进异常已自动暂停",
+                    f"仿真步进异常，已自动暂停时钟：{exc}",
+                    level="error",
+                )
+            except TypeError:
+                try:
+                    record_log("error", "clock", f"仿真步进异常，已自动暂停时钟：{exc}")
+                except Exception:
+                    pass
             except Exception:
-                pass
+                logging.getLogger("simu.web").debug(
+                    "Failed to record step exception log for model %s",
+                    getattr(service, "model_id", ""),
+                    exc_info=True,
+                )
         try:
-            service.control_clock({"action": "pause"})
+            if service.clock_state().get("state") == "running":
+                service.control_clock({"action": "pause"})
         except Exception:
             logging.getLogger("simu.web").exception(
                 "Failed to pause simulation clock after step error for model %s",
                 getattr(service, "model_id", ""),
             )
-    return time.monotonic()
+        return time.monotonic()
+    return scheduled_step
 
 
 def start_clock_worker(service: PolarMicrogridSimulator, stop_event: threading.Event) -> threading.Thread:

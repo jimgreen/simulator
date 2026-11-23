@@ -601,12 +601,16 @@ function renderTraineeModelParamTable(snapshot = state.snapshot || {}) {
   const container = $("modelParamTable");
   if (!container) return;
   const devices = definedModelDevices(snapshot);
-  const rev = snapshot?.definitions?.revision ?? snapshot?.definition_revision ?? 0;
-  const filterKey = `${state.modelFilter?.group || ""}|${state.modelFilter?.device || ""}|${state.modelFilter?.search || ""}`;
-  const renderKey = `${state.activeModelId}|${rev}|${devices.length}|${filterKey}|${state.activeModelParamTab}`;
+  const rev = snapshot?.static_meta?.definitions?.revision ?? snapshot?.definitions?.revision ?? 0;
+  const filterKey = JSON.stringify(state.modelFilter || { dev_type: "all", dev_name: "" });
+  const editSeq = Number(state.localDefinitionEditSeq || 0);
+  const renderKey = `${state.activeModelId}|${rev}|${editSeq}|${devices.length}|${filterKey}|${state.activeModelParamTab}`;
   if (container.dataset.renderKey === renderKey && container.childElementCount > 0) {
     return;
   }
+  const prevScrollEl = container.querySelector(".model-param-table-wrap, .model-param-tab-page");
+  const prevScrollTop = prevScrollEl ? prevScrollEl.scrollTop : container.scrollTop;
+  const prevScrollLeft = prevScrollEl ? prevScrollEl.scrollLeft : container.scrollLeft;
   const filtered = filteredDevices(devices, state.modelFilter);
   const groups = groupedModelAttributeRecords(filtered.map(modelAttributeRecordForDevice));
   const availableTabs = groups.map(([devType]) => devType);
@@ -616,11 +620,16 @@ function renderTraineeModelParamTable(snapshot = state.snapshot || {}) {
   $("modelParamSummary").textContent = groups.length > 1
     ? `${modelFilterLabel()} · ${filtered.length}/${devices.length} 台 · ${groups.length} 个分页`
     : `${modelFilterLabel()} · ${filtered.length}/${devices.length} 台 · ${activeColumns} 列属性`;
-  container.dataset.renderKey = `${state.activeModelId}|${rev}|${devices.length}|${filterKey}|${state.activeModelParamTab}`;
+  container.dataset.renderKey = `${state.activeModelId}|${rev}|${editSeq}|${devices.length}|${filterKey}|${state.activeModelParamTab}`;
   if (!devices.length) {
     container.innerHTML = '<div class="empty-state">暂无电网模型数据</div>';
     return;
   }
+  requestAnimationFrame(() => {
+    const nextScrollEl = container.querySelector(".model-param-table-wrap, .model-param-tab-page") || container;
+    if (prevScrollTop) nextScrollEl.scrollTop = prevScrollTop;
+    if (prevScrollLeft) nextScrollEl.scrollLeft = prevScrollLeft;
+  });
   if (!activeGroup) {
     container.innerHTML = '<div class="empty-state">当前筛选无模型参数</div>';
     return;
@@ -942,9 +951,14 @@ function updateMeasurementTableLiveCells(rows) {
     const row = rowsByKey.get(key);
     if (!row) return false;
     tableRow.classList.toggle("is-selected", key === state.selectedMeasurementKey);
+    tableRow.classList.toggle("is-row-abnormal", !Number(row.valid));
     tableRow.querySelectorAll("[data-measurement-live-field]").forEach((cell) => {
       const field = cell.dataset.measurementLiveField || "";
-      cell.innerHTML = measurementLiveCellHtml(row, field);
+      const nextHtml = measurementLiveCellHtml(row, field);
+      if (cell.dataset.lastHtml !== nextHtml) {
+        cell.dataset.lastHtml = nextHtml;
+        cell.innerHTML = nextHtml;
+      }
       if (field === "scada") {
         const value = Number(row.scada_value || 0);
         cell.classList.toggle("value-bad", Math.abs(value) > 10000);
@@ -2182,7 +2196,6 @@ function remoteControlCommandRows(devices, snapshot = state.snapshot || {}) {
       active: issuedTime.wall_time !== "--",
     };
   });
-  drawRenewableTrendChart();
 }
 
 function commandTableTypeLabel(row) {
@@ -2281,6 +2294,21 @@ function traineeCommandCancelButtonHtml(cancelName, cancelLabel, origin = "manua
   `;
 }
 
+function traineeRemoteControlActionHtml(row) {
+  const key = `${deviceKey(row.dev)}|${row.commandType}`;
+  return `<div class="command-row-actions">
+    <button type="button" class="compact-action-btn" data-open-remote-control="${escapeHtml(key)}">遥控</button>
+    ${traineeCommandCancelButtonHtml(row.cancelName || "", row.name)}
+  </div>`;
+}
+
+function traineeRemoteAdjustmentActionHtml(row) {
+  return `<div class="command-row-actions">
+    <button type="button" class="compact-action-btn" data-open-remote-adjustment="${escapeHtml(row.key)}">调值</button>
+    ${traineeCommandCancelButtonHtml(row.cancelName, row.name)}
+  </div>`;
+}
+
 function traineeRemoteControlLiveValue(row, field) {
   const key = `${deviceKey(row.dev)}|${row.commandType}`;
   if (field === "status") {
@@ -2309,10 +2337,7 @@ function traineeRemoteControlLiveValue(row, field) {
     return `<span class="command-process-pill is-${escapeHtml(processState)}">${escapeHtml(processText)}</span>`;
   }
   if (field === "cancel") {
-    return traineeCommandCancelButtonHtml(
-      row.cancelName || "",
-      row.name,
-    );
+    return traineeRemoteControlActionHtml(row);
   }
   return "";
 }
@@ -2328,7 +2353,7 @@ function traineeRemoteAdjustmentLiveValue(row, field) {
     const processText = row.issuedTime?.process_text || "未下发";
     return `<span class="command-process-pill is-${escapeHtml(processState)}">${escapeHtml(processText)}</span>`;
   }
-  if (field === "cancel") return traineeCommandCancelButtonHtml(row.cancelName, row.name);
+  if (field === "cancel") return traineeRemoteAdjustmentActionHtml(row);
   return "";
 }
 
@@ -2349,7 +2374,11 @@ function updateTraineeCommandTableLiveCells(container, rows, activeTab = state.a
     tableRow.classList.toggle("is-selected", key === state.selectedCommandTraceKey);
     tableRow.dataset.commandTraceLabel = row.name || "";
     tableRow.querySelectorAll("[data-trainee-command-live-field]").forEach((cell) => {
-      cell.innerHTML = traineeCommandLiveCellHtml(row, cell.dataset.traineeCommandLiveField || "", activeTab);
+      const nextHtml = traineeCommandLiveCellHtml(row, cell.dataset.traineeCommandLiveField || "", activeTab);
+      if (cell.dataset.lastHtml !== nextHtml) {
+        cell.dataset.lastHtml = nextHtml;
+        cell.innerHTML = nextHtml;
+      }
     });
   }
   return true;
@@ -2592,23 +2621,40 @@ function remoteAdjustmentDeviceTypeKey(value) {
   return type === "ACDCCONVERTER" ? "DCACCONVERTER" : type;
 }
 
+const _scadaMeasurementLookupCache = new WeakMap();
+
+function getScadaMeasurementLookup(scadaRows) {
+  if (!Array.isArray(scadaRows)) return null;
+  let cached = _scadaMeasurementLookupCache.get(scadaRows);
+  if (cached && cached.length === scadaRows.length) return cached.map;
+  const map = new Map();
+  for (let i = 0; i < scadaRows.length; i += 1) {
+    const row = scadaRows[i];
+    if (!remoteAdjustmentMeasurementRowIsValid(row)) continue;
+    if (row?.value === undefined || row?.value === null || String(row.value).trim() === "") continue;
+    const numeric = Number(row.value);
+    if (!Number.isFinite(numeric)) continue;
+    const devType = remoteAdjustmentDeviceTypeKey(row?.dev_type);
+    const devName = String(row?.dev_name || "").trim();
+    const measType = String(row?.meas_type || "").trim().toUpperCase();
+    if (!devType || !devName || !measType) continue;
+    const key = `${devType}|${devName}|${measType}`;
+    if (!map.has(key)) map.set(key, numeric);
+  }
+  _scadaMeasurementLookupCache.set(scadaRows, { length: scadaRows.length, map });
+  return map;
+}
+
 function remoteAdjustmentMeasurement(dev, setType, snapshot = state.snapshot || {}) {
   const targetType = remoteAdjustmentDeviceTypeKey(deviceType(dev));
   const targetName = String(deviceName(dev) || "").trim();
-  const measurements = snapshot.measurements || {};
+  const scadaRows = snapshot.measurements?.scada;
+  const lookup = getScadaMeasurementLookup(scadaRows);
+  if (!lookup) return null;
   const candidates = remoteAdjustmentMeasurementTypeCandidates(dev, setType);
   for (const candidate of candidates) {
-    const match = (measurements.scada || []).find((row) => (
-      remoteAdjustmentDeviceTypeKey(row?.dev_type) === targetType
-      && String(row?.dev_name || "").trim() === targetName
-      && remoteAdjustmentMeasTypeMatchesSetType(row?.meas_type, candidate)
-      && remoteAdjustmentMeasurementRowIsValid(row)
-      && row?.value !== undefined
-      && row?.value !== null
-      && String(row.value).trim() !== ""
-      && Number.isFinite(Number(row.value))
-    ));
-    if (match) return Number(match.value);
+    const hit = lookup.get(`${targetType}|${targetName}|${String(candidate || "").trim().toUpperCase()}`);
+    if (hit !== undefined) return hit;
   }
   return null;
 }

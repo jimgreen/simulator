@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from .common import *  # noqa: F401,F403
 from .common import (
     _CyclePerformanceWindow,
@@ -421,19 +423,29 @@ class TraineeRenewableControlManager:
             if size <= 0:
                 stream.write(encoded)
                 return
-            position = size - 1
-            while position >= 0:
-                stream.seek(position)
-                if stream.read(1) not in (b"\r", b"\n"):
+            # 按 16 KB 块从文件尾反向查找最后一个非尾随换行符，取代逐字节 seek/read(1) 系统调用风暴
+            chunk_size = 16384
+            end_pos = size
+            while end_pos > 0:
+                read_start = max(0, end_pos - chunk_size)
+                stream.seek(read_start)
+                buf = stream.read(end_pos - read_start)
+                stripped_len = len(buf.rstrip(b"\r\n"))
+                if stripped_len > 0:
+                    end_pos = read_start + stripped_len
                     break
-                position -= 1
-            while position >= 0:
-                stream.seek(position)
-                if stream.read(1) == b"\n":
-                    position += 1
+                end_pos = read_start
+            line_start = 0
+            scan_end = end_pos
+            while scan_end > 0:
+                read_start = max(0, scan_end - chunk_size)
+                stream.seek(read_start)
+                buf = stream.read(scan_end - read_start)
+                nl_idx = buf.rfind(b"\n")
+                if nl_idx >= 0:
+                    line_start = read_start + nl_idx + 1
                     break
-                position -= 1
-            line_start = max(0, position)
+                scan_end = read_start
             stream.seek(line_start)
             stream.write(encoded)
             stream.truncate()
@@ -448,15 +460,12 @@ class TraineeRenewableControlManager:
         path = self._trend_persistence_path_for_service(service)
         if path is None:
             return
-        points = candidate.trend if candidate.persistence_reset else [candidate.persistence_point]
-        payload = "".join(
-            f"{json.dumps(point, ensure_ascii=False, separators=(',', ':'), default=str)}\n"
-            for point in points
-        )
         try:
             with self._trend_persistence_lock:
                 if not hasattr(self, "_trend_last_written_order"):
                     self._trend_last_written_order: Dict[Path, Tuple[Any, int, float]] = {}
+                if not hasattr(self, "_trend_disk_line_counts"):
+                    self._trend_disk_line_counts: Dict[Path, int] = {}
                 point_ref = candidate.persistence_point
                 run_key = point_ref.get("runId")
                 try:
@@ -476,14 +485,27 @@ class TraineeRenewableControlManager:
                     and (step_key < prev_order[1] or (step_key == prev_order[1] and minute_key < prev_order[2] - 1e-9))
                 ):
                     return
+                # 高低水位分段压缩：满 4320 点后平时 O(1) 追加，仅当磁盘行数达到高水位(6480)或显式重置时才原子全量重写
+                disk_lines = self._trend_disk_line_counts.get(path, len(candidate.trend))
+                need_compact = bool(candidate.persistence_reset or disk_lines >= 6480)
                 path.parent.mkdir(parents=True, exist_ok=True)
-                if candidate.persistence_reset:
-                    path.write_text(payload, encoding="utf-8")
+                if need_compact:
+                    compact_payload = "".join(
+                        f"{json.dumps(point, ensure_ascii=False, separators=(',', ':'), default=str)}\n"
+                        for point in candidate.trend
+                    )
+                    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+                    tmp_path.write_text(compact_payload, encoding="utf-8")
+                    os.replace(tmp_path, path)
+                    self._trend_disk_line_counts[path] = len(candidate.trend)
                 elif candidate.persistence_replace_last and path.exists():
-                    self._replace_last_trend_record(path, payload)
+                    single_payload = f"{json.dumps(candidate.persistence_point, ensure_ascii=False, separators=(',', ':'), default=str)}\n"
+                    self._replace_last_trend_record(path, single_payload)
                 else:
+                    single_payload = f"{json.dumps(candidate.persistence_point, ensure_ascii=False, separators=(',', ':'), default=str)}\n"
                     with path.open("a", encoding="utf-8") as stream:
-                        stream.write(payload)
+                        stream.write(single_payload)
+                    self._trend_disk_line_counts[path] = disk_lines + 1
                 self._trend_last_written_order[path] = (run_key, step_key, minute_key)
         except OSError:
             # Trend persistence must not interrupt realtime control. The complete
@@ -1798,7 +1820,8 @@ class TraineeRenewableControlManager:
             or previous_last != current_last
             or trimmed_for_cap
         )
-        candidate.persistence_reset = lifecycle_reset or normalized_reset or trimmed_for_cap
+        # 内存截断保留最新 4320 点；磁盘改由 _persist_trend_candidate_for_service 的高低水位(6480行)分段压缩，避免每步重写 10MB
+        candidate.persistence_reset = lifecycle_reset or normalized_reset
         candidate.persistence_replace_last = bool(
             changed
             and not candidate.persistence_reset

@@ -655,6 +655,27 @@ document.addEventListener("click", (event) => {
     renderCombinedControlPage();
     return;
   }
+  const openAdjButton = target?.closest("[data-open-remote-adjustment]");
+  if (openAdjButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    const adjustment = findRemoteAdjustmentByKey(openAdjButton.dataset.openRemoteAdjustment || "");
+    if (adjustment) openRemoteAdjustmentDialog(adjustment);
+    return;
+  }
+  const openRunButton = target?.closest("[data-open-remote-control]");
+  if (openRunButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    const commandKey = openRunButton.dataset.openRemoteControl || "";
+    const dev = findDeviceByKey(commandKey);
+    const commandType = commandKey.split("|")[2] || "run_stat";
+    if (dev) {
+      dev.__command_type = commandType;
+      openRemoteControlDialog(dev);
+    }
+    return;
+  }
   const commandCancelButton = target?.closest("[data-command-cancel-name]");
   if (commandCancelButton) {
     event.preventDefault();

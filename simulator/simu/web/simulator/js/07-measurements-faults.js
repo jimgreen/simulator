@@ -147,13 +147,6 @@ function appendMeasurementTrace(snapshot) {
     ? sampledClock
     : snapshot.clock || {};
   if (Number(clock.step_count ?? 0) <= 0) return false;
-  const rows = measurementCompareRows(snapshot.measurements || {});
-  if (!rows.some((row) => (
-    numberOrNull(row.real_value) !== null
-    || numberOrNull(row.scada_value) !== null
-  ))) {
-    return false;
-  }
   const result = snapshot.result || {};
   const summary = snapshot.summary || {};
   const signature = [
@@ -165,6 +158,13 @@ function appendMeasurementTrace(snapshot) {
     summary.scada_count ?? 0,
   ].join("|");
   if (signature === state.lastMeasurementTraceKey) return false;
+  const rows = measurementCompareRows(snapshot.measurements || {});
+  if (!rows.some((row) => (
+    numberOrNull(row.real_value) !== null
+    || numberOrNull(row.scada_value) !== null
+  ))) {
+    return false;
+  }
   state.lastMeasurementTraceKey = signature;
   const point = {
     minute: Number(clock.absolute_minute ?? clock.minute ?? state.measurementTraceHistory.length) || 0,
@@ -704,11 +704,17 @@ function updateMeasurementCompareTableLiveCells(rows, selectedKey) {
     const row = rowsByKey.get(key);
     if (!row) return false;
     const selected = key === selectedKey;
+    const isAbnormal = !Number(row.valid ?? 1) || (row.status && String(row.status) !== "normal" && String(row.status) !== "正常");
     tableRow.classList.toggle("is-selected", selected);
+    tableRow.classList.toggle("is-row-abnormal", Boolean(isAbnormal));
     tableRow.setAttribute("aria-selected", selected ? "true" : "false");
     tableRow.querySelectorAll("[data-measurement-live-field]").forEach((cell) => {
       const field = cell.dataset.measurementLiveField || "";
-      cell.innerHTML = measurementLiveCellHtml(row, field);
+      const nextHtml = measurementLiveCellHtml(row, field);
+      if (cell.dataset.lastHtml !== nextHtml) {
+        cell.dataset.lastHtml = nextHtml;
+        cell.innerHTML = nextHtml;
+      }
       if (field === "diff") {
         const diffActive = row.diff !== null && Math.abs(row.diff) >= 1e-6;
         cell.classList.toggle("diff-active", diffActive);
@@ -1940,18 +1946,20 @@ $("runtimeLogPager").addEventListener("click", async (event) => {
   await ensureRuntimeLogPageLoaded(state.runtimeLogPage);
   renderRuntimeLogs();
 });
-$("saveDeviceFaults").addEventListener("click", async () => {
+$("saveDeviceFaults")?.addEventListener("click", async () => {
   await pushSettings();
-  $("deviceFaultSummary").textContent = `${faultSimulationModeLabel()} · 已保存 ${state.deviceFaults.length} 个故障`;
+  const summary = $("deviceFaultSummary");
+  if (summary) summary.textContent = `${faultSimulationModeLabel()} · 已保存 ${state.deviceFaults.length} 个故障`;
 });
-$("saveMeasurementFaults").addEventListener("click", async () => {
+$("saveMeasurementFaults")?.addEventListener("click", async () => {
   await pushSettings();
-  $("measurementFaultSummary").textContent = `${faultSimulationModeLabel()} · 已保存 ${state.measurementFaults.length} 个故障`;
+  const summary = $("measurementFaultSummary");
+  if (summary) summary.textContent = `${faultSimulationModeLabel()} · 已保存 ${state.measurementFaults.length} 个故障`;
 });
 document.querySelectorAll("[data-fault-tab]").forEach((button) => {
   button.addEventListener("click", () => setFaultTab(button.dataset.faultTab));
 });
-$("pushModes").addEventListener("click", pushSettings);
+$("pushModes")?.addEventListener("click", pushSettings);
 $("saveSystemParameters").addEventListener("click", saveSystemParameters);
 $("resetSystemParameters").addEventListener("click", resetSystemParameterForm);
 $("saveRuntimeParameters").addEventListener("click", saveWebRuntimeSettings);
@@ -2256,7 +2264,6 @@ document.addEventListener("input", (event) => {
   $("measurementCompareOnlyAbnormalFilter")?.addEventListener("change", (event) => {
     state.measurementCompareOnlyAbnormal = Boolean(event.target.checked);
     renderMeasurementCompareTable();
-    drawMeasurementTraceChart();
   });
   $("exportSimulatorMeasurementsCsvButton")?.addEventListener("click", () => {
     exportSimulatorMeasurementsCsv();

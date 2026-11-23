@@ -674,22 +674,23 @@ async function refreshRenewableControlState({ preview = false, render = true } =
   const control = state.renewableControl;
   if (!state.activeModelId || control.requestActive) return null;
   const requestedModelId = state.activeModelId;
+  const requestedEpoch = Number(state.modelSwitchEpoch || 0);
   control.requestActive = true;
   try {
     const payload = await api(renewableControlApiPath(preview));
-    if (requestedModelId !== state.activeModelId) return null;
+    if (requestedModelId !== state.activeModelId || Number(state.modelSwitchEpoch || 0) !== requestedEpoch) return null;
     applyRenewableControlState(payload);
     if (currentPageName() === "renewable") {
       await ensureRenewableTrendHistoryForVisibleSeries({ render: false });
     }
     return payload;
   } catch (error) {
-    if (requestedModelId === state.activeModelId) {
+    if (requestedModelId === state.activeModelId && Number(state.modelSwitchEpoch || 0) === requestedEpoch) {
       control.lastStatus = `学员台后台控制状态获取失败：${apiErrorText(error)}`;
     }
     return null;
   } finally {
-    if (requestedModelId === state.activeModelId) {
+    if (requestedModelId === state.activeModelId && Number(state.modelSwitchEpoch || 0) === requestedEpoch) {
       control.requestActive = false;
       if (render && currentPageName() === "renewable") renderRenewableControl(state.snapshot || {});
     }
@@ -700,6 +701,7 @@ async function runRenewableControlAction(action, payload = {}) {
   const control = state.renewableControl;
   if (!state.activeModelId || control.actionActive) return null;
   const requestedModelId = state.activeModelId;
+  const requestedEpoch = Number(state.modelSwitchEpoch || 0);
   control.actionActive = true;
   renderRenewableControl(state.snapshot || {});
   try {
@@ -707,19 +709,19 @@ async function runRenewableControlAction(action, payload = {}) {
       method: "POST",
       body: JSON.stringify({ action, ...payload }),
     });
-    if (requestedModelId !== state.activeModelId) return null;
+    if (requestedModelId !== state.activeModelId || Number(state.modelSwitchEpoch || 0) !== requestedEpoch) return null;
     applyRenewableControlState(response);
     if (currentPageName() === "renewable") {
       await ensureRenewableTrendHistoryForVisibleSeries({ render: false });
     }
     return response;
   } catch (error) {
-    if (requestedModelId === state.activeModelId) {
+    if (requestedModelId === state.activeModelId && Number(state.modelSwitchEpoch || 0) === requestedEpoch) {
       control.lastStatus = `后台控制操作失败：${apiErrorText(error)}`;
     }
     return null;
   } finally {
-    if (requestedModelId === state.activeModelId) {
+    if (requestedModelId === state.activeModelId && Number(state.modelSwitchEpoch || 0) === requestedEpoch) {
       control.actionActive = false;
       renderRenewableControl(state.snapshot || {});
     }
@@ -1584,8 +1586,20 @@ function drawRenewableTrendChart() {
   const plot = { left, right, top, bottom };
   state.chartPlotInfo = { ...(state.chartPlotInfo || {}), [chartKey]: plot };
 
-  renderRenewableTrendLegend(selectedSeries);
-  renderRenewableTrendSeriesAvailability(metrics);
+  const legendSyncKey = [
+    selectedSeries.map((s) => s.key).join(","),
+    visibleSeries.map((s) => s.key).join(","),
+    selectedSeriesKey,
+  ].join("|");
+  if (canvas.dataset.lastLegendSyncKey !== legendSyncKey) {
+    canvas.dataset.lastLegendSyncKey = legendSyncKey;
+    renderRenewableTrendLegend(selectedSeries);
+  }
+  const availKey = `${state.renewableControl.planRevision ?? -1}|${state.renewableControl.revision ?? -1}|${selectedSeriesKey}|${state.renewableTrendSeriesFilter || ""}|${state.renewableTrendSelectedOnly ? 1 : 0}|${selectedSeries.map((s) => s.key).join(",")}`;
+  if (canvas.dataset.lastAvailKey !== availKey) {
+    canvas.dataset.lastAvailKey = availKey;
+    renderRenewableTrendSeriesAvailability(metrics);
+  }
 
   for (let index = 0; index <= 4; index += 1) {
     const fraction = index / 4;
@@ -2264,10 +2278,24 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
   if (!table) return;
   const rows = renewableStrategyRows(plan);
   if (!rows.length) {
-    const tabLabel = RENEWABLE_STRATEGY_TABS[control.strategyTab]?.label || "当前分类";
-    table.innerHTML = `<div class="empty-state compact">暂无${escapeHtml(tabLabel)}设备</div>`;
+    const emptyKey = `empty|${control.strategyTab}`;
+    if (table.dataset.lastStrategyTableKey !== emptyKey) {
+      table.dataset.lastStrategyTableKey = emptyKey;
+      const tabLabel = RENEWABLE_STRATEGY_TABS[control.strategyTab]?.label || "当前分类";
+      table.innerHTML = `<div class="empty-state compact">暂无${escapeHtml(tabLabel)}设备</div>`;
+    }
     return;
   }
+  const strategyTableKey = [
+    control.strategyTab,
+    control.loopMode,
+    control.planRevision ?? -1,
+    rows.map((r) => `${r.dev_name}:${r.currentKw ?? ""}:${r.targetKw ?? r.commandKw ?? r.projectedTargetKw ?? ""}:${r.soc ?? ""}:${r.online ? 1 : 0}:${r.commandable !== false ? 1 : 0}:${r.dispatchEnabled !== false ? 1 : 0}`).join("|"),
+  ].join("::");
+  if (table.dataset.lastStrategyTableKey === strategyTableKey) return;
+  table.dataset.lastStrategyTableKey = strategyTableKey;
+  const prevScrollTop = table.scrollTop;
+  const prevScrollLeft = table.scrollLeft;
   table.innerHTML = `
     <table class="runtime-device-table renewable-command-table">
       <thead>
@@ -2330,6 +2358,8 @@ function renderRenewableControl(snapshot = state.snapshot || {}) {
         }).join("")}
       </tbody>
     </table>`;
+  table.scrollTop = prevScrollTop;
+  table.scrollLeft = prevScrollLeft;
 }
 
 async function toggleRenewableAuto() {

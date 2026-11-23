@@ -887,6 +887,36 @@ if (out[out.length - 1].minute !== 4199) throw new Error("tail lost");
             res = subprocess.run([node, "-e", probe], capture_output=True, text=True, check=False)
             self.assertEqual(res.returncode, 0, f"{rel} 裁剪验证失败：{res.stderr}")
 
+    def test_i18n_skips_lowercase_svg_and_orphan_pages_removed(self) -> None:
+        """验证 i18n 正确跳过小写 SVG 节点，且教员端孤儿页面 faults/modes 已清理。"""
+        import shutil
+        import subprocess
+
+        sim_html = (REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn('data-page="faults"', sim_html, "孤儿页面 faults 应已清理")
+        self.assertNotIn('data-page="modes"', sim_html, "孤儿页面 modes 应已清理")
+
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not available")
+        i18n_path = REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "js" / "00-i18n.js"
+        probe = f"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync({str(i18n_path)!r}, "utf8");
+const m = code.match(/const SKIP_SVG_TAGS[\\s\\S]*?function isSkippableGraphicNode\\([\\s\\S]*?\\n\\}}/);
+if (!m) throw new Error("isSkippableGraphicNode not found");
+const ctx = {{ Set, String }};
+vm.runInNewContext(m[0] + "; globalThis.__fn = isSkippableGraphicNode;", ctx);
+const fn = ctx.__fn;
+if (!fn({{ tagName: "svg" }})) throw new Error("lowercase svg not skipped");
+if (!fn({{ tagName: "path" }})) throw new Error("lowercase path not skipped");
+if (!fn({{ tagName: "tspan", namespaceURI: "http://www.w3.org/2000/svg" }})) throw new Error("svg namespace not skipped");
+if (fn({{ tagName: "DIV" }})) throw new Error("normal DIV wrongly skipped");
+"""
+        res = subprocess.run([node, "-e", probe], capture_output=True, text=True, check=False)
+        self.assertEqual(res.returncode, 0, f"SVG 节点跳过断言失败：{res.stderr}")
+
 
 if __name__ == "__main__":
     unittest.main()

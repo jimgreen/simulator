@@ -589,6 +589,14 @@ const PHRASE_TRANSLATIONS = {
   "拖拽调整宽度，双击恢复默认": ["Drag to resize, double-click to reset", "Тяните для ширины, двойной клик — сброс"],
   "隐藏面板": ["Hide Panel", "Скрыть панель"],
   "显示面板": ["Show Panel", "Показать панель"],
+  "搜索设备定位…": ["Locate device...", "Найти устройство..."],
+  "适应画布": ["Fit View", "По размеру"],
+  "潮流箭头": ["Flow Arrows", "Стрелки потоков"],
+  "量测层": ["Measurements", "Измерения"],
+  "清空筛选": ["Clear Filters", "Сбросить фильтры"],
+  "页面": ["Pages", "Разделы"],
+  "快捷键": ["Shortcuts", "Горячие клавиши"],
+  "调值": ["Adjust", "Уставка"],
 
   // 主页、边界、曲线与参数配置补充词条（实现静态 HTML 100% 三语全覆盖）
   "输入边界": ["Input Boundaries", "Входные границы"],
@@ -740,6 +748,32 @@ const PHRASE_TRANSLATIONS = {
   "暂停自动刷新": ["Pause Auto-Refresh", "Пауза автообновления"],
   "全部级别": ["All Levels", "Все уровни"],
   "筛选日志内容…": ["Filter log messages...", "Фильтр сообщений журнала..."],
+  "页面": ["Pages", "Разделы"],
+  "操作": ["Actions", "Действия"],
+  "适应画布": ["Fit Canvas", "Вписать схему"],
+  "切换侧栏": ["Toggle Sidebar", "Переключить панель"],
+  "快捷键速查": ["Keyboard Shortcuts", "Горячие клавиши"],
+  "清空筛选": ["Clear Filters", "Сбросить фильтры"],
+  "定位设备...": ["Find device...", "Найти устройство..."],
+  "定位设备": ["Find device", "Найти устройство"],
+  "接线图工具栏": ["Diagram Toolbar", "Панель схемы"],
+  "切换 SCADA / 真值显示": ["Toggle SCADA / True Value", "Переключить SCADA / Истина"],
+  "显示或隐藏潮流方向箭头": ["Toggle Power Flow Arrows", "Показать/скрыть стрелки потока"],
+  "显示或隐藏量测值": ["Toggle Measurement Labels", "Показать/скрыть измерения"],
+  "潮流": ["Flow", "Потоки"],
+  "量测": ["Meas", "Измер."],
+  "适应": ["Fit", "Вписать"],
+  "放大": ["Zoom In", "Приблизить"],
+  "缩小": ["Zoom Out", "Отдалить"],
+  "未找到设备": ["Device not found", "Устройство не найдено"],
+  "调值": ["Adjust", "Уставка"],
+  "打开全局快捷命令面板": ["Open command palette", "Открыть палитру команд"],
+  "快速切换左侧主页面": ["Switch primary sidebar tabs", "Переключение разделов"],
+  "打开或关闭快捷键速查": ["Toggle shortcuts cheat sheet", "Показать горячие клавиши"],
+  "接线图放大 / 缩小": ["Zoom diagram in / out", "Масштаб схемы +/-"],
+  "接线图适应画布": ["Fit diagram to viewport", "Вписать схему в окно"],
+  "关闭弹窗或取消当前操作": ["Close dialog or cancel", "Закрыть окно / отмена"],
+  "未在日志对象中匹配到设备": ["No matching device found in log", "Устройство в журнале не найдено"],
 };
 
 /**
@@ -903,21 +937,32 @@ function translateElementNode(el, lang) {
 }
 
 const SKIP_SVG_TAGS = new Set([
-  "SVG", "PATH", "LINE", "CIRCLE", "ELLIPSE", "RECT", "POLYGON", "POLYLINE", "DEFS", "SYMBOL", "USE", "G", "CANVAS",
+  "SVG", "PATH", "LINE", "CIRCLE", "ELLIPSE", "RECT", "POLYGON", "POLYLINE",
+  "DEFS", "SYMBOL", "USE", "G", "TEXT", "TSPAN", "ANIMATEMOTION", "CANVAS",
 ]);
 let pendingDirtyNodes = new Set();
+
+function isSkippableGraphicNode(node) {
+  if (!node) return true;
+  if (node.namespaceURI === "http://www.w3.org/2000/svg") return true;
+  const tag = String(node.tagName || "").toUpperCase();
+  if (SKIP_SVG_TAGS.has(tag)) return true;
+  if (node.classList && node.classList.contains("numeric-cell")) return true;
+  return false;
+}
 
 function translateUiTree(root = document.body, lang = getUiLang()) {
   if (!root || isApplyingTranslation) return;
   isApplyingTranslation = true;
   try {
-    translateElementNode(root, lang);
+    if (!isSkippableGraphicNode(root)) {
+      translateElementNode(root, lang);
+    }
     if (typeof root.querySelectorAll === "function") {
       const nodes = root.querySelectorAll("*");
       for (let i = 0; i < nodes.length; i += 1) {
         const node = nodes[i];
-        if (SKIP_SVG_TAGS.has(node.tagName)) continue;
-        if (node.classList && node.classList.contains("numeric-cell")) continue;
+        if (isSkippableGraphicNode(node)) continue;
         translateElementNode(node, lang);
       }
     }
@@ -945,14 +990,13 @@ function flushDirtyI18nNodes() {
     for (let i = 0; i < batch.length; i += 1) {
       const target = batch[i];
       if (!target || (target.isConnected === false)) continue;
-      if (SKIP_SVG_TAGS.has(target.tagName)) continue;
+      if (isSkippableGraphicNode(target)) continue;
       translateElementNode(target, lang);
       if (typeof target.querySelectorAll === "function" && target.childElementCount > 0) {
         const sub = target.querySelectorAll("*");
         for (let j = 0; j < sub.length; j += 1) {
           const child = sub[j];
-          if (SKIP_SVG_TAGS.has(child.tagName)) continue;
-          if (child.classList && child.classList.contains("numeric-cell")) continue;
+          if (isSkippableGraphicNode(child)) continue;
           translateElementNode(child, lang);
         }
       }
@@ -997,7 +1041,7 @@ function ensureI18nObserver() {
       const rec = records[i];
       if (rec.type === "characterData") {
         const parent = rec.target && rec.target.parentElement;
-        if (parent && !SKIP_SVG_TAGS.has(parent.tagName)) {
+        if (parent && !isSkippableGraphicNode(parent)) {
           pendingDirtyNodes.add(parent);
           added = true;
         }
@@ -1005,10 +1049,10 @@ function ensureI18nObserver() {
         for (let j = 0; j < rec.addedNodes.length; j += 1) {
           const node = rec.addedNodes[j];
           if (!node) continue;
-          if (node.nodeType === 1 && !SKIP_SVG_TAGS.has(node.tagName)) {
+          if (node.nodeType === 1 && !isSkippableGraphicNode(node)) {
             pendingDirtyNodes.add(node);
             added = true;
-          } else if (node.nodeType === 3 && node.parentElement && !SKIP_SVG_TAGS.has(node.parentElement.tagName)) {
+          } else if (node.nodeType === 3 && node.parentElement && !isSkippableGraphicNode(node.parentElement)) {
             pendingDirtyNodes.add(node.parentElement);
             added = true;
           }
@@ -1061,6 +1105,9 @@ function applyUiLanguage(langCode, { persist = true, notify = false, redraw = tr
     }
     if (typeof redrawActiveTraineeCharts === "function") {
       redrawActiveTraineeCharts();
+    }
+    if (typeof window !== "undefined" && window.Scada104Module && typeof window.Scada104Module.onLanguageChange === "function") {
+      window.Scada104Module.onLanguageChange();
     }
   }
 

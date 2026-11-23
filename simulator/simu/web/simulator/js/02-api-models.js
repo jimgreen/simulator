@@ -249,8 +249,6 @@ const SIMULATOR_PAGE_ROUTES = {
   "/model": "model",
   "/diagram": "diagram",
   "/curves": "curves",
-  "/faults": "faults",
-  "/modes": "modes",
   "/parameters": "parameters",
   "/manual-changes": "manual-changes",
   "/runtime": "runtime",
@@ -1674,9 +1672,16 @@ async function refreshMeasurementDelta(renderNow = false) {
   if (state.measurementDeltaRequestActive || !state.snapshot) return false;
   const reqModelId = state.activeModelId;
   const reqEpoch = Number(state.modelSwitchEpoch || 0);
+  if (state.measurementDeltaAbortController) {
+    try { state.measurementDeltaAbortController.abort(); } catch (_e) {}
+  }
+  const controller = new AbortController();
+  state.measurementDeltaAbortController = controller;
   state.measurementDeltaRequestActive = true;
   try {
-    const payload = await api(`/api/measurements/delta?after_seq=${state.measurementDeltaSeq}&compact=1`);
+    const payload = await api(`/api/measurements/delta?after_seq=${state.measurementDeltaSeq}&compact=1`, {
+      signal: controller.signal,
+    });
     if (state.activeModelId !== reqModelId || Number(state.modelSwitchEpoch || 0) !== reqEpoch) {
       return false;
     }
@@ -1685,13 +1690,17 @@ async function refreshMeasurementDelta(renderNow = false) {
     if (changed && renderNow && currentPageName() === "measurements") renderMeasurementCompareTable();
     return changed;
   } catch (error) {
+    if (error?.name === "AbortError") return false;
     if (!state._lastMeasDeltaErr) {
       console.error("量测增量刷新失败", error);
       state._lastMeasDeltaErr = String(error?.message || error);
     }
     return false;
   } finally {
-    state.measurementDeltaRequestActive = false;
+    if (state.measurementDeltaAbortController === controller) {
+      state.measurementDeltaAbortController = null;
+      state.measurementDeltaRequestActive = false;
+    }
   }
 }
 
@@ -2110,9 +2119,15 @@ async function setActiveModel(modelId, shouldRefresh = true) {
     return;
   }
   cancelCurveRequests();
+  if (state.measurementDeltaAbortController) {
+    try { state.measurementDeltaAbortController.abort(); } catch (_e) {}
+    state.measurementDeltaAbortController = null;
+  }
+  state.measurementDeltaRequestActive = false;
   state.modelSwitchEpoch = Number(state.modelSwitchEpoch || 0) + 1;
   state.refreshRequestActive = false;
   state.activeModelId = nextId;
+  window.Scada104Module?.syncActiveModel?.(nextId, { refreshNow: currentPageName() === "scada104" });
   state.selectedManagementModelId = nextId;
   state.deviceRuntimeSignature = "";
   state.deviceRuntimeNeedsFullRefresh = false;
@@ -2327,6 +2342,7 @@ async function setModelServiceRunning(modelId, shouldRun, { managementAction = f
     state.models = normalizeModels(Array.isArray(payload.models) ? payload.models : state.models);
     state.serviceCatalogLastLoadedAt = Date.now();
     renderModelSelector();
+    window.Scada104Module?.syncActiveModel?.(state.activeModelId, { refreshNow: currentPageName() === "scada104" });
     if (targetModelId === state.activeModelId) {
       if (activeModelServiceRunning()) {
         resetWebRuntimeSettingsState();

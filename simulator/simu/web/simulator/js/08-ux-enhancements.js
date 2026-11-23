@@ -18,6 +18,7 @@
    */
   let progressBarEl = null;
   let progressHideTimer = null;
+  let progressClearTimer = null;
   function flashTopProgress() {
     if (!progressBarEl) {
       const main = document.querySelector(".page-main") || document.body;
@@ -28,11 +29,14 @@
       main.prepend(progressBarEl);
     }
     clearTimeout(progressHideTimer);
+    clearTimeout(progressClearTimer);
     progressBarEl.classList.remove("is-done");
     progressBarEl.classList.add("is-active");
     progressHideTimer = setTimeout(() => {
       progressBarEl.classList.add("is-done");
-      setTimeout(() => progressBarEl.classList.remove("is-active", "is-done"), 220);
+      progressClearTimer = setTimeout(() => {
+        progressBarEl.classList.remove("is-active", "is-done");
+      }, 220);
     }, 260);
   }
 
@@ -45,7 +49,7 @@
   }
 
   /**
-   * 统一跳转接线图并选中高亮目标设备
+   * 统一跳转接线图并居中聚焦高亮目标设备
    */
   function locateDeviceOnDiagram(devName) {
     const targetName = String(devName || "").trim();
@@ -55,23 +59,20 @@
     } else {
       document.querySelector('.page-nav button[data-nav-page="diagram"]')?.click();
     }
-    const devices = getCurrentSnapshotDevices();
-    const matched = devices.find((d) => {
-      const name = String(d?.name || d?.dev_name || d?.id || "").trim();
-      return name === targetName || (name && targetName.includes(name));
-    });
-    const resolvedKey = matched
-      ? (typeof deviceKey === "function" ? deviceKey(matched) : `${matched.dev_type || matched.type || ""}:${matched.name || matched.dev_name || ""}`)
-      : targetName;
-    setTimeout(() => {
-      if (typeof setDiagramSelectedDevice === "function") {
-        try {
-          setDiagramSelectedDevice(resolvedKey, { focus: true, center: true });
-        } catch (_e) {
-          try { setDiagramSelectedDevice(targetName); } catch (_e2) {}
+    let attempts = 0;
+    const tryFocus = () => {
+      attempts += 1;
+      const canvas = document.getElementById("modelDiagramCanvas");
+      if (canvas && canvas.querySelector("svg")) {
+        if (typeof window.focusDiagramDeviceByName === "function") {
+          const hit = window.focusDiagramDeviceByName(canvas, targetName);
+          if (hit) return;
         }
+        return;
       }
-    }, 60);
+      if (attempts < 12) setTimeout(tryFocus, 80);
+    };
+    setTimeout(tryFocus, 70);
     if (typeof showUiToast === "function") {
       showUiToast(`${tr("定位接线图")}: ${targetName}`, "info", 1800);
     }
@@ -111,7 +112,7 @@
       const page = btn.dataset.navPage;
       const label = (btn.textContent || "").trim();
       items.push({
-        group: tr("主页"),
+        group: tr("页面"),
         label,
         hint: idx < 9 ? `Alt+${idx + 1}` : "Alt+0",
         keywords: `${label} ${page}`,
@@ -121,18 +122,40 @@
         },
       });
     });
-    const scadaLink = document.querySelector(".page-nav a.scada104-link");
-    if (scadaLink) {
-      const label = (scadaLink.textContent || "").trim();
-      items.push({
-        group: tr("主页"),
-        label,
-        hint: "/simulator104",
-        keywords: `${label} scada iec104`,
-        run: () => window.open(scadaLink.getAttribute("href") || "/simulator104", "_blank", "noopener"),
-      });
-    }
-    // 2. 当前模型设备（直达接线图定位）
+    // 2. 高频快捷动作
+    items.push({
+      group: tr("操作"),
+      label: tr("适应画布"),
+      hint: "F / 0",
+      keywords: "diagram fit reset zoom 接线图 适应 画布 缩放",
+      run: () => {
+        const canvas = document.getElementById("modelDiagramCanvas");
+        if (canvas && typeof resetDiagramViewport === "function") {
+          resetDiagramViewport(canvas);
+        } else {
+          document.querySelector('.page-nav button[data-nav-page="diagram"]')?.click();
+          setTimeout(() => {
+            const c = document.getElementById("modelDiagramCanvas");
+            if (c && typeof resetDiagramViewport === "function") resetDiagramViewport(c);
+          }, 120);
+        }
+      },
+    });
+    items.push({
+      group: tr("操作"),
+      label: tr("切换侧栏"),
+      hint: "Sidebar",
+      keywords: "sidebar collapse expand 侧栏 收起 展开",
+      run: () => document.getElementById("appSidebarToggle")?.click(),
+    });
+    items.push({
+      group: tr("操作"),
+      label: tr("快捷键速查"),
+      hint: "?",
+      keywords: "shortcut hotkey help 快捷键 帮助",
+      run: () => openShortcutsHelpDialog(),
+    });
+    // 3. 当前模型设备（直达接线图定位）
     const devices = getCurrentSnapshotDevices();
     const seenDev = new Set();
     for (let i = 0; i < devices.length && seenDev.size < 160; i += 1) {
@@ -315,9 +338,11 @@
       const target = event.target instanceof Element ? event.target : null;
       if (!target || target.closest("input, select, button, .col-resizer, .runtime-log-col-resizer")) return;
       const th = target.closest("thead th");
-      if (!th) return;
+      if (!th || th.hasAttribute("data-scada104-sort")) return;
       const table = th.closest(SORTABLE_TABLES);
-      if (!table) return;
+      if (!table || table.classList.contains("scada104-table")) return;
+      // 虚拟滚动表格由数据源分页切片渲染，禁止直接 DOM 行排序破坏 spacer 与切片顺序
+      if (table.closest("[data-virtual-table]")) return;
       const tbody = table.tBodies && table.tBodies[0];
       if (!tbody || tbody.rows.length < 2) return;
       const row = th.parentElement;
@@ -420,10 +445,28 @@
     } catch (_e) {}
   }
 
-  function dispatchLayoutResize() {
-    try {
-      window.dispatchEvent(new Event("resize"));
-    } catch (_e) {}
+  let layoutResizeRaf = 0;
+  let layoutResizeTimer = null;
+  function dispatchLayoutResize(immediate = false) {
+    if (immediate) {
+      if (layoutResizeTimer) {
+        clearTimeout(layoutResizeTimer);
+        layoutResizeTimer = null;
+      }
+      if (layoutResizeRaf) cancelAnimationFrame(layoutResizeRaf);
+      layoutResizeRaf = requestAnimationFrame(() => {
+        layoutResizeRaf = 0;
+        try {
+          window.dispatchEvent(new Event("resize"));
+        } catch (_e) {}
+      });
+      return;
+    }
+    if (layoutResizeTimer) return;
+    layoutResizeTimer = setTimeout(() => {
+      layoutResizeTimer = null;
+      dispatchLayoutResize(true);
+    }, 64);
   }
 
   function createColSplitterElement(side, onToggleHidden) {
@@ -730,11 +773,118 @@
   function enhanceAllHorizontalSplitters() {
     for (const spec of HORIZONTAL_SPLIT_SPECS) {
       document.querySelectorAll(spec.selector).forEach((container) => {
-        bindGridHorizontalSplitter(container, spec);
+        if (container.dataset.uxSplitBound !== "true") {
+          bindGridHorizontalSplitter(container, spec);
+        }
       });
     }
   }
   window.refreshUxSplitters = enhanceAllHorizontalSplitters;
+
+  /**
+   * 为所有 .table-filter-bar 自动注入轻量「清空筛选」按钮（仅在存在激活筛选时显示）
+   */
+  function filterBarHasActiveValue(bar) {
+    const inputs = bar.querySelectorAll('input[type="search"], input[type="text"]');
+    for (const input of inputs) {
+      if (String(input.value || "").trim() !== "") return true;
+    }
+    const selects = bar.querySelectorAll("select");
+    for (const sel of selects) {
+      const firstVal = sel.options?.[0]?.value ?? "all";
+      if (sel.value !== firstVal && sel.value !== "all" && sel.value !== "") return true;
+    }
+    const checkboxes = bar.querySelectorAll('input[type="checkbox"]');
+    for (const box of checkboxes) {
+      if (box.checked) return true;
+    }
+    return false;
+  }
+
+  function enhanceTableFilterClearButtons() {
+    document.querySelectorAll(".table-filter-bar").forEach((bar) => {
+      if (bar.dataset.uxClearFilterBound === "true") {
+        const btn = bar.querySelector(".ux-clear-filter-btn");
+        if (btn) btn.hidden = !filterBarHasActiveValue(bar);
+        return;
+      }
+      bar.dataset.uxClearFilterBound = "true";
+      const clearBtn = document.createElement("button");
+      clearBtn.type = "button";
+      clearBtn.className = "compact-action-btn ux-clear-filter-btn";
+      clearBtn.textContent = tr("清空筛选");
+      clearBtn.hidden = !filterBarHasActiveValue(bar);
+      const syncVisibility = () => {
+        clearBtn.hidden = !filterBarHasActiveValue(bar);
+      };
+      bar.addEventListener("input", syncVisibility);
+      bar.addEventListener("change", syncVisibility);
+      clearBtn.addEventListener("click", () => {
+        bar.querySelectorAll('input[type="search"], input[type="text"]').forEach((input) => {
+          if (input.value !== "") {
+            input.value = "";
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        });
+        bar.querySelectorAll("select").forEach((sel) => {
+          const resetVal = Array.from(sel.options || []).some((o) => o.value === "all")
+            ? "all"
+            : (sel.options?.[0]?.value ?? "");
+          if (sel.value !== resetVal) {
+            sel.value = resetVal;
+            sel.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        });
+        bar.querySelectorAll('input[type="checkbox"]').forEach((box) => {
+          if (box.checked) {
+            box.checked = false;
+            box.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        });
+        syncVisibility();
+      });
+      bar.appendChild(clearBtn);
+    });
+  }
+
+  /**
+   * 全局快捷键速查弹窗（按 ? 打开）
+   */
+  let shortcutsDialog = null;
+  function openShortcutsHelpDialog() {
+    if (!shortcutsDialog) {
+      shortcutsDialog = document.createElement("dialog");
+      shortcutsDialog.id = "uxShortcutsHelpDialog";
+      shortcutsDialog.className = "ux-shortcuts-dialog";
+      shortcutsDialog.addEventListener("click", (event) => {
+        if (event.target === shortcutsDialog) shortcutsDialog.close();
+      });
+      document.body.appendChild(shortcutsDialog);
+    }
+    const rows = [
+      ["Ctrl+K", tr("打开全局快捷命令面板")],
+      ["Alt+1 ~ Alt+0", tr("快速切换左侧主页面")],
+      ["?", tr("打开或关闭快捷键速查")],
+      ["+ / -", tr("接线图放大 / 缩小")],
+      ["0 / F", tr("接线图适应画布")],
+      ["Esc", tr("关闭弹窗或取消当前操作")],
+    ];
+    shortcutsDialog.innerHTML = `
+      <div class="ux-shortcuts-card">
+        <div class="ux-shortcuts-head">
+          <h3>${tr("快捷键速查")}</h3>
+          <button type="button" class="compact-action-btn" data-close-shortcuts>${tr("关闭")}</button>
+        </div>
+        <dl class="ux-shortcuts-list">
+          ${rows.map(([keys, desc]) => `<div><dt><kbd>${keys}</kbd></dt><dd>${desc}</dd></div>`).join("")}
+        </dl>
+      </div>
+    `;
+    shortcutsDialog.querySelector("[data-close-shortcuts]")?.addEventListener("click", () => shortcutsDialog.close());
+    if (shortcutsDialog.open) shortcutsDialog.close();
+    else if (typeof shortcutsDialog.showModal === "function") shortcutsDialog.showModal();
+  }
 
   /**
    * 顶栏注入轻量 Ctrl+K 快捷入口按钮、全局快捷键与导航进度条监听
@@ -742,11 +892,18 @@
   function initGlobalShortcutsAndChrome() {
     initSharedSidebarToggle();
     enhanceAllHorizontalSplitters();
+    enhanceTableFilterClearButtons();
 
     const pageMain = document.querySelector(".page-main");
     if (pageMain && typeof MutationObserver === "function") {
+      let splitSyncRaf = 0;
       const splitObserver = new MutationObserver(() => {
-        enhanceAllHorizontalSplitters();
+        if (splitSyncRaf) return;
+        splitSyncRaf = requestAnimationFrame(() => {
+          splitSyncRaf = 0;
+          enhanceAllHorizontalSplitters();
+          enhanceTableFilterClearButtons();
+        });
       });
       splitObserver.observe(pageMain, { childList: true });
     }
@@ -765,7 +922,6 @@
     document.querySelectorAll(".page-nav button[data-nav-page]").forEach((btn) => {
       btn.addEventListener("click", () => {
         flashTopProgress();
-        requestAnimationFrame(enhanceAllHorizontalSplitters);
       });
     });
     const modelSel = document.getElementById("modelSelector");
@@ -787,6 +943,20 @@
             event.preventDefault();
             targetBtn.click();
           }
+        }
+        return;
+      }
+      if (event.key === "?" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        const active = document.activeElement;
+        const isTyping = active && (
+          active.tagName === "INPUT"
+          || active.tagName === "TEXTAREA"
+          || active.tagName === "SELECT"
+          || active.isContentEditable
+        );
+        if (!isTyping) {
+          event.preventDefault();
+          openShortcutsHelpDialog();
         }
       }
     });

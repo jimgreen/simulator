@@ -1647,12 +1647,16 @@ def _converter_rows(
             continue
         if grid_converter_keys is not None and key not in grid_converter_keys:
             continue
-        device = min(
-            candidates,
-            key=lambda item: (
-                _natural_topology_identity(_device_index(item)),
-                json.dumps(dict(item), ensure_ascii=False, sort_keys=True, default=str),
-            ),
+        device = (
+            candidates[0]
+            if len(candidates) == 1
+            else min(
+                candidates,
+                key=lambda item: (
+                    _natural_topology_identity(_device_index(item)),
+                    json.dumps(dict(item), ensure_ascii=False, sort_keys=True, default=str),
+                ),
+            )
         )
         identity_diagnostic = (identity_diagnostics or {}).get(key, "")
         if identity_diagnostic and quality is not None:

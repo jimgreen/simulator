@@ -102,6 +102,7 @@ class _PersistentJsonClient:
         self._http_connection_factory = http_connection_factory
         self._https_connection_factory = https_connection_factory
         self._connections: Dict[Tuple[str, str, str, int], _JsonConnectionSlot] = {}
+        self._etag_cache: Dict[Tuple[Tuple[str, str, int], str], Tuple[str, Any, int]] = {}
         self._lock = threading.RLock()
         self._closed = False
         self._last_response_bytes_local = threading.local()
@@ -180,6 +181,13 @@ class _PersistentJsonClient:
             "Accept-Encoding": "gzip",
             "Connection": "keep-alive",
         }
+        etag_cache_key = (origin, path)
+        cached_entry: Optional[Tuple[str, Any, int]] = None
+        if request_method == "GET":
+            with self._lock:
+                cached_entry = self._etag_cache.get(etag_cache_key)
+            if cached_entry is not None:
+                headers["If-None-Match"] = cached_entry[0]
         if request_method in {"POST", "PUT"}:
             body = json.dumps(payload or {}, ensure_ascii=False, default=str).encode(
                 "utf-8"
@@ -194,6 +202,7 @@ class _PersistentJsonClient:
             response_status = 0
             response_reason = ""
             response_will_close = False
+            response_etag = ""
             reused_connection = False
             try:
                 with slot.lock:
@@ -215,7 +224,8 @@ class _PersistentJsonClient:
                     response_will_close = bool(
                         getattr(response, "will_close", False)
                     )
-                    if str(response.getheader("Content-Encoding", "")).lower() == "gzip":
+                    response_etag = str(response.getheader("ETag", "") or "").strip()
+                    if response_body and str(response.getheader("Content-Encoding", "")).lower() == "gzip":
                         response_body = gzip.decompress(response_body)
             except (OSError, http.client.HTTPException) as exc:
                 last_error = exc
@@ -239,14 +249,23 @@ class _PersistentJsonClient:
 
             if response_will_close:
                 self._discard(slot_key, slot)
+            if response_status == 304 and cached_entry is not None:
+                self._last_response_bytes_local.size = 0
+                return cached_entry[1]
             self._last_response_bytes_local.size = len(response_body)
             text = response_body.decode("utf-8", errors="replace")
             if response_status >= 400:
                 raise RuntimeError(text or response_reason or f"HTTP {response_status}")
             try:
-                return json.loads(text) if text else {}
+                parsed_json = json.loads(text) if text else {}
             except json.JSONDecodeError as exc:
                 raise RuntimeError("学员台实时数据源返回内容不是有效 JSON") from exc
+            if request_method == "GET" and response_etag:
+                with self._lock:
+                    if len(self._etag_cache) >= 256:
+                        self._etag_cache.clear()
+                    self._etag_cache[etag_cache_key] = (response_etag, parsed_json, len(response_body))
+            return parsed_json
 
         detail = str(last_error or "连接失败")
         raise RuntimeError(f"学员台实时数据源不可达：{detail}")
@@ -2074,7 +2093,7 @@ class TraineeRealtimeExchange:
                 if key in local:
                     payload[key] = local[key]
         if include_devices and "devices" in local:
-            payload["devices"] = _merge_remote_runtime_devices(
+            payload["devices"] = _merge_remote_runtime_devices_read_only(
                 local.get("devices"),
                 runtime.get("devices"),
             )
@@ -3067,11 +3086,28 @@ class TraineeRealtimeExchange:
             self._service_instance_id(service),
         )
 
+        def _warn_throttled(key: Tuple[str, str], msg: str, *args: Any) -> None:
+            now_mono = time.monotonic()
+            warn_map = getattr(self, "_warn_throttle_state", None)
+            if warn_map is None:
+                warn_map = {}
+                self._warn_throttle_state = warn_map
+            prev_ts, suppressed = warn_map.get(key, (0.0, 0))
+            if prev_ts > 0.0 and (now_mono - prev_ts) < 30.0:
+                warn_map[key] = (prev_ts, suppressed + 1)
+                return
+            warn_map[key] = (now_mono, 0)
+            if suppressed > 0:
+                _EXCHANGE_LOG.warning(f"{msg} (suppressed {suppressed} similar errors)", *args)
+            else:
+                _EXCHANGE_LOG.warning(msg, *args)
+
         def refresh_pending() -> None:
             try:
                 self.refresh_once_for_service(service, materialize_result=False)
             except Exception as exc:
-                _EXCHANGE_LOG.warning(
+                _warn_throttled(
+                    (pending_key[0], f"{type(exc).__name__}:{str(exc)[:120]}"),
                     "Background trainee refresh failed for %s: %s",
                     pending_key[0],
                     exc,
@@ -3143,7 +3179,10 @@ class TraineeRealtimeExchange:
                             continue
                         due = state.next_refresh_at_monotonic <= now_monotonic
                         if due:
-                            state.next_refresh_at_monotonic = now_monotonic + interval
+                            # 断连连续失败时采用指数退避（上限 15s），避免占满 4 个刷新工作线程
+                            failures = int(getattr(state, "consecutive_failures", 0) or 0)
+                            backoff = min(15.0, interval * (2 ** min(failures, 4))) if failures >= 2 else interval
+                            state.next_refresh_at_monotonic = now_monotonic + backoff
                         next_delays.append(max(0.0, state.next_refresh_at_monotonic - now_monotonic))
                     if due:
                         self._submit_refresh_for_service(service)
@@ -3193,6 +3232,17 @@ class TraineeRealtimeExchange:
             consecutive_failures = state.consecutive_failures
             frame_age_limit = float(getattr(self, "frame_age_limit_seconds", 15.0) or 0.0)
             same_frame_limit = float(getattr(self, "same_frame_limit_seconds", 30.0) or 0.0)
+        try:
+            svc_getter = getattr(self, "_service_for", None)
+            rt_getter = getattr(self, "_runtime_settings_for_service", None)
+            if callable(svc_getter) and callable(rt_getter) and getattr(self, "services", None) is not None:
+                live_service = svc_getter(model_id)
+                rt_cfg = rt_getter(live_service)
+                if isinstance(rt_cfg, Mapping):
+                    frame_age_limit = float(rt_cfg.get("frame_age_limit_seconds", frame_age_limit) or 0.0)
+                    same_frame_limit = float(rt_cfg.get("same_frame_limit_seconds", same_frame_limit) or 0.0)
+        except Exception:
+            pass
         runtime_clock = (
             runtime_snapshot.get("clock")
             if (type(runtime_snapshot) is dict or isinstance(runtime_snapshot, Mapping))

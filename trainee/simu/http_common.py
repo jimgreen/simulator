@@ -453,7 +453,7 @@ class StaticAssetCache:
         accepted = str(handler.headers.get("Accept-Encoding", "")).lower()
         use_gzip = bool(asset["gzip_data"] and "gzip" in accepted)
         data = asset["gzip_data"] if use_gzip else asset["data"]
-        if str(handler.headers.get("If-None-Match", "")).strip() == etag:
+        if etag_matches(handler.headers.get("If-None-Match"), etag):
             try:
                 handler.send_response(304)
                 if cors_fn is not None:

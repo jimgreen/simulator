@@ -527,6 +527,50 @@ class ServerAndScadaTests(unittest.TestCase):
             self.assertGreater(ctrl._command_mutation_seq, seq_before)
             self.assertIsNone(ctrl._command_signature_cache)
 
+    def test_scada104_reads_external_controls_names_endpoint(self):
+        """验证 IEC104 桥接器调用真实的 /api/external/controls/names 并解析 yk_names/yt_names。"""
+        import scada104 as scada104_mod
+
+        bridge = scada104_mod.Bridge.__new__(scada104_mod.Bridge)
+        bridge._delta_sync_state = {}
+        seen_paths: list[str] = []
+
+        def _fake_pool_request(base, path, payload=None, timeout=None):
+            seen_paths.append(path)
+            if path.startswith("/api/measurements?"):
+                return {
+                    "definitions": [{"name": "M1", "meas_type": "P"}],
+                    "scada": [{"name": "M1", "value": 5.0, "valid": 1}],
+                }
+            if path == "/api/external/controls/names":
+                return {
+                    "yk_names": ["ACBreak.CB1.status"],
+                    "yt_names": ["ACGenerator.G1.p_set"],
+                }
+            if path.startswith("/api/measurements/delta"):
+                return {"seq": 1, "definition_signature": "sig", "count": 1}
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch.object(scada104_mod._HTTP_POOL, "request_json", side_effect=_fake_pool_request):
+            points, changed = bridge._read_points_for_model("http://127.0.0.1:18716", "m1")
+            self.assertTrue(changed)
+            self.assertIn("/api/external/controls/names", seen_paths)
+            self.assertNotIn("/api/controls", seen_paths)
+            self.assertIn("ACBreak.CB1.status", points["yk"])
+            self.assertIn("ACGenerator.G1.p_set", points["yt"])
+
+    def test_http_routes_use_no_cache_for_etag_and_clear_service_caches_on_post(self):
+        """验证 HTTP 路由带 ETag 响应下发 Cache-Control: no-cache 并在 POST 后清理服务层缓存。"""
+        from pathlib import Path
+        from simu import http_routes
+
+        routes_path = Path(http_routes.__file__).resolve()
+        text = routes_path.read_text(encoding="utf-8")
+        self.assertIn('cache_control="no-cache"', text)
+        self.assertIn("iter_services", text)
+        self.assertIn("_command_signature_cache", text)
+        self.assertIn("_device_runtime_supplement_cache", text)
+
 
 if __name__ == "__main__":
     unittest.main()

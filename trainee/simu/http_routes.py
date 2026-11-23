@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
 import logging
@@ -525,13 +526,20 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
             if mutated_successfully and path not in _READONLY_POST_PATHS:
                 self._ctx.response_cache.clear()
                 try:
-                    for svc in (self._ctx.manager.list_services() if hasattr(self._ctx.manager, "list_services") else ()):
+                    root_svc = self._ctx.service
+                    iter_fn = getattr(root_svc, "iter_services", None)
+                    targets = tuple(iter_fn()) if callable(iter_fn) else (root_svc,)
+                    for svc in targets:
                         if hasattr(svc, "_command_signature_cache"):
                             svc._command_signature_cache = None
                         if hasattr(svc, "_device_runtime_supplement_cache"):
                             svc._device_runtime_supplement_cache = None
-                except Exception:
-                    pass
+                except Exception as cache_exc:
+                    logging.getLogger("simu.web").debug(
+                        "Failed to clear per-service runtime caches after POST %s: %s",
+                        path,
+                        cache_exc,
+                    )
 
     def do_PUT(self) -> None:
         self.do_POST()
@@ -1230,7 +1238,7 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
             cached[0],
             cached[1],
             status=200,
-            cors_fn=self._cors,
+            cors_fn=lambda: self._cors(cache_control="no-cache"),
             etag=cached[2],
         )
         return True
@@ -1246,7 +1254,7 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
             raw_bytes,
             gzip_bytes,
             status=200,
-            cors_fn=self._cors,
+            cors_fn=lambda: self._cors(cache_control="no-cache"),
             etag=etag,
         )
 
@@ -1403,6 +1411,7 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 cmd_cache_key = (
                     getattr(target.clock, "run_id", 0),
                     getattr(target.clock, "step_count", 0),
+                    target.definition_snapshot.revision,
                     getattr(target, "_command_mutation_seq", 0),
                     len(getattr(target, "command_history", ())),
                     getattr(target, "_remote_adjustment_cycle_seq", 0),
@@ -1519,7 +1528,13 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
         elif path == "/api/device-states":
             self._send_json({"device_states": target.device_states()})
         elif path == "/api/curves":
-            self._send_json(target.curves)
+            curves_lock = getattr(target, "curves_lock", None)
+            if curves_lock is not None:
+                with curves_lock:
+                    curves_payload = copy.deepcopy(target.curves)
+            else:
+                curves_payload = dict(target.curves)
+            self._send_json(curves_payload)
         elif path == "/api/curves/summary":
             self._send_json(target.curves_summary())
         elif path == "/api/curves/series":
@@ -1532,7 +1547,9 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
             ]
             self._send_json(target.curves_series(keys))
         elif path == "/api/settings":
-            self._send_json(target.local_settings)
+            with target.lock:
+                settings_payload = copy.deepcopy(target.local_settings)
+            self._send_json(settings_payload)
         elif path == "/api/trainee/discover-simulator-services":
             self._send_json(_discover_local_simulator_services(self._ctx.sim_url))
         elif path == "/api/trainee/receive-state":

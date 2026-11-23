@@ -1044,23 +1044,37 @@ function applyDiagramDeviceDefinitionRuntimeValues(records = [], live = null) {
 }
 
 function setDiagramSwitchElementState(element, switchState) {
+  if (element.getAttribute("data-diagram-switch-state") === switchState) return;
   element.setAttribute("data-diagram-switch-state", switchState);
   element.classList.toggle("is-diagram-switch-open", switchState === "open");
   element.classList.toggle("is-diagram-switch-closed", switchState === "closed");
 }
 
-function updateDiagramSwitchVisualStates(container, maps) {
-  if (!container) return;
-  const elementsByDevice = new Map();
+function diagramDeviceElements(container) {
+  let cached = diagramDeviceElementsCache.get(container);
+  if (cached) return cached;
+  const byDevId = new Map();
+  const allDevNodes = [];
   container.querySelectorAll("[dev-id], [dev]").forEach((element) => {
+    const devId = String(element.getAttribute("dev-id") || element.getAttribute("dev") || "").trim();
+    allDevNodes.push({ element, devId });
     [element.getAttribute("dev-id"), element.getAttribute("dev")]
       .map((value) => String(value || "").trim())
       .filter(Boolean)
-      .forEach((devId) => {
-        if (!elementsByDevice.has(devId)) elementsByDevice.set(devId, []);
-        elementsByDevice.get(devId).push(element);
+      .forEach((id) => {
+        if (!byDevId.has(id)) byDevId.set(id, []);
+        const list = byDevId.get(id);
+        if (!list.includes(element)) list.push(element);
       });
   });
+  const selectableByDevId = new Map();
+  container.querySelectorAll(DIAGRAM_DEVICE_ELEMENT_SELECTOR).forEach((element) => {
+    const id = diagramElementDeviceId(element);
+    if (!id) return;
+    if (!selectableByDevId.has(id)) selectableByDevId.set(id, []);
+    selectableByDevId.get(id).push(element);
+  });
+  const switchUses = [];
   const devices = diagramDeviceIndex(container);
   container.querySelectorAll("use[dev-id], use[id][name]").forEach((element) => {
     const devId = String(element.getAttribute("dev-id") || element.getAttribute("id") || "").trim();
@@ -1071,17 +1085,31 @@ function updateDiagramSwitchVisualStates(container, maps) {
       || element.hasAttribute("data-open-href")
       || element.hasAttribute("data-closed-href");
     if (!supportsStateSymbols) return;
+    switchUses.push({ element, devId, device });
+  });
+  cached = { byDevId, allDevNodes, selectableByDevId, switchUses };
+  diagramDeviceElementsCache.set(container, cached);
+  return cached;
+}
+
+function updateDiagramSwitchVisualStates(container, maps) {
+  if (!container) return;
+  const { byDevId, switchUses } = diagramDeviceElements(container);
+  for (let i = 0; i < switchUses.length; i += 1) {
+    const { element, devId, device } = switchUses[i];
     const switchState = diagramSwitchState(diagramSwitchActualValue(device, maps));
-    (elementsByDevice.get(devId) || [element]).forEach((related) => {
-      setDiagramSwitchElementState(related, switchState);
-    });
-    if (switchState === "unknown") return;
+    const relatedList = byDevId.get(devId) || [element];
+    for (let j = 0; j < relatedList.length; j += 1) {
+      setDiagramSwitchElementState(relatedList[j], switchState);
+    }
+    if (switchState === "unknown") continue;
+    const currentHref = element.getAttribute("href") || element.getAttribute("xlink:href") || "";
     const explicitHref = element.getAttribute(switchState === "closed" ? "data-closed-href" : "data-open-href");
     const nextHref = explicitHref || diagramSwitchStateHref(currentHref, switchState);
-    if (!nextHref || nextHref === currentHref) return;
+    if (!nextHref || nextHref === currentHref) continue;
     element.setAttribute("href", nextHref);
     if (element.hasAttribute("xlink:href")) element.setAttribute("xlink:href", nextHref);
-  });
+  }
 }
 
 function addDiagramControlAliases(map, aliases, value, updated) {
@@ -1132,20 +1160,32 @@ function setDiagramElementValue(element, row, metricType = "") {
   const text = missing
     ? "--"
     : (displayRow.unit !== undefined ? diagramRowText(displayRow) : diagramNumberText(displayRow.value));
+  const bound = Boolean(displayRow) && !missing;
+  const updated = String(displayRow?.updated_simu_time || displayRow?.updated_wall_time || displayRow?.updated || "");
+  if (
+    element._lastBoundText === text
+    && element._lastBoundFlag === bound
+    && element._lastBoundTime === updated
+  ) {
+    return;
+  }
+  element._lastBoundText = text;
+  element._lastBoundFlag = bound;
+  element._lastBoundTime = updated;
   const tag = String(element.tagName || "").toLowerCase();
   if (["text", "tspan", "title", "desc"].includes(tag) || element instanceof HTMLElement) {
-    element.textContent = text;
+    if (element.textContent !== text) element.textContent = text;
   } else {
     element.setAttribute("data-current-value", text);
   }
-  element.classList.toggle("is-diagram-bound", Boolean(displayRow) && !missing);
+  element.classList.toggle("is-diagram-bound", bound);
   element.setAttribute("data-bound-value", text);
-  const updated = displayRow?.updated_simu_time || displayRow?.updated_wall_time || displayRow?.updated;
   if (updated) element.setAttribute("data-bound-time", updated);
   else element.removeAttribute("data-bound-time");
 }
 
 const diagramDeviceIndexCache = new WeakMap();
+const diagramDeviceElementsCache = new WeakMap();
 const diagramMetricBindingCache = new WeakMap();
 const diagramRealtimeBindingCache = new WeakMap();
 const diagramInteractionCache = new WeakMap();
@@ -1897,17 +1937,48 @@ function compileDiagramFlowArrows(container) {
   return interaction.flowArrows;
 }
 
-function diagramFlowReferencePower(container, device, snapshot, interaction, power) {
-  const raw = diagramDeviceData(container, device, snapshot).raw || {};
-  const capacities = new Map(Object.entries(raw).map(([key, value]) => [
-    String(key).trim().toLowerCase(),
-    Number(value),
-  ]));
-  for (const key of ["flow_max", "rated_capacity", "rated_power", "p_max", "max_power", "max_charge_power", "max_discharge_power"]) {
-    const value = Math.abs(Number(capacities.get(key)));
-    if (Number.isFinite(value) && value > 0) return value;
+function diagramFlowStaticReferenceMap(snapshot, interaction) {
+  const revKey = `${snapshot?.model?.id || ""}|${snapshot?.static_meta?.definitions?.revision ?? ""}|${(snapshot?.devices || []).length}`;
+  if (interaction?.flowArrowStaticRefKey === revKey && interaction?.flowArrowStaticRefMap) {
+    return interaction.flowArrowStaticRefMap;
   }
-  const peakKey = normalizeDiagramMeasurementToken(device?.devType) || String(device?.devId || "unknown");
+  const refMap = new Map();
+  const keys = ["flow_max", "rated_capacity", "rated_power", "p_max", "max_power", "max_charge_power", "max_discharge_power"];
+  (snapshot?.devices || []).forEach((dev) => {
+    const raw = dev?.raw && typeof dev.raw === "object" ? dev.raw : dev;
+    if (!raw || typeof raw !== "object") return;
+    let rated = 0;
+    for (const [k, v] of Object.entries(raw)) {
+      const lk = String(k).trim().toLowerCase();
+      if (!keys.includes(lk)) continue;
+      const num = Math.abs(Number(v));
+      if (Number.isFinite(num) && num > 0) {
+        rated = num;
+        break;
+      }
+    }
+    if (rated <= 0) return;
+    const name = String(dev.dev_name || dev.name || "").trim();
+    const type = normalizeDiagramMeasurementToken(dev.dev_type || dev.type || "");
+    if (name) {
+      refMap.set(`${type}|${name}`, rated);
+      if (!refMap.has(`|${name}`)) refMap.set(`|${name}`, rated);
+    }
+  });
+  if (interaction) {
+    interaction.flowArrowStaticRefKey = revKey;
+    interaction.flowArrowStaticRefMap = refMap;
+  }
+  return refMap;
+}
+
+function diagramFlowReferencePower(container, device, snapshot, interaction, power) {
+  const refMap = diagramFlowStaticReferenceMap(snapshot, interaction);
+  const name = String(device?.devName || device?.devId || "").trim();
+  const type = normalizeDiagramMeasurementToken(device?.devType || "");
+  const cachedRated = refMap.get(`${type}|${name}`) || refMap.get(`|${name}`);
+  if (Number.isFinite(cachedRated) && cachedRated > 0) return cachedRated;
+  const peakKey = type || String(device?.devId || "unknown");
   const magnitude = Math.abs(Number(power));
   const previous = Number(interaction?.flowArrowPeakReferences?.get(peakKey)) || 0;
   const peak = Math.max(previous, Number.isFinite(magnitude) ? magnitude : 0);
@@ -1916,9 +1987,12 @@ function diagramFlowReferencePower(container, device, snapshot, interaction, pow
 }
 
 function updateDiagramFlowArrows(container, snapshot = state.snapshot || {}, measurementMaps = diagramMeasurementMaps(snapshot)) {
+  if (diagramDisplayPreferences && diagramDisplayPreferences.flowArrows === false) return;
   const interaction = container ? diagramInteractionCache.get(container) : null;
   if (!interaction?.flowArrows?.length) return;
   const operatingMaps = diagramDeviceOperatingStateMaps(snapshot);
+  const electricThreshold = activeRuntimeSetting("diagram_flow_electric_threshold_kw");
+  const hydrogenThreshold = activeRuntimeSetting("diagram_flow_hydrogen_threshold_nm3_h");
   interaction.flowArrows.forEach((record) => {
     const resolved = diagramFlowResolvePower(record, measurementMaps);
     const power = Number(resolved.power);
@@ -1938,29 +2012,38 @@ function updateDiagramFlowArrows(container, snapshot = state.snapshot || {}, mea
     ));
     const referenceDevice = resolved.binding?.device || record.device;
     const referencePower = diagramFlowReferencePower(container, referenceDevice, snapshot, interaction, power);
-    const threshold = diagramFlowArrowThreshold(
-      resolved.row?.meas_type || resolved.row?.measurement_type,
-      activeRuntimeSetting("diagram_flow_electric_threshold_kw"),
-      activeRuntimeSetting("diagram_flow_hydrogen_threshold_nm3_h"),
-    );
+    const measType = String(resolved.row?.meas_type || resolved.row?.measurement_type || "");
+    const threshold = diagramFlowArrowThreshold(measType, electricThreshold, hydrogenThreshold);
     const visible = diagramFlowArrowVisibility({ power, threshold, valid, offline });
-    record.root.setAttribute("data-flow-power", valid ? String(power) : "");
-    record.root.setAttribute("data-flow-binding-id", String(resolved.binding?.device?.devId || ""));
-    record.root.setAttribute(
-      "data-flow-measurement-type",
-      String(resolved.row?.meas_type || resolved.row?.measurement_type || ""),
-    );
-    record.root.toggleAttribute("hidden", !visible);
+    const powerAttr = valid ? String(power) : "";
+    const bindingId = String(resolved.binding?.device?.devId || "");
+    if (record.lastPowerAttr !== powerAttr) {
+      record.lastPowerAttr = powerAttr;
+      record.root.setAttribute("data-flow-power", powerAttr);
+    }
+    if (record.lastBindingId !== bindingId) {
+      record.lastBindingId = bindingId;
+      record.root.setAttribute("data-flow-binding-id", bindingId);
+    }
+    if (record.lastMeasType !== measType) {
+      record.lastMeasType = measType;
+      record.root.setAttribute("data-flow-measurement-type", measType);
+    }
+    if (record.lastVisible !== visible) {
+      record.lastVisible = visible;
+      record.root.toggleAttribute("hidden", !visible);
+    }
     if (!visible) return;
     const size = diagramFlowArrowSize(power, referencePower);
-    const halfLength = size / 2;
-    const halfHeight = Math.max(2, size * 0.32);
-    record.markers.forEach(({ polygon }) => {
-      polygon.setAttribute(
-        "points",
-        `${-halfLength},${-halfHeight} ${halfLength},0 ${-halfLength},${halfHeight}`,
-      );
-    });
+    const halfLength = Number((size / 2).toFixed(2));
+    const halfHeight = Number(Math.max(2, size * 0.32).toFixed(2));
+    const pointsAttr = `${-halfLength},${-halfHeight} ${halfLength},0 ${-halfLength},${halfHeight}`;
+    if (record.lastPointsAttr !== pointsAttr) {
+      record.lastPointsAttr = pointsAttr;
+      record.markers.forEach(({ polygon }) => {
+        polygon.setAttribute("points", pointsAttr);
+      });
+    }
     const direction = diagramFlowArrowDirection(power, record.orientation);
     if (direction !== record.direction) {
       record.direction = direction;
@@ -1969,8 +2052,8 @@ function updateDiagramFlowArrows(container, snapshot = state.snapshot || {}, mea
         animation.setAttribute("keyPoints", motion.keyPoints);
         animation.setAttribute("rotate", motion.rotate);
       });
+      record.root.setAttribute("data-flow-direction", direction < 0 ? "reverse" : "forward");
     }
-    record.root.setAttribute("data-flow-direction", direction < 0 ? "reverse" : "forward");
   });
 }
 
@@ -2107,34 +2190,120 @@ function setDiagramSelectedDevice(container, devId = "") {
   if (!container) return;
   const interaction = diagramInteractionState(container);
   const selectedDevId = String(devId || "").trim();
+  if (interaction.selectedDevId === selectedDevId && Array.isArray(interaction.selectedElements)) {
+    return;
+  }
   interaction.selectedDevId = selectedDevId;
-  container.querySelectorAll(".is-diagram-selected").forEach((element) => {
-    element.classList.remove("is-diagram-selected");
-  });
+  if (Array.isArray(interaction.selectedElements)) {
+    interaction.selectedElements.forEach((element) => element.classList.remove("is-diagram-selected"));
+  } else {
+    container.querySelectorAll(".is-diagram-selected").forEach((element) => {
+      element.classList.remove("is-diagram-selected");
+    });
+  }
+  interaction.selectedElements = [];
   if (!selectedDevId) return;
-  container.querySelectorAll(DIAGRAM_DEVICE_ELEMENT_SELECTOR).forEach((element) => {
-    if (diagramElementDeviceId(element) === selectedDevId) element.classList.add("is-diagram-selected");
+  const { selectableByDevId } = diagramDeviceElements(container);
+  const matched = selectableByDevId.get(selectedDevId) || [];
+  matched.forEach((element) => element.classList.add("is-diagram-selected"));
+  interaction.selectedElements = matched;
+}
+
+function focusDiagramDeviceByName(container, devName) {
+  if (!container) return false;
+  const query = String(devName || "").trim();
+  if (!query) return false;
+  const devices = diagramDeviceIndex(container);
+  let targetDevId = "";
+  const lowerQuery = query.toLowerCase();
+  for (const [devId, info] of devices.entries()) {
+    const nm = String(info?.devName || "").trim();
+    if (nm === query || devId === query) {
+      targetDevId = devId;
+      break;
+    }
+  }
+  if (!targetDevId) {
+    for (const [devId, info] of devices.entries()) {
+      const nm = String(info?.devName || "").trim().toLowerCase();
+      if (nm && (nm.includes(lowerQuery) || lowerQuery.includes(nm))) {
+        targetDevId = devId;
+        break;
+      }
+    }
+  }
+  if (!targetDevId) return false;
+  setDiagramSelectedDevice(container, targetDevId);
+  const { selectableByDevId, byDevId } = diagramDeviceElements(container);
+  const elements = selectableByDevId.get(targetDevId) || byDevId.get(targetDevId) || [];
+  const primary = elements[0];
+  if (primary && typeof diagramViewportState === "function") {
+    const viewport = diagramViewportState(container);
+    if (viewport?.svg && viewport.original) {
+      try {
+        const svgRect = viewport.svg.getBoundingClientRect();
+        const elRect = primary.getBoundingClientRect();
+        if (svgRect.width > 0 && svgRect.height > 0 && elRect.width >= 0 && elRect.height >= 0) {
+          const cur = viewport.current || viewport.original;
+          const relX = (elRect.left + elRect.width / 2 - svgRect.left) / svgRect.width;
+          const relY = (elRect.top + elRect.height / 2 - svgRect.top) / svgRect.height;
+          const centerX = cur.x + relX * cur.width;
+          const centerY = cur.y + relY * cur.height;
+          const targetW = Math.min(cur.width, Math.max(viewport.original.width * 0.28, cur.width * 0.55));
+          const targetH = Math.min(cur.height, Math.max(viewport.original.height * 0.28, cur.height * 0.55));
+          const clampedX = Math.max(
+            viewport.original.x,
+            Math.min(viewport.original.x + viewport.original.width - targetW, centerX - targetW / 2),
+          );
+          const clampedY = Math.max(
+            viewport.original.y,
+            Math.min(viewport.original.y + viewport.original.height - targetH, centerY - targetH / 2),
+          );
+          viewport.current = { x: clampedX, y: clampedY, width: targetW, height: targetH };
+          viewport.svg.setAttribute("viewBox", `${clampedX} ${clampedY} ${targetW} ${targetH}`);
+          if (typeof updateDiagramToolbarState === "function") updateDiagramToolbarState(container);
+        }
+      } catch (_err) {}
+    }
+  }
+  elements.forEach((el) => {
+    el.classList.remove("is-diagram-pulse");
+    // 强制重启动画
+    void el.getBoundingClientRect?.();
+    el.classList.add("is-diagram-pulse");
+    setTimeout(() => el.classList.remove("is-diagram-pulse"), 2200);
   });
+  return true;
+}
+if (typeof window !== "undefined") {
+  window.focusDiagramDeviceByName = focusDiagramDeviceByName;
 }
 
 function updateDiagramDeviceVisualStates(container, snapshot = {}) {
   if (!container) return;
   const maps = diagramDeviceOperatingStateMaps(snapshot);
-  container.querySelectorAll("[dev-id], [dev]").forEach((element) => {
-    const devId = String(element.getAttribute("dev-id") || element.getAttribute("dev") || "").trim();
+  const { allDevNodes } = diagramDeviceElements(container);
+  for (let i = 0; i < allDevNodes.length; i += 1) {
+    const { element, devId } = allDevNodes[i];
     const deviceState = diagramDeviceOperatingState(diagramDeviceRecord(container, devId), maps);
     const offline = diagramDeviceIsOffline(deviceState);
-    element.classList.toggle("is-diagram-offline", offline);
-    if (!deviceState) {
-      element.removeAttribute("data-diagram-operating-state");
-    } else if (Number(deviceState.run_stat ?? 1) === 0) {
-      element.setAttribute("data-diagram-operating-state", "retired");
-    } else if (diagramDeviceIsOffline(deviceState)) {
-      element.setAttribute("data-diagram-operating-state", "dead-island");
-    } else {
-      element.setAttribute("data-diagram-operating-state", "running");
+    const nextState = !deviceState
+      ? ""
+      : Number(deviceState.run_stat ?? 1) === 0
+        ? "retired"
+        : offline
+          ? "dead-island"
+          : "running";
+    if (element._lastDiagramOffline !== offline) {
+      element._lastDiagramOffline = offline;
+      element.classList.toggle("is-diagram-offline", offline);
     }
-  });
+    if (element._lastDiagramOpState !== nextState) {
+      element._lastDiagramOpState = nextState;
+      if (!nextState) element.removeAttribute("data-diagram-operating-state");
+      else element.setAttribute("data-diagram-operating-state", nextState);
+    }
+  }
 }
 
 function diagramTooltipValue(value) {

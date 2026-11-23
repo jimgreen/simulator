@@ -46,7 +46,8 @@
   let loadedPointsTableItems = [];
   let loadedChannelLogItems = [];
   let pointsSortState = { col: "pnt_no", dir: "none" };
-  let imeComposing = false;
+  let preferredModelName = "";
+  let latestModelsList = [];
   const recentReceipts = [];
 
   async function api(path, body, { signal } = {}) {
@@ -212,7 +213,6 @@
     if (pointAbortController) pointAbortController.abort();
     pointAbortController = new AbortController();
     const requestSeq = ++pointLoadSeq;
-    loadedPointScope = scope;
     try {
       const data = await api(
         `/api/simulator104/points?rtu_id=${encodeURIComponent(rtu)}&kind=${encodeURIComponent(kind)}`,
@@ -220,12 +220,16 @@
         { signal: pointAbortController.signal },
       );
       if (requestSeq !== pointLoadSeq || !isActive) return;
+      loadedPointScope = scope;
       const items = Array.isArray(data.items) ? data.items : [];
       allLoadedPoints = items;
       pointItemsByNo = new Map(items.map((item) => [String(item.pnt_no), item]));
       renderPointOptions();
     } catch (error) {
-      if (error?.name === "AbortError" || requestSeq !== pointLoadSeq) return;
+      if (error?.name === "AbortError" || requestSeq !== pointLoadSeq) {
+        if (loadedPointScope === scope) loadedPointScope = "";
+        return;
+      }
       loadedPointScope = "";
       allLoadedPoints = [];
       pointItemsByNo = new Map();
@@ -515,6 +519,7 @@
       refreshTimerId = null;
     }
     if (!isActive || document.hidden) return;
+    if (activeViewTab === "points" && get("scada104PausePointsRefresh")?.checked) return;
     refreshTimerId = setTimeout(() => {
       refreshTimerId = null;
       refresh(false);
@@ -560,6 +565,7 @@
       });
       if (!isActive) return;
       const models = Array.isArray(payload?.models) ? payload.models : [];
+      latestModelsList = models;
       const errors = payload?.errors && typeof payload.errors === "object" ? payload.errors : {};
       const dbNode = get("scada104Database");
       if (dbNode) dbNode.textContent = payload?.database ? `${payload.database}` : "";
@@ -594,6 +600,7 @@
           : (options.length === 2 ? options[1].value : "");
         rtuSel.value = nextRtu;
       }
+      applyPreferredModelSelection(models);
 
       const activeRtu = rtuSel?.value || "";
       const modelsRenderKey = JSON.stringify(
@@ -703,14 +710,16 @@
   function bindDebouncedSearch(inputEl, handler, delayMs = 150) {
     if (!inputEl) return;
     let timer = null;
-    inputEl.addEventListener("compositionstart", () => { imeComposing = true; });
+    let composing = false;
+    inputEl.addEventListener("compositionstart", () => { composing = true; });
     inputEl.addEventListener("compositionend", () => {
-      imeComposing = false;
+      composing = false;
       clearTimeout(timer);
       handler();
     });
+    inputEl.addEventListener("blur", () => { composing = false; });
     inputEl.addEventListener("input", () => {
-      if (imeComposing) return;
+      if (composing) return;
       clearTimeout(timer);
       timer = setTimeout(handler, delayMs);
     });
@@ -760,7 +769,8 @@
     get("scada104ReloadLogsBtn")?.addEventListener("click", () => loadChannelLogs());
 
     section.querySelectorAll("th.is-sortable[data-scada104-sort]").forEach((th) => {
-      th.addEventListener("click", () => {
+      th.addEventListener("click", (event) => {
+        event.stopPropagation();
         const col = th.dataset.scada104Sort;
         const nextDir = pointsSortState.col !== col
           ? "ascending"
@@ -771,6 +781,17 @@
         });
         renderPointsTableRows();
       });
+    });
+
+    get("scada104PausePointsRefresh")?.addEventListener("change", () => {
+      if (activeViewTab === "points" && get("scada104PausePointsRefresh")?.checked) {
+        if (refreshTimerId !== null) {
+          clearTimeout(refreshTimerId);
+          refreshTimerId = null;
+        }
+      } else if (isActive) {
+        refresh(true);
+      }
     });
 
     get("scada104CommandForm")?.addEventListener("submit", async (event) => {
@@ -841,6 +862,7 @@
         }
         pushReceiptHistory(`RTU ${rtu} · ${displayName} → ${valueLabel}`, false);
         toast(msg, "ok", 2200);
+        if (!isActive) return;
         await loadControlPoints(true);
         refresh(true);
       } catch (error) {
@@ -857,11 +879,57 @@
     syncValueInputMode();
   }
 
+  function applyPreferredModelSelection(models = latestModelsList) {
+    if (!preferredModelName || !Array.isArray(models) || !models.length) return;
+    const matched = models.find((m) => String(m?.model || "") === preferredModelName);
+    if (!matched) return;
+    const targetRtu = String(matched.rtu_id);
+    const rtuSel = get("scada104Rtu");
+    if (rtuSel && matched.online && matched.running && Array.from(rtuSel.options).some((o) => o.value === targetRtu)) {
+      if (rtuSel.value !== targetRtu) {
+        rtuSel.value = targetRtu;
+        syncSelectedModelRowHighlight();
+        loadControlPoints(true);
+      }
+    }
+    for (const id of ["scada104PointsRtuSelect", "scada104LogsRtuSelect"]) {
+      const sel = get(id);
+      if (sel && Array.from(sel.options).some((o) => o.value === targetRtu)) {
+        sel.value = targetRtu;
+      }
+    }
+  }
+
+  function syncActiveModel(modelName, { refreshNow = true } = {}) {
+    preferredModelName = String(modelName || "").trim();
+    if (!isActive) return;
+    if (refreshNow) {
+      lastModelsRenderKey = "";
+      refresh(true);
+    } else {
+      applyPreferredModelSelection(latestModelsList);
+    }
+  }
+
+  function onLanguageChange() {
+    lastModelsRenderKey = "";
+    lastRtuOptionsKey = "";
+    lastAllRtuOptionsKey = "";
+    if (!isActive) return;
+    renderPointOptions();
+    renderPointsTableRows();
+    renderChannelLogRows();
+    refresh(true);
+  }
+
   function setActive(active) {
     const next = Boolean(active);
     if (next) {
       isActive = true;
       bindEventsOnce();
+      if (typeof state !== "undefined" && state?.activeModelId) {
+        preferredModelName = String(state.activeModelId);
+      }
       lastModelsRenderKey = "";
       refresh(true);
     } else {
@@ -880,6 +948,8 @@
     setActive,
     refresh,
     setActiveViewTab,
+    syncActiveModel,
+    onLanguageChange,
   };
 
   // 若初始直达 /scada104 且主路由已挂载该页签，脚本就绪后立即激活轮询

@@ -777,22 +777,41 @@ def _converter_variable(
 def _independent_equality_rows(matrix: np.ndarray, rhs: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     if matrix.size == 0:
         return matrix, rhs
-    selected: list[int] = []
-    rank = 0
-    for index in range(matrix.shape[0]):
-        candidate = matrix[selected + [index], :]
-        candidate_rank = int(
-            np.linalg.matrix_rank(
-                candidate,
-                tol=OPTIMIZATION_RANK_TOLERANCE,
+    if matrix.shape[0] <= 1:
+        if float(np.linalg.norm(matrix[0])) <= OPTIMIZATION_RANK_TOLERANCE:
+            return np.zeros((0, matrix.shape[1]), dtype=float), np.zeros(0, dtype=float)
+        return matrix, rhs
+    # 单次列主元 QR 分解 O(m*n*min(m,n))，取代循环内逐行重复 SVD 分解 O(m^2*n*min(m,n))
+    try:
+        from scipy.linalg import qr as _scipy_qr
+
+        r_mat, piv = _scipy_qr(matrix.T, mode="r", pivoting=True)
+        diag = np.abs(np.diag(r_mat)) if r_mat.size else np.zeros(0, dtype=float)
+        if diag.size == 0 or float(diag[0]) <= OPTIMIZATION_RANK_TOLERANCE:
+            return np.zeros((0, matrix.shape[1]), dtype=float), np.zeros(0, dtype=float)
+        tol = max(OPTIMIZATION_RANK_TOLERANCE, float(diag[0]) * max(matrix.shape) * 1e-12)
+        rank = int(np.sum(diag > tol))
+        selected = sorted(int(idx) for idx in piv[:rank])
+        if not selected:
+            return np.zeros((0, matrix.shape[1]), dtype=float), np.zeros(0, dtype=float)
+        return matrix[selected, :], rhs[selected]
+    except Exception:
+        selected: list[int] = []
+        rank = 0
+        for index in range(matrix.shape[0]):
+            candidate = matrix[selected + [index], :]
+            candidate_rank = int(
+                np.linalg.matrix_rank(
+                    candidate,
+                    tol=OPTIMIZATION_RANK_TOLERANCE,
+                )
             )
-        )
-        if candidate_rank > rank:
-            selected.append(index)
-            rank = candidate_rank
-    if not selected:
-        return np.zeros((0, matrix.shape[1]), dtype=float), np.zeros(0, dtype=float)
-    return matrix[selected, :], rhs[selected]
+            if candidate_rank > rank:
+                selected.append(index)
+                rank = candidate_rank
+        if not selected:
+            return np.zeros((0, matrix.shape[1]), dtype=float), np.zeros(0, dtype=float)
+        return matrix[selected, :], rhs[selected]
 
 
 def _island_id(component_ids: Sequence[str]) -> str:
@@ -852,8 +871,12 @@ def _blocked_island_result(
     )
 
 
-_ISLAND_WARM_START_CACHE: Dict[Tuple[str, Tuple[DeviceKey, ...]], np.ndarray] = {}
-_ISLAND_WARM_START_CACHE_MAX = 32
+from collections import OrderedDict as _OrderedDict
+import threading as _threading
+
+_ISLAND_WARM_START_LOCK = _threading.Lock()
+_ISLAND_WARM_START_CACHE: "_OrderedDict[Tuple[str, Tuple[DeviceKey, ...]], np.ndarray]" = _OrderedDict()
+_ISLAND_WARM_START_CACHE_MAX = 64
 
 
 def _select_slsqp_initial_guess(
@@ -867,9 +890,13 @@ def _select_slsqp_initial_guess(
     base_objective: Any,
     balance_tolerance_kw: float,
 ) -> np.ndarray:
-    """复用上一周期同拓扑可行解作为 SLSQP 热启动初值，仅在严格可行且不劣于基准解时采用。"""
+    """复用上一周期同拓扑可行解作为 SLSQP 热启动初值，仅在严格可行且不劣于基准解时采用（线程安全 LRU）。"""
     key = (str(island_id), tuple(v.key for v in variables))
-    cached = _ISLAND_WARM_START_CACHE.get(key)
+    with _ISLAND_WARM_START_LOCK:
+        cached = _ISLAND_WARM_START_CACHE.get(key)
+        if cached is not None:
+            _ISLAND_WARM_START_CACHE.move_to_end(key)
+            cached = cached.copy()
     if cached is None or cached.shape != fallback.shape:
         return fallback
     candidate = np.clip(cached, active_lower, active_upper)
@@ -893,9 +920,13 @@ def _record_slsqp_warm_start(
     solution: np.ndarray,
 ) -> None:
     key = (str(island_id), tuple(v.key for v in variables))
-    if len(_ISLAND_WARM_START_CACHE) >= _ISLAND_WARM_START_CACHE_MAX and key not in _ISLAND_WARM_START_CACHE:
-        _ISLAND_WARM_START_CACHE.pop(next(iter(_ISLAND_WARM_START_CACHE)))
-    _ISLAND_WARM_START_CACHE[key] = np.array(solution, dtype=float, copy=True)
+    arr = np.array(solution, dtype=float, copy=True)
+    with _ISLAND_WARM_START_LOCK:
+        if key in _ISLAND_WARM_START_CACHE:
+            _ISLAND_WARM_START_CACHE.move_to_end(key)
+        elif len(_ISLAND_WARM_START_CACHE) >= _ISLAND_WARM_START_CACHE_MAX:
+            _ISLAND_WARM_START_CACHE.popitem(last=False)
+        _ISLAND_WARM_START_CACHE[key] = arr
 
 
 def _solve_island(
