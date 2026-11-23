@@ -774,6 +774,10 @@ const PHRASE_TRANSLATIONS = {
   "接线图适应画布": ["Fit diagram to viewport", "Вписать схему в окно"],
   "关闭弹窗或取消当前操作": ["Close dialog or cancel", "Закрыть окно / отмена"],
   "未在日志对象中匹配到设备": ["No matching device found in log", "Устройство в журнале не найдено"],
+  "拖动调整后台运行参数与WEB运行参数高度": ["Drag to resize Backend & Web runtime parameter tables", "Потяните для изменения высоты таблиц параметров"],
+  "拖动调整仿真运行参数与WEB运行参数高度": ["Drag to resize Simulation & Web runtime parameter tables", "Потяните для изменения высоты таблиц параметров"],
+  "拖动调整上下高度，双击恢复默认": ["Drag to resize height, double-click to reset", "Потяните для высоты, двойной клик — сброс"],
+  "当前模型模拟服务尚未启动，请先在顶部启动服务": ["Model simulator service is stopped. Start it from the top bar first.", "Служба симуляции модели остановлена. Сначала запустите её на верхней панели."],
 };
 
 /**

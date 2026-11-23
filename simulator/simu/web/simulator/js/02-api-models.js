@@ -490,6 +490,9 @@ async function api(path, options = {}) {
   if (directSimulatorServiceMode && controlPlane) {
     throw new Error("直连模拟服务界面不提供代理控制面操作");
   }
+  if (!controlPlane && !activeModelServiceRunning()) {
+    throw new Error("选中模型的模拟服务尚未启动");
+  }
   const targetPath = modelScoped ? modelScopedPath(path) : path;
   const requestBase = controlPlane ? controlPlaneApiBase : activeModelServiceBase();
   if (!requestBase) {
@@ -592,22 +595,27 @@ function renderManualDefinitionChanges() {
         && (state.manualDefinitionChangesMessageWarning || pendingChanges.length > 0),
     );
   }
+  const serviceRunning = activeModelServiceRunning();
   const resetButton = $("resetSelectedManualChanges");
   if (resetButton) {
-    resetButton.disabled = !selectedCount || state.manualDefinitionChangesLoading || state.manualDefinitionChangesResetting || state.manualDefinitionChangesRetrying;
+    resetButton.disabled = !serviceRunning || !selectedCount || state.manualDefinitionChangesLoading || state.manualDefinitionChangesResetting || state.manualDefinitionChangesRetrying;
     resetButton.textContent = state.manualDefinitionChangesResetting ? "恢复中" : "恢复默认值";
   }
   const refreshButton = $("refreshManualChanges");
   if (refreshButton) {
-    refreshButton.disabled = state.manualDefinitionChangesLoading || state.manualDefinitionChangesResetting || state.manualDefinitionChangesRetrying;
+    refreshButton.disabled = !serviceRunning || state.manualDefinitionChangesLoading || state.manualDefinitionChangesResetting || state.manualDefinitionChangesRetrying;
     refreshButton.textContent = state.manualDefinitionChangesLoading ? "刷新中" : "刷新";
   }
   const retryButton = $("retryPendingManualChanges");
   if (retryButton) {
-    retryButton.disabled = !pendingChanges.length || state.manualDefinitionChangesLoading || state.manualDefinitionChangesResetting || state.manualDefinitionChangesRetrying;
+    retryButton.disabled = !serviceRunning || !pendingChanges.length || state.manualDefinitionChangesLoading || state.manualDefinitionChangesResetting || state.manualDefinitionChangesRetrying;
     retryButton.textContent = state.manualDefinitionChangesRetrying ? "保存中" : "重试保存";
   }
 
+  if (!serviceRunning) {
+    container.innerHTML = '<div class="empty-state">当前模型模拟服务尚未启动，请先在顶部启动服务</div>';
+    return;
+  }
   if (state.manualDefinitionChangesLoading && !changes.length) {
     container.innerHTML = '<div class="empty-state">正在加载人工修改记录...</div>';
     return;
@@ -698,6 +706,14 @@ function toggleManualDefinitionChange(changeId, selected) {
 
 async function loadManualDefinitionChanges() {
   if (state.manualDefinitionChangesLoading || state.manualDefinitionChangesResetting || state.manualDefinitionChangesRetrying) return;
+  if (!activeModelServiceRunning()) {
+    state.manualDefinitionChanges = [];
+    state.manualDefinitionChangesError = "";
+    state.manualDefinitionChangesMessage = "";
+    state.manualDefinitionChangesMessageWarning = false;
+    renderManualDefinitionChanges();
+    return;
+  }
   const requestedModelId = state.activeModelId;
   state.manualDefinitionChangesLoading = true;
   state.manualDefinitionChangesError = "";
@@ -2348,12 +2364,14 @@ async function setModelServiceRunning(modelId, shouldRun, { managementAction = f
         resetWebRuntimeSettingsState();
         await loadWebRuntimeSettings(true);
         await refresh();
+        if (currentPageName() === "manual-changes") loadManualDefinitionChanges();
       } else {
         state.snapshot = null;
         $("simState").textContent = "stopped";
         if (typeof syncClockTriggerSummary === "function") syncClockTriggerSummary("stopped");
         const solverInfo = $("solverInfo");
         if (solverInfo) solverInfo.textContent = "模拟服务已停止";
+        if (currentPageName() === "manual-changes") renderManualDefinitionChanges();
       }
     }
     if (managementAction) setModelManagementMessage(`已${actionText}模拟服务：${modelName}`, "ok");

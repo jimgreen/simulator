@@ -9356,3 +9356,172 @@ dialog.ux-shortcuts-dialog::backdrop {
   background: var(--surface-subtle);
   color: var(--ink);
 }
+
+/* =====================================================================
+ * 2026-11-23 暗黑裸标签/伪元素穿帮根治、新能源 3 列分隔轨道修复、
+ * 以及参数配置页可拖拽上下分栏（去外层滚动条，仅两表格按需内部滚动）
+ * ===================================================================== */
+
+/* 1. 裸标签 th / thead th / tbody th / canvas 与漏网浅底表格行暗黑变量全覆盖 */
+:root[data-color-scheme="dark"] th,
+:root[data-color-scheme="dark"] thead th,
+:root[data-color-scheme="dark"] table.measurement-compare-table thead th,
+:root[data-color-scheme="dark"] .renewable-metric-table thead th {
+  background: var(--surface-subtle);
+  color: var(--muted);
+  border-color: var(--line-strong);
+}
+
+:root[data-color-scheme="dark"] tbody th,
+:root[data-color-scheme="dark"] .renewable-metric-table tbody th {
+  position: static;
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .renewable-metric-table tbody tr:hover th,
+:root[data-color-scheme="dark"] .renewable-metric-table tbody tr:hover td {
+  background: var(--table-hover);
+}
+
+:root[data-color-scheme="dark"] .renewable-metric-unit {
+  color: var(--muted);
+}
+
+:root[data-color-scheme="dark"] .renewable-command-table tr.is-muted,
+:root[data-color-scheme="dark"] .renewable-command-table tr.is-muted td {
+  background: var(--surface-subtle);
+  color: var(--muted);
+}
+
+:root[data-color-scheme="dark"] .curve-display-table td {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+:root[data-color-scheme="dark"] .runtime-device-table tr.is-pending,
+:root[data-color-scheme="dark"] .runtime-device-table tr.is-pending td,
+:root[data-color-scheme="dark"] .runtime-device-table input.is-pending {
+  background: var(--warn-soft, rgba(245, 158, 11, 0.14));
+  color: var(--ink);
+}
+
+:root[data-color-scheme="dark"] canvas,
+:root[data-color-scheme="dark"] #curveDisplayChart {
+  background: var(--surface);
+}
+
+:root[data-color-scheme="dark"] .curve-table-wrap::-webkit-scrollbar-track {
+  background: var(--surface-subtle);
+}
+
+/* 2. 分隔条与树线伪元素 ::before 暗黑化，消除暗底刺眼白线 */
+:root[data-color-scheme="dark"] .vertical-stack-splitter::before,
+:root[data-color-scheme="dark"] .overview-bottom-splitter::before,
+:root[data-color-scheme="dark"] .overview-bottom-column-splitter::before,
+:root[data-color-scheme="dark"] .renewable-trend-series-list::before {
+  background: var(--line-strong);
+}
+
+:root[data-color-scheme="dark"] .vertical-stack-splitter:hover::before,
+:root[data-color-scheme="dark"] .vertical-stack-splitter:focus-visible::before,
+:root[data-color-scheme="dark"] .vertical-stack-splitter.is-dragging::before,
+:root[data-color-scheme="dark"] .overview-bottom-splitter:hover::before,
+:root[data-color-scheme="dark"] .overview-bottom-splitter:focus-visible::before,
+:root[data-color-scheme="dark"] .overview-bottom-splitter.is-dragging::before,
+:root[data-color-scheme="dark"] .overview-bottom-column-splitter:hover::before,
+:root[data-color-scheme="dark"] .overview-bottom-column-splitter:focus-visible::before,
+:root[data-color-scheme="dark"] .overview-bottom-column-splitter.is-dragging::before {
+  background: var(--accent, var(--teal));
+}
+
+/* 3. 修复新能源控制页 3 列纵向分隔条轨道映射（避免右侧面板挤入 10px 分隔列） */
+.renewable-page-layout.ux-has-col-splitter > .ux-col-splitter {
+  grid-column: 2;
+  grid-row: 1 / -1;
+}
+
+.renewable-page-layout.ux-has-col-splitter .renewable-plan-panel {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.renewable-page-layout.ux-has-col-splitter .renewable-detail-panel {
+  grid-column: 3;
+  grid-row: 3;
+}
+
+.renewable-page-layout.ux-has-col-splitter.is-pane-hidden .renewable-control-panel,
+.renewable-page-layout.ux-has-col-splitter.is-pane-hidden .renewable-metrics-panel {
+  min-width: 0 !important;
+  width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border-width: 0 !important;
+  opacity: 0 !important;
+  overflow: hidden !important;
+  pointer-events: none !important;
+  box-shadow: none !important;
+}
+
+/* 4. 参数配置页：取消外层竖向滚动，改为上下可拖拽横向分隔条，仅两张参数表按需内部滚动 */
+.page-section[data-page="parameters"] {
+  overflow: hidden;
+}
+
+.parameter-page-layout {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.parameter-table-panel.vertical-split-workspace {
+  display: grid;
+  grid-template-rows: minmax(150px, var(--vertical-split-top, 48%)) 10px minmax(150px, 1fr);
+  gap: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.parameter-split-section {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.parameter-split-section > .panel-head,
+.parameter-split-section > .runtime-parameter-head {
+  flex: 0 0 auto;
+  margin-top: 0;
+}
+
+.parameter-split-section > .system-parameter-form {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: auto;
+}
+
+.parameter-split-section .system-parameter-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.parameter-state-panel {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.parameter-state-panel > .panel-head {
+  flex: 0 0 auto;
+}
+
+.parameter-state-panel > .parameter-state-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}

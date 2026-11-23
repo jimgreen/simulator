@@ -788,6 +788,9 @@ if (translatePhrase("12 台设备", "ru-RU") !== "12 устр.") {
             self.assertEqual(uncovered, [], f"{css_path.name} 存在未被暗黑主题覆盖的浅底选择器：{uncovered}")
             self.assertIn('data-color-scheme="dark"] ::-webkit-scrollbar-track', tail, f"{css_path.name} 缺少暗黑滚动条样式")
             self.assertIn('[data-overview-target]', tail, f"{css_path.name} 缺少暗黑能量流对比度覆盖")
+            self.assertIn('data-color-scheme="dark"] th', tail, f"{css_path.name} 缺少暗黑裸标签 th 覆盖（防止表头与 tbody th 惨白穿帮）")
+            self.assertIn('data-color-scheme="dark"] tbody th', tail, f"{css_path.name} 缺少暗黑 tbody th 覆盖")
+            self.assertIn('.vertical-stack-splitter::before', tail, f"{css_path.name} 缺少暗黑分隔条伪元素覆盖")
 
     def test_all_static_html_chinese_strings_mapped_in_i18n(self) -> None:
         """三套静态 HTML 中的可见中文文案与属性必须 100% 命中 i18n 词典或动态模板。"""

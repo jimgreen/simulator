@@ -44,7 +44,7 @@
         }
       } catch (_e) {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20261123-audit-v2" />
+    <link rel="stylesheet" href="/styles.css?v=20261123-audit-v4" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -792,190 +792,209 @@
 
         <section class="page-section" data-page="parameters">
           <div class="parameter-page-layout">
-            <section class="panel parameter-table-panel">
-              <div class="panel-head">
-                <h2>仿真运行参数</h2>
-                <div class="panel-actions">
-                  <span id="systemParameterSummary">待同步</span>
-                  <button id="resetSystemParameters" type="button">恢复</button>
-                  <button id="saveSystemParameters" class="primary" type="button">保存</button>
+            <section
+              class="panel parameter-table-panel vertical-split-workspace"
+              data-vertical-split="simulator-parameters"
+              data-vertical-split-min-top="150"
+              data-vertical-split-min-bottom="150"
+            >
+              <div class="parameter-split-section">
+                <div class="panel-head">
+                  <h2>仿真运行参数</h2>
+                  <div class="panel-actions">
+                    <span id="systemParameterSummary">待同步</span>
+                    <button id="resetSystemParameters" type="button">恢复</button>
+                    <button id="saveSystemParameters" class="primary" type="button">保存</button>
+                  </div>
                 </div>
+                <div class="sr-only">参数名称 当前值 设置值 单位</div>
+                <form id="systemParameterForm" class="system-parameter-form">
+                  <table class="system-parameter-table">
+                    <thead>
+                      <tr>
+                        <th>参数名称</th>
+                        <th>当前值</th>
+                        <th>设置值</th>
+                        <th>单位</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>
+                          <strong>时钟倍率</strong>
+                          <small>每次触发推进量</small>
+                        </td>
+                        <td id="currentClockSpeed" class="numeric-cell">x1</td>
+                        <td>
+                          <select id="parameterClockSpeed" name="clock_speed">
+                            <option value="1">1:1</option>
+                            <option value="5">5:1</option>
+                            <option value="15">15:1</option>
+                            <option value="30">30:1</option>
+                            <option value="60">60:1</option>
+                            <option value="300">300:1</option>
+                            <option value="900">900:1</option>
+                            <option value="1800">1800:1</option>
+                            <option value="3600">3600:1</option>
+                          </select>
+                        </td>
+                        <td>倍</td>
+                      </tr>
+                      <tr>
+                        <td>
+                          <strong>后台数据刷新周期（仿真周期）</strong>
+                          <small>后台计算触发间隔，每周期推进一个时钟步长</small>
+                        </td>
+                        <td id="currentComputeInterval" class="numeric-cell">1 s</td>
+                        <td>
+                          <input
+                            id="parameterComputeInterval"
+                            name="compute_interval_seconds"
+                            type="number"
+                            min="0.1"
+                            max="3600"
+                            step="0.1"
+                            value="1"
+                          />
+                        </td>
+                        <td>s</td>
+                      </tr>
+                      <tr>
+                        <td>
+                          <strong>储能SOC初始值</strong>
+                          <small>停止/启动时恢复</small>
+                        </td>
+                        <td id="currentStorageInitialSoc" class="numeric-cell">50%</td>
+                        <td>
+                          <input
+                            id="parameterStorageInitialSoc"
+                            name="storage_initial_soc"
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="1"
+                            value="50"
+                          />
+                        </td>
+                        <td>%</td>
+                      </tr>
+                      <tr>
+                        <td>
+                          <strong title="每周期按：目标值 × 系数 + 当前值 × (1 - 系数)">遥调指令响应系数</strong>
+                        </td>
+                        <td id="currentRemoteAdjustmentResponseRatio" class="numeric-cell">0.5</td>
+                        <td>
+                          <input
+                            id="parameterRemoteAdjustmentResponseRatio"
+                            name="remote_adjustment_response_ratio"
+                            type="number"
+                            min="0.01"
+                            max="1"
+                            step="0.01"
+                            value="0.5"
+                          />
+                        </td>
+                        <td>比例</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </form>
               </div>
-              <div class="sr-only">参数名称 当前值 设置值 单位</div>
-              <form id="systemParameterForm" class="system-parameter-form">
-                <table class="system-parameter-table">
-                  <thead>
-                    <tr>
-                      <th>参数名称</th>
-                      <th>当前值</th>
-                      <th>设置值</th>
-                      <th>单位</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td>
-                        <strong>时钟倍率</strong>
-                        <small>每次触发推进量</small>
-                      </td>
-                      <td id="currentClockSpeed" class="numeric-cell">x1</td>
-                      <td>
-                        <select id="parameterClockSpeed" name="clock_speed">
-                          <option value="1">1:1</option>
-                          <option value="5">5:1</option>
-                          <option value="15">15:1</option>
-                          <option value="30">30:1</option>
-                          <option value="60">60:1</option>
-                          <option value="300">300:1</option>
-                          <option value="900">900:1</option>
-                          <option value="1800">1800:1</option>
-                          <option value="3600">3600:1</option>
-                        </select>
-                      </td>
-                      <td>倍</td>
-                    </tr>
-                    <tr>
-                      <td>
-                        <strong>后台数据刷新周期（仿真周期）</strong>
-                        <small>后台计算触发间隔，每周期推进一个时钟步长</small>
-                      </td>
-                      <td id="currentComputeInterval" class="numeric-cell">1 s</td>
-                      <td>
-                        <input
-                          id="parameterComputeInterval"
-                          name="compute_interval_seconds"
-                          type="number"
-                          min="0.1"
-                          max="3600"
-                          step="0.1"
-                          value="1"
-                        />
-                      </td>
-                      <td>s</td>
-                    </tr>
-                    <tr>
-                      <td>
-                        <strong>储能SOC初始值</strong>
-                        <small>停止/启动时恢复</small>
-                      </td>
-                      <td id="currentStorageInitialSoc" class="numeric-cell">50%</td>
-                      <td>
-                        <input
-                          id="parameterStorageInitialSoc"
-                          name="storage_initial_soc"
-                          type="number"
-                          min="0"
-                          max="100"
-                          step="1"
-                          value="50"
-                        />
-                      </td>
-                      <td>%</td>
-                    </tr>
-                    <tr>
-                      <td>
-                        <strong title="每周期按：目标值 × 系数 + 当前值 × (1 - 系数)">遥调指令响应系数</strong>
-                      </td>
-                      <td id="currentRemoteAdjustmentResponseRatio" class="numeric-cell">0.5</td>
-                      <td>
-                        <input
-                          id="parameterRemoteAdjustmentResponseRatio"
-                          name="remote_adjustment_response_ratio"
-                          type="number"
-                          min="0.01"
-                          max="1"
-                          step="0.01"
-                          value="0.5"
-                        />
-                      </td>
-                      <td>比例</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </form>
 
-              <div class="runtime-parameter-head">
-                <div>
-                  <h2>WEB 运行参数</h2>
-                  <span id="runtimeParameterSummary">待加载</span>
+              <div
+                class="vertical-stack-splitter"
+                data-vertical-splitter="simulator-parameters"
+                role="separator"
+                aria-orientation="horizontal"
+                tabindex="0"
+                aria-label="拖动调整仿真运行参数与WEB运行参数高度"
+                title="拖动调整上下高度，双击恢复默认"
+              ></div>
+
+              <div class="parameter-split-section">
+                <div class="runtime-parameter-head">
+                  <div>
+                    <h2>WEB 运行参数</h2>
+                    <span id="runtimeParameterSummary">待加载</span>
+                  </div>
+                  <div class="panel-actions">
+                    <button id="restoreRuntimeParameterDefaults" type="button">恢复默认</button>
+                    <button id="undoRuntimeParameters" type="button">撤销修改</button>
+                    <button id="saveRuntimeParameters" class="primary" type="button">保存</button>
+                  </div>
                 </div>
-                <div class="panel-actions">
-                  <button id="restoreRuntimeParameterDefaults" type="button">恢复默认</button>
-                  <button id="undoRuntimeParameters" type="button">撤销修改</button>
-                  <button id="saveRuntimeParameters" class="primary" type="button">保存</button>
-                </div>
+                <form id="webRuntimeParameterForm" class="system-parameter-form web-runtime-parameter-form">
+                  <table class="system-parameter-table web-runtime-parameter-table">
+                    <thead>
+                      <tr><th>参数名称</th><th>当前值</th><th>设置值</th><th>单位</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td><strong>前端数据刷新周期</strong><small>页面轮询完成后等待时长</small></td>
+                        <td id="currentWebRuntimeFrontendRefresh" class="numeric-cell">1</td>
+                        <td><input id="webRuntimeFrontendRefresh" type="number" min="0.2" max="60" step="0.1" data-runtime-setting="frontend_refresh_seconds" /></td>
+                        <td>s</td>
+                      </tr>
+                      <tr>
+                        <td><strong>前端请求超时</strong><small>WEB API 单次请求最长等待</small></td>
+                        <td id="currentWebRuntimeFrontendRequestTimeout" class="numeric-cell">30</td>
+                        <td><input id="webRuntimeFrontendRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="frontend_request_timeout_seconds" /></td>
+                        <td>s</td>
+                      </tr>
+                      <tr>
+                        <td><strong>运行日志分页条数</strong></td>
+                        <td id="currentWebRuntimeLogPageSize" class="numeric-cell">20</td>
+                        <td>
+                          <select id="webRuntimeLogPageSize" data-runtime-setting="runtime_log_page_size">
+                            <option value="10">10</option>
+                            <option value="20" selected>20</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                            <option value="200">200</option>
+                          </select>
+                        </td>
+                        <td>条</td>
+                      </tr>
+                      <tr>
+                        <td><strong>运行日志缓存上限</strong><small>浏览器内保留的日志数量</small></td>
+                        <td id="currentWebRuntimeLogCacheLimit" class="numeric-cell">300</td>
+                        <td><input id="webRuntimeLogCacheLimit" type="number" min="50" max="5000" step="10" data-runtime-setting="runtime_log_cache_limit" /></td>
+                        <td>条</td>
+                      </tr>
+                      <tr>
+                        <td><strong>曲线请求超时</strong><small>曲线摘要与序列加载等待时间</small></td>
+                        <td id="currentWebRuntimeCurveRequestTimeout" class="numeric-cell">8</td>
+                        <td><input id="webRuntimeCurveRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="curve_request_timeout_seconds" /></td>
+                        <td>s</td>
+                      </tr>
+                      <tr>
+                        <td><strong>日志增量批量</strong><small>每次实时拉取的最大日志数</small></td>
+                        <td id="currentWebRuntimeLogDeltaBatchSize" class="numeric-cell">200</td>
+                        <td><input id="webRuntimeLogDeltaBatchSize" type="number" min="20" max="500" step="10" data-runtime-setting="runtime_log_delta_batch_size" /></td>
+                        <td>条</td>
+                      </tr>
+                      <tr>
+                        <td><strong>日志历史批量</strong><small>向前翻页时单次加载数量</small></td>
+                        <td id="currentWebRuntimeLogHistoryBatchSize" class="numeric-cell">120</td>
+                        <td><input id="webRuntimeLogHistoryBatchSize" type="number" min="20" max="500" step="10" data-runtime-setting="runtime_log_history_batch_size" /></td>
+                        <td>条</td>
+                      </tr>
+                      <tr>
+                        <td><strong>电功率箭头显示门槛</strong><small>绝对值不超过门槛时隐藏电气潮流箭头</small></td>
+                        <td id="currentWebRuntimeDiagramElectricFlowThreshold" class="numeric-cell">0.1</td>
+                        <td><input id="webRuntimeDiagramElectricFlowThreshold" type="number" min="0" max="1000000" step="0.01" data-runtime-setting="diagram_flow_electric_threshold_kw" /></td>
+                        <td>kW</td>
+                      </tr>
+                      <tr>
+                        <td><strong>氢流量箭头显示门槛</strong><small>绝对值不超过门槛时隐藏氢气流动箭头</small></td>
+                        <td id="currentWebRuntimeDiagramHydrogenFlowThreshold" class="numeric-cell">0.1</td>
+                        <td><input id="webRuntimeDiagramHydrogenFlowThreshold" type="number" min="0" max="1000000" step="0.01" data-runtime-setting="diagram_flow_hydrogen_threshold_nm3_h" /></td>
+                        <td>Nm3/h</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </form>
               </div>
-              <form id="webRuntimeParameterForm" class="system-parameter-form web-runtime-parameter-form">
-                <table class="system-parameter-table web-runtime-parameter-table">
-                  <thead>
-                    <tr><th>参数名称</th><th>当前值</th><th>设置值</th><th>单位</th></tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td><strong>前端数据刷新周期</strong><small>页面轮询完成后等待时长</small></td>
-                      <td id="currentWebRuntimeFrontendRefresh" class="numeric-cell">1</td>
-                      <td><input id="webRuntimeFrontendRefresh" type="number" min="0.2" max="60" step="0.1" data-runtime-setting="frontend_refresh_seconds" /></td>
-                      <td>s</td>
-                    </tr>
-                    <tr>
-                      <td><strong>前端请求超时</strong><small>WEB API 单次请求最长等待</small></td>
-                      <td id="currentWebRuntimeFrontendRequestTimeout" class="numeric-cell">30</td>
-                      <td><input id="webRuntimeFrontendRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="frontend_request_timeout_seconds" /></td>
-                      <td>s</td>
-                    </tr>
-                    <tr>
-                      <td><strong>运行日志分页条数</strong></td>
-                      <td id="currentWebRuntimeLogPageSize" class="numeric-cell">20</td>
-                      <td>
-                        <select id="webRuntimeLogPageSize" data-runtime-setting="runtime_log_page_size">
-                          <option value="10">10</option>
-                          <option value="20" selected>20</option>
-                          <option value="50">50</option>
-                          <option value="100">100</option>
-                          <option value="200">200</option>
-                        </select>
-                      </td>
-                      <td>条</td>
-                    </tr>
-                    <tr>
-                      <td><strong>运行日志缓存上限</strong><small>浏览器内保留的日志数量</small></td>
-                      <td id="currentWebRuntimeLogCacheLimit" class="numeric-cell">300</td>
-                      <td><input id="webRuntimeLogCacheLimit" type="number" min="50" max="5000" step="10" data-runtime-setting="runtime_log_cache_limit" /></td>
-                      <td>条</td>
-                    </tr>
-                    <tr>
-                      <td><strong>曲线请求超时</strong><small>曲线摘要与序列加载等待时间</small></td>
-                      <td id="currentWebRuntimeCurveRequestTimeout" class="numeric-cell">8</td>
-                      <td><input id="webRuntimeCurveRequestTimeout" type="number" min="1" max="300" step="1" data-runtime-setting="curve_request_timeout_seconds" /></td>
-                      <td>s</td>
-                    </tr>
-                    <tr>
-                      <td><strong>日志增量批量</strong><small>每次实时拉取的最大日志数</small></td>
-                      <td id="currentWebRuntimeLogDeltaBatchSize" class="numeric-cell">200</td>
-                      <td><input id="webRuntimeLogDeltaBatchSize" type="number" min="20" max="500" step="10" data-runtime-setting="runtime_log_delta_batch_size" /></td>
-                      <td>条</td>
-                    </tr>
-                    <tr>
-                      <td><strong>日志历史批量</strong><small>向前翻页时单次加载数量</small></td>
-                      <td id="currentWebRuntimeLogHistoryBatchSize" class="numeric-cell">120</td>
-                      <td><input id="webRuntimeLogHistoryBatchSize" type="number" min="20" max="500" step="10" data-runtime-setting="runtime_log_history_batch_size" /></td>
-                      <td>条</td>
-                    </tr>
-                    <tr>
-                      <td><strong>电功率箭头显示门槛</strong><small>绝对值不超过门槛时隐藏电气潮流箭头</small></td>
-                      <td id="currentWebRuntimeDiagramElectricFlowThreshold" class="numeric-cell">0.1</td>
-                      <td><input id="webRuntimeDiagramElectricFlowThreshold" type="number" min="0" max="1000000" step="0.01" data-runtime-setting="diagram_flow_electric_threshold_kw" /></td>
-                      <td>kW</td>
-                    </tr>
-                    <tr>
-                      <td><strong>氢流量箭头显示门槛</strong><small>绝对值不超过门槛时隐藏氢气流动箭头</small></td>
-                      <td id="currentWebRuntimeDiagramHydrogenFlowThreshold" class="numeric-cell">0.1</td>
-                      <td><input id="webRuntimeDiagramHydrogenFlowThreshold" type="number" min="0" max="1000000" step="0.01" data-runtime-setting="diagram_flow_hydrogen_threshold_nm3_h" /></td>
-                      <td>Nm3/h</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </form>
             </section>
 
             <section class="panel parameter-state-panel">
@@ -1786,15 +1805,15 @@
       </div>
     </dialog>
     <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
-    <script defer src="/js/00-i18n.js?v=20261123-audit-v2"></script>
-    <script defer src="/js/01-state-core.js?v=20261123-audit-v2"></script>
-    <script defer src="/js/02-api-models.js?v=20261123-audit-v2"></script>
-    <script defer src="/js/03-diagram-core.js?v=20261123-audit-v2"></script>
-    <script defer src="/js/04-diagram-editor.js?v=20261123-audit-v2"></script>
-    <script defer src="/js/05-curves.js?v=20261123-audit-v2"></script>
-    <script defer src="/js/06-overview-runtime.js?v=20261123-audit-v2"></script>
-    <script defer src="/js/07-measurements-faults.js?v=20261123-audit-v2"></script>
-    <script defer src="/js/08-ux-enhancements.js?v=20261123-audit-v2"></script>
-    <script defer src="/js/09-scada104.js?v=20261123-audit-v2"></script>
+    <script defer src="/js/00-i18n.js?v=20261123-audit-v4"></script>
+    <script defer src="/js/01-state-core.js?v=20261123-audit-v4"></script>
+    <script defer src="/js/02-api-models.js?v=20261123-audit-v4"></script>
+    <script defer src="/js/03-diagram-core.js?v=20261123-audit-v4"></script>
+    <script defer src="/js/04-diagram-editor.js?v=20261123-audit-v4"></script>
+    <script defer src="/js/05-curves.js?v=20261123-audit-v4"></script>
+    <script defer src="/js/06-overview-runtime.js?v=20261123-audit-v4"></script>
+    <script defer src="/js/07-measurements-faults.js?v=20261123-audit-v4"></script>
+    <script defer src="/js/08-ux-enhancements.js?v=20261123-audit-v4"></script>
+    <script defer src="/js/09-scada104.js?v=20261123-audit-v4"></script>
   </body>
 </html>

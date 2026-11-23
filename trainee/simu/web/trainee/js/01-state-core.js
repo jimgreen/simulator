@@ -14,6 +14,7 @@ const VERTICAL_SPLIT_DEFAULTS = {
   "trainee-measurements": 52,
   "trainee-commands": 56,
   "trainee-renewable": 44,
+  "trainee-parameters": 48,
 };
 const VERTICAL_SPLIT_DEFAULT_RATIO = 55;
 const VERTICAL_SPLIT_MIN_TOP_PX = 120;

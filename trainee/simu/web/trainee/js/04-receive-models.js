@@ -2239,6 +2239,9 @@ function initVerticalSplitters() {
     splitter.dataset.verticalSplitterReady = "true";
     splitter.addEventListener("pointerdown", beginVerticalSplitterDrag);
     splitter.addEventListener("keydown", handleVerticalSplitterKeydown);
+    splitter.addEventListener("dblclick", () => {
+      applyVerticalSplit(splitId, verticalSplitDefaultRatio(splitId), true, true);
+    });
   });
   if (document.body.dataset.verticalSplitterResizeReady === "true") return;
   document.body.dataset.verticalSplitterResizeReady = "true";

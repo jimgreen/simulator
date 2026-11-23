@@ -19,6 +19,7 @@ const VERTICAL_SPLIT_DEFAULTS = {
   "simulator-curves": 60,
   "simulator-runtime": 52,
   "simulator-measurements": 52,
+  "simulator-parameters": 42,
 };
 const VERTICAL_SPLIT_DEFAULT_RATIO = 55;
 const VERTICAL_SPLIT_MIN_TOP_PX = 120;
