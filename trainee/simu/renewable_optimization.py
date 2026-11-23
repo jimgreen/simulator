@@ -197,6 +197,11 @@ def _renewable_variable(
         return None
     step_kw = step_coefficient * max(0.0, capacity)
     normal_available = min(max(0.0, capacity), max(0.0, current) + step_kw)
+    # 物理自然资源上限（有效气象前馈或电侧闭环饱和）同时收窄弃电基准与变量上界，
+    # 避免夜间无光/无风时误产生弃风弃光惩罚或虚算增发额度去压柴发。
+    natural_upper = _number(row.get("naturalUpperKw"))
+    if natural_upper is not None:
+        normal_available = min(normal_available, max(0.0, natural_upper))
     available = normal_available
     dispatch_upper = _number(row.get("dispatchUpperKw"))
     if dispatch_upper is not None:
@@ -224,10 +229,9 @@ def _renewable_variable(
 
 def _diesel_variable(
     row: Mapping[str, Any],
-    step_coefficient: float,
+    diesel_step_ratio: float,
     protection_ratio: float,
 ) -> Optional[_Variable]:
-    del step_coefficient
     if (
         not row.get("online")
         or row.get("automaticControlBlocked")
@@ -254,8 +258,23 @@ def _diesel_variable(
     )
     protected_minimum = minimum + guard_kw
     protected_maximum = maximum - guard_kw
-    lower = protected_minimum
-    upper = protected_maximum
+    requires_safety = bool(
+        current < protected_minimum - EPSILON
+        or current > protected_maximum + EPSILON
+    )
+    # 恢复柴发常规爬坡步长限制（0 或 >=1 时退化为不限步长；安全越限时自动由两阶段机制放开）
+    if 0.0 < diesel_step_ratio < 1.0 - EPSILON and maximum > EPSILON:
+        normal_step_kw = diesel_step_ratio * max(0.0, maximum)
+        lower = max(protected_minimum, current - normal_step_kw)
+        upper = min(protected_maximum, current + normal_step_kw)
+        if lower > upper + EPSILON:
+            # 当前功率已越出保护区时，单拍允许向保护区方向收敛或由安全阶段兜底
+            lower = protected_minimum
+            upper = protected_maximum
+    else:
+        normal_step_kw = math.inf
+        lower = protected_minimum
+        upper = protected_maximum
     return _Variable(
         key=key,
         kind="diesel",
@@ -266,11 +285,8 @@ def _diesel_variable(
         component_id=component_id,
         safety_lower_kw=protected_minimum,
         safety_upper_kw=protected_maximum,
-        requires_safety_correction=bool(
-            current < protected_minimum - EPSILON
-            or current > protected_maximum + EPSILON
-        ),
-        normal_step_kw=math.inf,
+        requires_safety_correction=requires_safety,
+        normal_step_kw=normal_step_kw,
     )
 
 
@@ -542,8 +558,9 @@ def _rebalance_storage_targets_by_soc(
     tolerance_kw: float,
     optimization_ftol: float,
     optimization_max_iterations: int,
+    soc_rebalance_deadband: float = 0.02,
 ) -> np.ndarray:
-    """Redistribute island storage by SOC and let grid converters rebalance sides."""
+    """在保持总储能功率守恒的前提下，按 SOC 差异死区与平滑权重比例分摊多储能功率，消除乒乓倒手。"""
 
     original = np.asarray(values, dtype=float).copy()
     tolerance = max(EPSILON, float(tolerance_kw))
@@ -565,13 +582,6 @@ def _rebalance_storage_targets_by_soc(
     if not flexible_indexes:
         return original
 
-    def priority(index: int, *, charging: bool) -> Tuple[Any, ...]:
-        item = variables[index]
-        soc = item.storage_soc
-        if soc is None or not math.isfinite(soc):
-            return (1, 0.0, item.key)
-        return (0, soc if charging else -soc, item.key)
-
     storage_total_kw = float(np.sum(original[storage_indexes]))
     forced_total_kw = float(np.sum(original[forced_indexes]))
     flexible_total_kw = storage_total_kw - forced_total_kw
@@ -582,30 +592,83 @@ def _rebalance_storage_targets_by_soc(
     }
     remaining_kw = flexible_total_kw - sum(candidate.values())
 
+    known_socs = [
+        float(variables[idx].storage_soc)
+        for idx in flexible_indexes
+        if variables[idx].storage_soc is not None
+        and math.isfinite(float(variables[idx].storage_soc))
+    ]
+    soc_min = min(known_socs) if known_socs else 0.0
+    soc_max = max(known_socs) if known_socs else 0.0
+    soc_span = soc_max - soc_min
+    deadband = max(0.0, float(soc_rebalance_deadband))
+
+    def _smooth_distribute(request_kw: float, *, charging: bool) -> float:
+        rem = float(request_kw)
+        if rem <= tolerance:
+            return 0.0
+        headrooms: Dict[int, float] = {}
+        weights: Dict[int, float] = {}
+        for idx in flexible_indexes:
+            hr = (
+                max(0.0, candidate[idx] - float(lower[idx]))
+                if charging
+                else max(0.0, float(upper[idx]) - candidate[idx])
+            )
+            headrooms[idx] = hr
+            if hr <= EPSILON:
+                weights[idx] = 0.0
+                continue
+            soc_val = variables[idx].storage_soc
+            if (
+                soc_span <= deadband + EPSILON
+                or soc_val is None
+                or not math.isfinite(float(soc_val))
+            ):
+                # SOC 差异在死区内：按可用调节裕度比例均分，彻底杜绝相近 SOC 机台乒乓倒手
+                weights[idx] = hr
+            else:
+                norm_bias = (
+                    (soc_max - float(soc_val)) / max(soc_span, EPSILON)
+                    if charging
+                    else (float(soc_val) - soc_min) / max(soc_span, EPSILON)
+                )
+                weights[idx] = (0.15 + max(0.0, norm_bias)) * hr
+
+        active = [
+            idx
+            for idx in flexible_indexes
+            if headrooms[idx] > EPSILON and weights[idx] > EPSILON
+        ]
+        for _ in range(len(flexible_indexes) + 2):
+            if rem <= tolerance or not active:
+                break
+            total_w = sum(weights[idx] for idx in active)
+            if total_w <= EPSILON:
+                break
+            next_active: list[int] = []
+            allocated_this_round = 0.0
+            for idx in active:
+                share = rem * (weights[idx] / total_w)
+                take = min(headrooms[idx], share)
+                if charging:
+                    candidate[idx] -= take
+                else:
+                    candidate[idx] += take
+                headrooms[idx] -= take
+                allocated_this_round += take
+                if headrooms[idx] > tolerance:
+                    next_active.append(idx)
+            rem -= allocated_this_round
+            if allocated_this_round <= EPSILON:
+                break
+            active = next_active
+        return rem
+
     if remaining_kw > tolerance:
-        for index in sorted(
-            flexible_indexes,
-            key=lambda item_index: priority(item_index, charging=False),
-        ):
-            headroom_kw = max(0.0, float(upper[index]) - candidate[index])
-            allocation_kw = min(remaining_kw, headroom_kw)
-            candidate[index] += allocation_kw
-            remaining_kw -= allocation_kw
-            if remaining_kw <= tolerance:
-                break
+        remaining_kw = _smooth_distribute(remaining_kw, charging=False)
     elif remaining_kw < -tolerance:
-        charge_request_kw = -remaining_kw
-        for index in sorted(
-            flexible_indexes,
-            key=lambda item_index: priority(item_index, charging=True),
-        ):
-            headroom_kw = max(0.0, candidate[index] - float(lower[index]))
-            allocation_kw = min(charge_request_kw, headroom_kw)
-            candidate[index] -= allocation_kw
-            charge_request_kw -= allocation_kw
-            if charge_request_kw <= tolerance:
-                break
-        remaining_kw = -charge_request_kw
+        remaining_kw = -_smooth_distribute(-remaining_kw, charging=True)
 
     if abs(remaining_kw) > tolerance:
         return original
@@ -692,10 +755,10 @@ def _converter_variable(
     row: Mapping[str, Any],
     topology: ResourceTopology,
     converter_step_ratio: float,
+    converter_efficiency: float = 1.0,
 ) -> Optional[_Variable]:
     """Build a converter variable using positive DC-to-AC system power."""
 
-    del converter_step_ratio
     if not row.get("online") or not row.get("commandable"):
         return None
     key = _device_key(row)
@@ -747,13 +810,39 @@ def _converter_variable(
         or abs(ac_balance_coefficient + dc_balance_coefficient) > EPSILON
     ):
         return None
-    lower = minimum
-    upper = maximum
+    # 引入变流器效率损耗建模（优先读取设备自身效率，缺失时采用配置默认值）
+    row_eff = _number(row.get("efficiency"))
+    if row_eff is None and isinstance(row.get("raw"), Mapping):
+        row_eff = _number(row["raw"].get("efficiency"))
+    eff = float(row_eff) if (row_eff is not None and 0.5 <= float(row_eff) <= 1.0) else float(converter_efficiency)
+    eff = min(1.0, max(0.5, eff))
+    if eff < 1.0 - EPSILON:
+        # 约定 current >= 0 表示 DC->AC（DC 侧须多供 1/eff），current < 0 表示 AC->DC（DC 侧仅获得 eff）
+        if current >= -EPSILON:
+            dc_balance_coefficient = dc_balance_coefficient / eff
+        else:
+            dc_balance_coefficient = dc_balance_coefficient * eff
+
     allocation_capacity_kw = _number(row.get("transferCapacityKw"))
     if allocation_capacity_kw is None or allocation_capacity_kw <= EPSILON:
         allocation_capacity_kw = max(abs(minimum), abs(maximum))
     if allocation_capacity_kw <= EPSILON:
         return None
+    requires_safety = bool(
+        current < minimum - EPSILON or current > maximum + EPSILON
+    )
+    # 恢复变流器常规爬坡步长限制（0 或 >=1 时不限步长；安全越限或平衡需要时由两阶段机制自动放开）
+    if 0.0 < converter_step_ratio < 1.0 - EPSILON:
+        normal_step_kw = converter_step_ratio * allocation_capacity_kw
+        lower = max(minimum, current - normal_step_kw)
+        upper = min(maximum, current + normal_step_kw)
+        if lower > upper + EPSILON:
+            lower = minimum
+            upper = maximum
+    else:
+        normal_step_kw = math.inf
+        lower = minimum
+        upper = maximum
     return _Variable(
         key=key,
         kind="converter",
@@ -767,10 +856,8 @@ def _converter_variable(
         allocation_capacity_kw=allocation_capacity_kw,
         safety_lower_kw=minimum,
         safety_upper_kw=maximum,
-        requires_safety_correction=bool(
-            current < minimum - EPSILON or current > maximum + EPSILON
-        ),
-        normal_step_kw=math.inf,
+        requires_safety_correction=requires_safety,
+        normal_step_kw=normal_step_kw,
     )
 
 
@@ -942,6 +1029,8 @@ def _solve_island(
     bound_tolerance_kw: float,
     optimization_ftol: float,
     optimization_max_iterations: int,
+    storage_soc_rebalance_deadband: float = 0.02,
+    external_injection_delta_by_side: Optional[Mapping[str, float]] = None,
 ) -> IslandOptimizationResult:
     started = time.perf_counter()
     island_id = _island_id(component_ids)
@@ -1011,7 +1100,15 @@ def _solve_island(
         else:
             matrix[index_by_side[item.side], column] += 1.0
 
-    rhs = matrix @ current
+    external_delta_vector = np.array(
+        [
+            float((external_injection_delta_by_side or {}).get(side, 0.0))
+            for side in balance_sides
+        ],
+        dtype=float,
+    )
+    # 外部已知注入增量（如氢能单拍协同：制氢增耗电为负注入、燃料电池增发电为正注入）
+    rhs = matrix @ current - external_delta_vector
     parallel_rows: list[np.ndarray] = []
     parallel_groups: Dict[Tuple[str, str], list[int]] = {}
     for index, item in enumerate(ordered):
@@ -1565,6 +1662,7 @@ def _solve_island(
         max(balance_tolerance_kw, bound_tolerance_kw),
         optimization_ftol,
         optimization_max_iterations,
+        soc_rebalance_deadband=storage_soc_rebalance_deadband,
     )
     storage_balance_seconds = time.perf_counter() - storage_balance_started
     solved_balance_delta = balance_delta(values)
@@ -1581,7 +1679,7 @@ def _solve_island(
     )
     step_override_applied = bool(step_override_devices)
     targets = {item.key: float(values[index]) for index, item in enumerate(ordered)}
-    physical_residual_vector = matrix @ (values - current)
+    physical_residual_vector = matrix @ values - rhs
     residuals = {
         side: float(physical_residual_vector[index])
         for index, side in enumerate(balance_sides)
@@ -1675,9 +1773,15 @@ def optimize_topology_islands(
     storage_rows: Sequence[Mapping[str, Any]],
     converter_rows: Sequence[Mapping[str, Any]],
     step_coefficient: float = default_number("renewable_step_ratio"),
+    diesel_step_ratio: float = default_number("diesel_step_ratio"),
     converter_step_ratio: float = default_number("legacy_converter_step_ratio"),
+    converter_ramp_step_ratio: float = default_number("converter_ramp_step_ratio"),
+    converter_efficiency: float = default_number("converter_efficiency"),
     storage_step_ratio: float = default_number(
         "grid_following_storage_step_ratio"
+    ),
+    storage_soc_rebalance_deadband: float = default_number(
+        "storage_soc_rebalance_deadband"
     ),
     storage_soc_correction_step_scale: float = default_number(
         "storage_soc_correction_step_scale"
@@ -1701,11 +1805,20 @@ def optimize_topology_islands(
     optimization_max_iterations: int = OPTIMIZATION_MAX_ITERATIONS,
     blocked_component_ids: Iterable[str] = (),
     blocked_reason: str = "拓扑岛包含状态无效设备，按 fail closed 保持当前值",
+    external_injection_delta_by_component: Optional[Mapping[Tuple[str, str], float]] = None,
 ) -> RenewableDispatchOptimizationResult:
     started = time.perf_counter()
     step_coefficient = max(0.0, float(step_coefficient))
+    diesel_step_ratio = min(1.0, max(0.0, float(diesel_step_ratio)))
     converter_step_ratio = max(0.0, float(converter_step_ratio))
+    effective_converter_step_ratio = (
+        min(1.0, max(0.0, float(converter_ramp_step_ratio)))
+        if converter_ramp_step_ratio > EPSILON
+        else min(1.0, converter_step_ratio)
+    )
+    converter_efficiency = min(1.0, max(0.5, float(converter_efficiency)))
     storage_step_ratio = max(0.0, float(storage_step_ratio))
+    storage_soc_rebalance_deadband = min(0.5, max(0.0, float(storage_soc_rebalance_deadband)))
     storage_soc_correction_step_scale = min(
         1.0,
         max(0.10, float(storage_soc_correction_step_scale)),
@@ -1758,7 +1871,7 @@ def optimize_topology_islands(
             expected_keys.add(_device_key(row))
         variable = _diesel_variable(
             row,
-            step_coefficient,
+            diesel_step_ratio,
             diesel_power_protection_ratio,
         )
         if variable is not None:
@@ -1786,7 +1899,12 @@ def optimize_topology_islands(
     for row in converter_rows:
         if row.get("online") and row.get("commandable"):
             expected_keys.add(_device_key(row))
-        variable = _converter_variable(row, topology, converter_step_ratio)
+        variable = _converter_variable(
+            row,
+            topology,
+            effective_converter_step_ratio,
+            converter_efficiency,
+        )
         if variable is not None:
             variables.append(variable)
 
@@ -1832,6 +1950,14 @@ def optimize_topology_islands(
                 )
             )
             continue
+        island_ext_delta_by_side: Dict[str, float] = {}
+        if external_injection_delta_by_component:
+            comp_set = set(component_ids)
+            for (ext_comp, ext_side), ext_kw in external_injection_delta_by_component.items():
+                if ext_comp in comp_set and ext_side in {"AC", "DC"}:
+                    island_ext_delta_by_side[ext_side] = (
+                        island_ext_delta_by_side.get(ext_side, 0.0) + float(ext_kw)
+                    )
         island_results_list.append(
             _solve_island(
                 component_ids,
@@ -1845,6 +1971,8 @@ def optimize_topology_islands(
                 bound_tolerance_kw=bound_tolerance_kw,
                 optimization_ftol=optimization_ftol,
                 optimization_max_iterations=optimization_max_iterations,
+                storage_soc_rebalance_deadband=storage_soc_rebalance_deadband,
+                external_injection_delta_by_side=island_ext_delta_by_side or None,
             )
         )
     island_results = tuple(island_results_list)

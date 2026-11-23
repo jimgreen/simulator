@@ -15,8 +15,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 APP_ROOT = Path(__file__).resolve().parents[1]
-if str(APP_ROOT) not in sys.path:
-    sys.path.insert(0, str(APP_ROOT))
+REPO_ROOT = APP_ROOT.parent
+SHARED_ROOT = REPO_ROOT / "shared"
+for _entry in (str(APP_ROOT), str(SHARED_ROOT)):
+    if _entry in sys.path:
+        sys.path.remove(_entry)
+    sys.path.insert(0, _entry)
 
 from simu.simulator_cluster import SimulatorClusterManager, _rotate_log_if_needed
 from simu.simulator_proxy import make_simulator_proxy_server

@@ -246,6 +246,7 @@ class _ControllerState:
         repr=False,
     )
     topology_definition_revision: int = -1
+    runtime_memory: Dict[str, Any] = field(default_factory=dict)
     performance: _CyclePerformanceWindow = field(
         default_factory=_CyclePerformanceWindow,
         repr=False,
@@ -960,6 +961,8 @@ class TraineeRenewableControlManager:
             )
         )
         if state.control_clock_anchor_second is None or lifecycle_changed:
+            if lifecycle_changed:
+                state.runtime_memory.clear()
             state.control_clock_run_id = clock.run_id
             state.control_clock_anchor_second = clock.absolute_second
             state.control_clock_last_second = clock.absolute_second
@@ -2143,12 +2146,15 @@ class TraineeRenewableControlManager:
                 view,
                 snapshot,
             )
+            with state.lock:
+                preview_runtime_memory = copy.deepcopy(state.runtime_memory)
             plan = calculate_renewable_control_plan(
                 snapshot,
                 cycle_settings,
                 data_source=source,
                 snapshot_age_seconds=age,
                 topology_static_context=topology_static_context,
+                runtime_memory=preview_runtime_memory,
             )
             cycle_plan = plan
             cycle_phases["strategyComputeMs"] = self._elapsed_milliseconds(
@@ -2419,12 +2425,15 @@ class TraineeRenewableControlManager:
                 view,
                 snapshot,
             )
+            with state.lock:
+                cycle_runtime_memory = copy.deepcopy(state.runtime_memory)
             plan = calculate_renewable_control_plan(
                 snapshot,
                 cycle_settings,
                 data_source=source,
                 snapshot_age_seconds=age,
                 topology_static_context=topology_static_context,
+                runtime_memory=cycle_runtime_memory,
             )
             cycle_plan = plan
             cycle_phases["strategyComputeMs"] = self._elapsed_milliseconds(
@@ -2432,6 +2441,8 @@ class TraineeRenewableControlManager:
             )
             publishes_control_targets = trigger != "preview"
             with state.lock:
+                if publishes_control_targets:
+                    state.runtime_memory = cycle_runtime_memory
                 effective_target_snapshot = (
                     self._capture_effective_targets(plan)
                     if publishes_control_targets or state.effective_target_snapshot is None

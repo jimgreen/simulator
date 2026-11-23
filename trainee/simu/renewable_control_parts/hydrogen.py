@@ -549,6 +549,72 @@ def _hydrogen_electric_resource_refs(
         )
     return tuple(refs[key] for key in sorted(refs))
 
+def _row_electrical_island_id(
+    row: Mapping[str, Any],
+    optimization_result: Optional[RenewableDispatchOptimizationResult],
+) -> str:
+    """解析电储/柴发设备行所属的电气拓扑岛标识。"""
+    grid_component_id = str(row.get("gridComponentId", "") or "").strip()
+    dc_group_id = str(row.get("dcTransferGroupId", "") or "").strip()
+    if not grid_component_id and not dc_group_id:
+        return ""
+    return _optimization_island_id_for_components(
+        optimization_result,
+        grid_component_id,
+        dc_group_id,
+    )
+
+
+def _island_electric_storage_soc(
+    storage_rows: Sequence[Mapping[str, Any]],
+    topology_island_id: str,
+    optimization_result: Optional[RenewableDispatchOptimizationResult],
+    warned_keys: set[Tuple[str, str]],
+    warnings_out: List[str],
+) -> Optional[float]:
+    """按电气拓扑岛聚合在线电储平均 SOC，个别测点无效时仅剔除坏数并告警。"""
+    online_storage = [row for row in storage_rows if row.get("online")]
+    if not online_storage:
+        return None
+    has_topology_tags = any(
+        bool(_row_electrical_island_id(row, optimization_result))
+        for row in online_storage
+    )
+    if (
+        has_topology_tags
+        and topology_island_id
+        and topology_island_id != "UNRESOLVED"
+    ):
+        scoped_storage = [
+            row
+            for row in online_storage
+            if _row_electrical_island_id(row, optimization_result) == topology_island_id
+        ]
+    else:
+        scoped_storage = online_storage
+    if not scoped_storage:
+        return None
+
+    known_soc: List[float] = []
+    for row in scoped_storage:
+        soc_val = _number(row.get("soc"))
+        if row.get("socKnown") and soc_val is not None and math.isfinite(float(soc_val)):
+            known_soc.append(float(soc_val))
+        else:
+            dev_key = (
+                str(row.get("dev_type", "")),
+                str(row.get("dev_name", "")),
+            )
+            if dev_key not in warned_keys:
+                warned_keys.add(dev_key)
+                warnings_out.append(
+                    f"电储{dev_key[1] or dev_key[0]} SOC量测无效，已在同岛氢能SOC均值计算中剔除"
+                )
+    if not known_soc:
+        return None
+    return sum(known_soc) / len(known_soc)
+
+
 def _optimize_hydrogen_within_topology_islands(
     snapshot: Mapping[str, Any],
     measurements: Mapping[Tuple[str, str, str], MeasurementValue],
@@ -563,6 +629,8 @@ def _optimize_hydrogen_within_topology_islands(
     diesel_input_valid: bool = True,
     apply_electrical_corrections: bool = True,
     optimization_result: Optional[RenewableDispatchOptimizationResult] = None,
+    runtime_memory: Optional[MutableMapping[str, Any]] = None,
+    sim_time_seconds: Optional[float] = None,
 ) -> Dict[str, Any]:
     hydrogen_electric_refs = _hydrogen_electric_resource_refs(snapshot)
     hydrogen_electric_connections = dict(resource_topology.resources)
@@ -701,11 +769,10 @@ def _optimize_hydrogen_within_topology_islands(
         if row.get("set_type")
     }
 
-    # The two hydrogen conversion directions are physically exclusive.  Build
-    # the interlock from explicit coupling bindings and live endpoint values
-    # before planning either direction, so iteration order cannot start an
-    # electrolyzer while a fuel cell is already running (or vice versa).
+    # 两个氢能转换方向在同一电气岛内物理互斥：先按电气拓扑岛分别扫描在线运行态，
+    # 避免跨孤岛互相误锁，也防止遍历顺序导致同岛电制氢与燃料电池同时启机。
     active_hydrogen_modes: set[str] = set()
+    active_hydrogen_modes_by_island: Dict[str, set[str]] = {}
     for coupling_type in ("AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE"):
         mode = (
             "electrolyzer"
@@ -766,10 +833,7 @@ def _optimize_hydrogen_within_topology_islands(
             else:
                 current_power = 0.0
 
-            # A tiny residual measurement below the device's stop threshold is
-            # an off-state value, not proof that the conversion direction is
-            # running.  Otherwise near-zero values on both conversion devices
-            # create a false interlock conflict and block a valid direct start.
+            # 运行态门槛与最小运行功率对齐，低于最小运行功率的残余量测视作停机态
             running_threshold_kw = EPSILON
             power_row = model_rows.get((power_type, power_name), {})
             flow_row = model_rows.get((flow_type, flow_name), {})
@@ -789,13 +853,6 @@ def _optimize_hydrogen_within_topology_islands(
                         if settings.electrolyzer_power_min_kw is not None
                         else settings.electrolyzer_power_min_ratio * rated_power_kw
                     )
-                    power_deadband_kw = (
-                        float(settings.electrolyzer_power_deadband_kw)
-                        if settings.electrolyzer_power_deadband_kw is not None
-                        else settings.electrolyzer_power_deadband_ratio
-                        * rated_power_kw
-                    )
-                    running_hysteresis_kw = power_deadband_kw
                     flow_power_min = max(0.0, flow_min) / coefficient
                 else:
                     configured_minimum = (
@@ -803,26 +860,13 @@ def _optimize_hydrogen_within_topology_islands(
                         if settings.fuel_cell_power_min_kw is not None
                         else settings.fuel_cell_power_min_ratio * rated_power_kw
                     )
-                    power_deadband_kw = (
-                        float(settings.fuel_cell_power_deadband_kw)
-                        if settings.fuel_cell_power_deadband_kw is not None
-                        else settings.fuel_cell_power_deadband_ratio * rated_power_kw
-                    )
-                    running_hysteresis_kw = (
-                        float(settings.fuel_cell_power_step_kw)
-                        if settings.fuel_cell_power_step_kw is not None
-                        else settings.fuel_cell_power_step_ratio * rated_power_kw
-                    )
                     flow_power_min = max(0.0, flow_min) * coefficient
                 physical_minimum_power = max(0.0, power_min, flow_power_min)
                 minimum_running_power = max(
                     physical_minimum_power,
                     configured_minimum,
                 )
-                running_threshold_kw = max(
-                    0.0,
-                    minimum_running_power - running_hysteresis_kw,
-                )
+                running_threshold_kw = max(0.0, minimum_running_power)
             running = bool(
                 current_power > EPSILON
                 and (
@@ -832,6 +876,17 @@ def _optimize_hydrogen_within_topology_islands(
             )
             if running:
                 active_hydrogen_modes.add(mode)
+                conn = hydrogen_electric_connections.get((power_type, power_name))
+                conn_island_id = (
+                    _optimization_island_id_for_components(
+                        optimization_result,
+                        conn.grid_component_id,
+                        conn.dc_transfer_group_id if conn.connection_side == "DC" else "",
+                    )
+                    if conn is not None and conn.grid_component_id
+                    else ""
+                )
+                active_hydrogen_modes_by_island.setdefault(conn_island_id, set()).add(mode)
 
     hydrogen_mode_lock = (
         next(iter(active_hydrogen_modes))
@@ -842,44 +897,96 @@ def _optimize_hydrogen_within_topology_islands(
     )
     diagnostics["interlockMode"] = hydrogen_mode_lock or "idle"
     diagnostics["interlockActive"] = bool(hydrogen_mode_lock)
-    conflict_stop_mode = ""
-    conflict_keep_mode = ""
-    if hydrogen_mode_lock == "conflict":
-        initial_diesel_load_ratio = diesel_current_kw / diesel_capacity_kw
-        conflict_stop_mode = (
-            "electrolyzer"
-            if initial_diesel_load_ratio
-            > fuel_cell_diesel_limit_ratio + EPSILON
-            else "fuel_cell"
-        )
-        conflict_keep_mode = (
-            "fuel_cell" if conflict_stop_mode == "electrolyzer" else "electrolyzer"
-        )
-        diagnostics["interlockStopMode"] = conflict_stop_mode
-        diagnostics["interlockKeepMode"] = conflict_keep_mode
-        diagnostics["warnings"].append(
-            "实时量测显示电制氢和燃料电池同时运行，"
-            f"柴发负载率{initial_diesel_load_ratio * 100:.3f}%"
-            f"{'高于' if conflict_stop_mode == 'electrolyzer' else '未高于'}"
-            f"燃料电池柴发负载率限值{fuel_cell_diesel_limit_ratio * 100:.3f}%，"
-            f"本轮停止{'电制氢' if conflict_stop_mode == 'electrolyzer' else '燃料电池'}，"
-            f"保留{'燃料电池' if conflict_keep_mode == 'fuel_cell' else '电制氢'}运行"
-        )
 
-    online_storage = [row for row in storage_rows if row.get("online")]
-    known_storage_soc = [
-        float(row["soc"])
-        for row in online_storage
-        if row.get("socKnown")
-        and _number(row.get("soc")) is not None
-        and math.isfinite(float(row["soc"]))
+    # 按电气岛预聚合柴发实时目标、额定容量与可控列表（旧调用方无拓扑标签时自动退回全站单岛）
+    all_diesel_command_rows = [
+        row
+        for row in command_rows
+        if row.get("category") == "柴油发电"
+        and row.get("online")
+        and row.get("commandable") is not False
     ]
-    electric_storage_soc = (
-        sum(known_storage_soc) / len(known_storage_soc)
-        if online_storage and len(known_storage_soc) == len(online_storage)
-        else None
+    all_online_diesel_rows = [
+        row
+        for row in command_rows
+        if row.get("category") == "柴油发电" and row.get("online")
+    ]
+    diesel_has_topology_tags = any(
+        bool(_row_electrical_island_id(row, optimization_result))
+        for row in all_online_diesel_rows
     )
-    diagnostics["electricStorageSocAverage"] = electric_storage_soc
+    diesel_rows_by_island: Dict[str, List[MutableMapping[str, Any]]] = {}
+    island_predicted_diesel_kw: Dict[str, float] = {}
+    island_diesel_capacity_kw: Dict[str, float] = {}
+    island_diesel_unit_count: Dict[str, int] = {}
+    if diesel_has_topology_tags:
+        for row in all_online_diesel_rows:
+            d_island = _row_electrical_island_id(row, optimization_result)
+            if not d_island:
+                continue
+            row_cmd_kw = _number(row.get("commandKw"))
+            if row_cmd_kw is None:
+                row_cmd_kw = _number(row.get("currentKw"), 0.0) or 0.0
+            row_cap_kw = _number(row.get("ratedCapacityKw"))
+            if row_cap_kw is None:
+                row_cap_kw = _number(row.get("capacityKw"), 0.0) or 0.0
+            island_predicted_diesel_kw[d_island] = (
+                island_predicted_diesel_kw.get(d_island, 0.0) + float(row_cmd_kw)
+            )
+            island_diesel_capacity_kw[d_island] = (
+                island_diesel_capacity_kw.get(d_island, 0.0) + max(0.0, float(row_cap_kw))
+            )
+            island_diesel_unit_count[d_island] = (
+                island_diesel_unit_count.get(d_island, 0) + 1
+            )
+            if row.get("commandable") is not False:
+                diesel_rows_by_island.setdefault(d_island, []).append(row)
+
+    # 按电气岛预计算互锁冲突裁决
+    island_mode_lock: Dict[str, str] = {}
+    island_conflict_stop: Dict[str, str] = {}
+    for isl_id, modes_set in active_hydrogen_modes_by_island.items():
+        if len(modes_set) == 1:
+            island_mode_lock[isl_id] = next(iter(modes_set))
+        elif len(modes_set) > 1:
+            island_mode_lock[isl_id] = "conflict"
+            isl_cap = island_diesel_capacity_kw.get(isl_id, diesel_capacity_kw)
+            isl_cur = island_predicted_diesel_kw.get(isl_id, diesel_current_kw)
+            isl_ratio = isl_cur / isl_cap if isl_cap > EPSILON else (diesel_current_kw / diesel_capacity_kw)
+            stop_mode = (
+                "electrolyzer"
+                if isl_ratio > fuel_cell_diesel_limit_ratio + EPSILON
+                else "fuel_cell"
+            )
+            keep_mode = "fuel_cell" if stop_mode == "electrolyzer" else "electrolyzer"
+            island_conflict_stop[isl_id] = stop_mode
+            diagnostics["interlockStopMode"] = stop_mode
+            diagnostics["interlockKeepMode"] = keep_mode
+            diagnostics["warnings"].append(
+                f"电气岛{isl_id or '主网'}实时量测显示电制氢和燃料电池同时运行，"
+                f"柴发负载率{isl_ratio * 100:.3f}%"
+                f"{'高于' if stop_mode == 'electrolyzer' else '未高于'}"
+                f"燃料电池柴发负载率限值{fuel_cell_diesel_limit_ratio * 100:.3f}%，"
+                f"本轮停止{'电制氢' if stop_mode == 'electrolyzer' else '燃料电池'}，"
+                f"保留{'燃料电池' if keep_mode == 'fuel_cell' else '电制氢'}运行"
+            )
+
+    warned_invalid_storage_soc: set[Tuple[str, str]] = set()
+    global_electric_storage_soc = _island_electric_storage_soc(
+        storage_rows,
+        "",
+        optimization_result,
+        warned_invalid_storage_soc,
+        diagnostics["warnings"],
+    )
+    diagnostics["electricStorageSocAverage"] = global_electric_storage_soc
+    hydrogen_dwell_memory: Optional[MutableMapping[str, Any]] = None
+    if runtime_memory is not None:
+        raw_dwell = runtime_memory.get("hydrogen_dwell")
+        if not isinstance(raw_dwell, dict):
+            raw_dwell = {}
+            runtime_memory["hydrogen_dwell"] = raw_dwell
+        hydrogen_dwell_memory = raw_dwell
     coupling_types = ("AcE2Hydro", "DcE2Hydro", "Hydro2AcE", "Hydro2DcE")
     planned: List[Dict[str, Any]] = []
     converter_correction = 0.0
@@ -894,13 +1001,6 @@ def _optimize_hydrogen_within_topology_islands(
         copy.deepcopy(row)
         for row in command_rows
         if _is_grid_converter_row(row)
-    ]
-    diesel_command_rows = [
-        row
-        for row in command_rows
-        if row.get("category") == "柴油发电"
-        and row.get("online")
-        and row.get("commandable") is not False
     ]
     for coupling_type in coupling_types:
         is_electrolyzer = coupling_type in {"AcE2Hydro", "DcE2Hydro"}
@@ -1123,18 +1223,61 @@ def _optimize_hydrogen_within_topology_islands(
             else:
                 # Fuel-cell startup keeps its dedicated minimum-plus-step rule.
                 start_threshold_kw = minimum_running_power + step_kw
-            # Both hydrogen devices stop only when the resulting strategy is
-            # strictly below the effective lower limit minus the deadband.
-            stop_threshold_kw = max(
-                0.0,
-                minimum_running_power - power_deadband_kw,
+            # 停机门槛锁定为最小允许运行功率，将启停回差完全置于最小功率之上，杜绝低载禁区。
+            stop_threshold_kw = max(0.0, minimum_running_power)
+            topology_island_id = _optimization_island_id_for_components(
+                optimization_result,
+                electric_component_id,
+                dc_group_id,
             )
+            # 按氢能电端所属电气拓扑岛独立聚合电储 SOC、柴发负载/容量与氢能互锁态
+            electric_storage_soc = _island_electric_storage_soc(
+                storage_rows,
+                topology_island_id,
+                optimization_result,
+                warned_invalid_storage_soc,
+                diagnostics["warnings"],
+            )
+            if (
+                diesel_has_topology_tags
+                and topology_island_id
+                and topology_island_id != "UNRESOLVED"
+            ):
+                scoped_diesel_capacity_kw = island_diesel_capacity_kw.get(
+                    topology_island_id, 0.0
+                )
+                scoped_predicted_diesel_kw = island_predicted_diesel_kw.get(
+                    topology_island_id, 0.0
+                )
+                diesel_command_rows = diesel_rows_by_island.get(
+                    topology_island_id, []
+                )
+                scoped_hydrogen_mode_lock = island_mode_lock.get(
+                    topology_island_id, ""
+                )
+                scoped_conflict_stop_mode = island_conflict_stop.get(
+                    topology_island_id, ""
+                )
+            else:
+                scoped_diesel_capacity_kw = diesel_capacity_kw
+                scoped_predicted_diesel_kw = predicted_diesel_kw
+                diesel_command_rows = all_diesel_command_rows
+                scoped_hydrogen_mode_lock = hydrogen_mode_lock
+                scoped_conflict_stop_mode = next(
+                    iter(island_conflict_stop.values()), ""
+                )
+
             maintain_stopped_snapshot = not coupling_online
-            predicted_diesel_load_ratio = predicted_diesel_kw / diesel_capacity_kw
+            predicted_diesel_load_ratio = (
+                scoped_predicted_diesel_kw / scoped_diesel_capacity_kw
+                if scoped_diesel_capacity_kw > EPSILON
+                else 0.0
+            )
             decision_trace: Dict[str, Any] = {
                 "mode": "electrolyzer" if is_electrolyzer else "fuel_cell",
                 "couplingType": coupling_type,
                 "couplingName": coupling_name,
+                "topologyIslandId": topology_island_id,
                 "currentElectricPowerKw": current_power,
                 "targetElectricPowerKw": current_power,
                 "electricDeltaKw": 0.0,
@@ -1161,6 +1304,20 @@ def _optimize_hydrogen_within_topology_islands(
                 "controlReason": "hold_region",
                 "blockers": [],
             }
+            if scoped_diesel_capacity_kw <= EPSILON:
+                diagnostics["warnings"].append(
+                    f"氢能设备{coupling_name}所属电气岛（{topology_island_id}）无在线柴发容量，"
+                    "已按 fail closed 禁止自动调节"
+                )
+                decision_trace.update(
+                    {
+                        "action": "blocked",
+                        "controlReason": "island_diesel_unavailable",
+                        "blockers": ["所属电气岛无在线柴发容量"],
+                    }
+                )
+                diagnostics["decisionTraces"].append(decision_trace)
+                continue
             if (
                 minimum_running_power > allowed_power + EPSILON
             ):
@@ -1188,8 +1345,8 @@ def _optimize_hydrogen_within_topology_islands(
             if is_electrolyzer:
                 diesel_raise_margin_kw = max(
                     0.0,
-                    electrolyzer_diesel_limit_ratio * diesel_capacity_kw
-                    - predicted_diesel_kw,
+                    electrolyzer_diesel_limit_ratio * scoped_diesel_capacity_kw
+                    - scoped_predicted_diesel_kw,
                 )
                 # 氢储 SOC 启机/升功率引入回差死区（默认停机 90% - 死区 5% = 85%），避免在 90% 边界高频抖动
                 h2_stop_limit = settings.electrolyzer_hydrogen_storage_soc_stop_minimum
@@ -1203,8 +1360,8 @@ def _optimize_hydrogen_within_topology_islands(
                     and hydrogen_storage_soc is not None
                     and hydrogen_storage_soc
                     < electrolyzer_h2_raise_limit - EPSILON
-                    and hydrogen_mode_lock != "fuel_cell"
-                    and conflict_stop_mode != "electrolyzer"
+                    and scoped_hydrogen_mode_lock != "fuel_cell"
+                    and scoped_conflict_stop_mode != "electrolyzer"
                 )
                 electrolyzer_reduce_required = bool(
                     predicted_diesel_load_ratio
@@ -1234,6 +1391,9 @@ def _optimize_hydrogen_within_topology_islands(
                         hydrogen_storage_soc_stop_limit=(
                             settings.fuel_cell_hydrogen_storage_soc_lower_limit
                         ),
+                        electric_storage_soc_deadband=(
+                            settings.fuel_cell_storage_soc_deadband
+                        ),
                     ),
                     FuelCellControlInputs(
                         current_power_kw=current_power,
@@ -1241,21 +1401,21 @@ def _optimize_hydrogen_within_topology_islands(
                         minimum_power_kw=minimum_running_power,
                         start_threshold_kw=start_threshold_kw,
                         stop_threshold_kw=stop_threshold_kw,
-                        diesel_power_kw=predicted_diesel_kw,
-                        diesel_capacity_kw=diesel_capacity_kw,
+                        diesel_power_kw=scoped_predicted_diesel_kw,
+                        diesel_capacity_kw=scoped_diesel_capacity_kw,
                         electric_storage_soc_average=electric_storage_soc,
                         hydrogen_storage_soc_average=hydrogen_storage_soc,
                     ),
                 )
                 if (
                     (
-                        hydrogen_mode_lock == "electrolyzer"
-                        or conflict_stop_mode == "fuel_cell"
+                        scoped_hydrogen_mode_lock == "electrolyzer"
+                        or scoped_conflict_stop_mode == "fuel_cell"
                     )
                     and fuel_cell_decision.action in {"start", "increase"}
                 ):
                     diagnostics["warnings"].append(
-                        f"氢能设备{coupling_name}受电制氢运行互锁，已禁止燃料电池启动或升功率"
+                        f"氢能设备{coupling_name}受同岛电制氢运行互锁，已禁止燃料电池启动或升功率"
                     )
                     fuel_cell_decision = FuelCellControlDecision(
                         action="hold",
@@ -1268,17 +1428,17 @@ def _optimize_hydrogen_within_topology_islands(
                         ),
                     )
             conflict_stops_device = bool(
-                hydrogen_mode_lock == "conflict"
+                scoped_hydrogen_mode_lock == "conflict"
                 and (
-                    (is_electrolyzer and conflict_stop_mode == "electrolyzer")
-                    or (not is_electrolyzer and conflict_stop_mode == "fuel_cell")
+                    (is_electrolyzer and scoped_conflict_stop_mode == "electrolyzer")
+                    or (not is_electrolyzer and scoped_conflict_stop_mode == "fuel_cell")
                 )
             )
             if conflict_stops_device and current_power > EPSILON:
                 requested_delta_kw = -current_power
                 device_action = "hydrogen_interlock_stop"
                 device_action_reason = (
-                    f"simultaneous_operation_stop_{conflict_stop_mode}"
+                    f"simultaneous_operation_stop_{scoped_conflict_stop_mode}"
                 )
             elif pressure_blocked:
                 requested_delta_kw = -current_power
@@ -1322,10 +1482,38 @@ def _optimize_hydrogen_within_topology_islands(
                 required_start_delta_kw = fuel_cell_decision.required_start_delta_kw
                 device_action_reason = fuel_cell_decision.reason
             elif current_power > EPSILON and current_power < stop_threshold_kw - EPSILON:
-                requested_delta_kw = -current_power
-                power_hysteresis_stop = True
-                device_action = "power_hysteresis_stop"
-                device_action_reason = "below_stop_threshold"
+                # 氢能启机过渡确认期：刚发出启机指令后受模拟台一阶响应滞后（如 0.5~0.7）
+                # 功率尚未爬至最小运行功率时，维持启机目标不误触发滞环停机。
+                startup_grace_s = max(0.0, float(settings.hydrogen_startup_grace_seconds))
+                in_startup_grace = False
+                grace_target_kw = start_threshold_kw
+                if (
+                    hydrogen_dwell_memory is not None
+                    and sim_time_seconds is not None
+                    and startup_grace_s > EPSILON
+                ):
+                    raw_grace_entry = hydrogen_dwell_memory.get(f"{coupling_type}:{coupling_name}")
+                    if isinstance(raw_grace_entry, dict):
+                        last_start_ts = _number(raw_grace_entry.get("lastStartSimTime"))
+                        if (
+                            last_start_ts is not None
+                            and (float(sim_time_seconds) - last_start_ts) >= -EPSILON
+                            and (float(sim_time_seconds) - last_start_ts) < startup_grace_s - EPSILON
+                        ):
+                            in_startup_grace = True
+                            saved_target = _number(raw_grace_entry.get("lastStartTargetKw"))
+                            if saved_target is not None and saved_target > EPSILON:
+                                grace_target_kw = saved_target
+                if in_startup_grace and coupling_online:
+                    clamped_grace = min(allowed_power, max(minimum_running_power, grace_target_kw))
+                    requested_delta_kw = max(0.0, clamped_grace - current_power)
+                    device_action = "hold"
+                    device_action_reason = "startup_grace_hold"
+                else:
+                    requested_delta_kw = -current_power
+                    power_hysteresis_stop = True
+                    device_action = "power_hysteresis_stop"
+                    device_action_reason = "below_stop_threshold"
             elif electric_storage_soc is None or hydrogen_storage_soc is None:
                 diagnostics["warnings"].append(
                     f"氢能设备{coupling_name}缺少完整的在线电储平均SOC或本氢岛氢储平均SOC，已按 fail closed 保持当前功率"
@@ -1377,8 +1565,8 @@ def _optimize_hydrogen_within_topology_islands(
             elif is_electrolyzer:
                 if not electrolyzer_raise_allowed:
                     if (
-                        hydrogen_mode_lock == "fuel_cell"
-                        or conflict_stop_mode == "electrolyzer"
+                        scoped_hydrogen_mode_lock == "fuel_cell"
+                        or scoped_conflict_stop_mode == "electrolyzer"
                     ):
                         start_blockers = ["与燃料电池运行互锁"]
                         diagnostics["warnings"].append(
@@ -1529,11 +1717,7 @@ def _optimize_hydrogen_within_topology_islands(
                 )
                 diagnostics["decisionTraces"].append(decision_trace)
                 continue
-            topology_island_id = _optimization_island_id_for_components(
-                optimization_result,
-                electric_component_id,
-                dc_group_id,
-            )
+            # 移除此处重复的 topology_island_id 计算（已在决策前按电气岛前置解析）
             accepted_delta_kw = requested_delta_kw
             adjustment_requested = abs(requested_delta_kw) > EPSILON
             atomic_hold_reason = ""
@@ -1641,19 +1825,104 @@ def _optimize_hydrogen_within_topology_islands(
             target_power = max(0.0, current_power + accepted_delta_kw)
             requested_target_power = target_power
             if power_hysteresis_stop:
-                # A hysteresis stop is a device state transition: issue the
-                # stop remote control and zero setpoint directly, even when
-                # DCAC or balance-device headroom cannot pair the full delta.
+                # 滞环停机属于状态切换：直接下发停机遥控与 0 设点
                 target_power = 0.0
             elif target_power > EPSILON:
                 if target_power > allowed_power + EPSILON:
                     target_power = allowed_power
-                elif target_power < physical_minimum_power - EPSILON:
+                elif target_power < minimum_running_power - EPSILON:
                     if accepted_delta_kw > EPSILON:
-                        target_power = physical_minimum_power
-                    elif target_power < stop_threshold_kw - EPSILON:
+                        target_power = minimum_running_power
+                    else:
+                        # 降功率跌破最小允许运行功率时直接停机，杜绝落入低载禁区
                         target_power = 0.0
-            if abs(target_power - requested_target_power) > EPSILON:
+                        power_hysteresis_stop = True
+                        device_action = "power_hysteresis_stop"
+                        device_action_reason = "below_minimum_running_power_stop"
+
+            # 氢能启停最小驻留冷却时间（安全停机如氢压越限/互锁冲突不受阻塞）
+            dwell_seconds = max(0.0, float(settings.hydrogen_min_dwell_seconds))
+            dwell_blocked = False
+            dwell_entry: Optional[Dict[str, Any]] = None
+            observed_running = bool(
+                coupling_online and current_power >= stop_threshold_kw - EPSILON
+            )
+            if (
+                hydrogen_dwell_memory is not None
+                and sim_time_seconds is not None
+                and math.isfinite(float(sim_time_seconds))
+            ):
+                dwell_key = f"{coupling_type}:{coupling_name}"
+                raw_entry = hydrogen_dwell_memory.get(dwell_key)
+                if not isinstance(raw_entry, dict):
+                    dwell_entry = {
+                        "state": "running" if observed_running else "stopped",
+                        "lastTransitionSimTime": None,
+                    }
+                    hydrogen_dwell_memory[dwell_key] = dwell_entry
+                else:
+                    dwell_entry = raw_entry
+                    prev_state = str(dwell_entry.get("state", ""))
+                    observed_state = "running" if observed_running else "stopped"
+                    if prev_state and prev_state != observed_state:
+                        dwell_entry["state"] = observed_state
+                        dwell_entry["lastTransitionSimTime"] = float(sim_time_seconds)
+                last_ts = _number(dwell_entry.get("lastTransitionSimTime"))
+                in_dwell = bool(
+                    dwell_seconds > EPSILON
+                    and last_ts is not None
+                    and (float(sim_time_seconds) - last_ts) >= -EPSILON
+                    and (float(sim_time_seconds) - last_ts) < dwell_seconds - EPSILON
+                )
+                is_safety_override = bool(pressure_blocked or conflict_stops_device)
+                if in_dwell and not is_safety_override:
+                    remaining_s = max(
+                        0.0,
+                        dwell_seconds - (float(sim_time_seconds) - float(last_ts or 0.0)),
+                    )
+                    if not observed_running and target_power > EPSILON:
+                        # 停机驻留未满：阻止常规经济启机
+                        dwell_blocked = True
+                        target_power = 0.0
+                        accepted_delta_kw = -current_power if current_power > EPSILON else 0.0
+                        converter_request_kw = 0.0
+                        diesel_delta_kw = 0.0
+                        device_action = "hold"
+                        device_action_reason = "min_dwell_hold"
+                        diagnostics["warnings"].append(
+                            f"{coupling_name} 处于停机最小驻留冷却期（剩余 {remaining_s:.1f}s），暂缓启机"
+                        )
+                    elif observed_running and target_power <= EPSILON:
+                        # 运行驻留未满：阻止常规经济停机，安全钳位至最小允许运行功率
+                        dwell_blocked = True
+                        target_power = min(allowed_power, minimum_running_power)
+                        power_hysteresis_stop = False
+                        clamped_delta = target_power - current_power
+                        accepted_delta_kw = clamped_delta
+                        diesel_delta_kw = (
+                            clamped_delta if is_electrolyzer else -clamped_delta
+                        )
+                        if electric_side == "DC":
+                            converter_request_kw = (
+                                -clamped_delta if is_electrolyzer else clamped_delta
+                            )
+                        device_action = "hold"
+                        device_action_reason = "min_dwell_hold"
+                        diagnostics["warnings"].append(
+                            f"{coupling_name} 处于运行最小驻留冷却期（剩余 {remaining_s:.1f}s），维持最小运行功率 {target_power:.1f} kW"
+                        )
+            if dwell_blocked and not observed_running and not maintain_stopped_snapshot:
+                decision_trace.update(
+                    {
+                        "action": "hold",
+                        "controlReason": "min_dwell_hold",
+                        "blockers": ["氢能启停最小驻留冷却期未满"],
+                    }
+                )
+                diagnostics["decisionTraces"].append(decision_trace)
+                continue
+
+            if not dwell_blocked and abs(target_power - requested_target_power) > EPSILON:
                 setpoint_delta_kw = target_power - current_power
                 unpaired_delta_kw = setpoint_delta_kw - accepted_delta_kw
                 if power_hysteresis_stop:
@@ -1827,12 +2096,37 @@ def _optimize_hydrogen_within_topology_islands(
                 }
             )
             diagnostics["decisionTraces"].append(dict(planned[-1]))
-            if accepted_delta_kw > EPSILON and not hydrogen_mode_lock:
-                hydrogen_mode_lock = (
-                    "electrolyzer" if is_electrolyzer else "fuel_cell"
-                )
-                diagnostics["interlockMode"] = hydrogen_mode_lock
-                diagnostics["interlockActive"] = True
+            if dwell_entry is not None and sim_time_seconds is not None and run_stat_target is not None:
+                dwell_entry["state"] = "running" if run_stat_target == 1 else "stopped"
+                dwell_entry["lastTransitionSimTime"] = float(sim_time_seconds)
+                if run_stat_target == 1:
+                    dwell_entry["lastStartSimTime"] = float(sim_time_seconds)
+                    dwell_entry["lastStartTargetKw"] = float(target_power)
+                else:
+                    dwell_entry.pop("lastStartSimTime", None)
+                    dwell_entry.pop("lastStartTargetKw", None)
+            elif (
+                dwell_entry is not None
+                and sim_time_seconds is not None
+                and required_start_delta_kw is not None
+                and target_power > EPSILON
+            ):
+                dwell_entry["lastStartSimTime"] = float(sim_time_seconds)
+                dwell_entry["lastStartTargetKw"] = float(target_power)
+            if accepted_delta_kw > EPSILON:
+                active_mode_name = "electrolyzer" if is_electrolyzer else "fuel_cell"
+                if not scoped_hydrogen_mode_lock:
+                    island_mode_lock[topology_island_id] = active_mode_name
+                if not hydrogen_mode_lock:
+                    hydrogen_mode_lock = active_mode_name
+                    diagnostics["interlockMode"] = hydrogen_mode_lock
+                    diagnostics["interlockActive"] = True
+            if (
+                diesel_has_topology_tags
+                and topology_island_id
+                and topology_island_id in island_predicted_diesel_kw
+            ):
+                island_predicted_diesel_kw[topology_island_id] += diesel_delta_kw
             predicted_diesel_kw += diesel_delta_kw
     if apply_electrical_corrections:
         _publish_final_acdc_coordination(

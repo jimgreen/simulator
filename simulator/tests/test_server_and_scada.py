@@ -16,8 +16,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 APP_ROOT = Path(__file__).resolve().parents[1]
-if str(APP_ROOT) not in sys.path:
-    sys.path.insert(0, str(APP_ROOT))
+REPO_ROOT = APP_ROOT.parent
+SHARED_ROOT = REPO_ROOT / "shared"
+TRAINEE_ROOT = REPO_ROOT / "trainee"
+for _entry in (str(TRAINEE_ROOT), str(APP_ROOT), str(SHARED_ROOT)):
+    if _entry in sys.path:
+        sys.path.remove(_entry)
+    sys.path.insert(0, _entry)
 
 import scada104
 from simu import http_common, renewable_control, server, service
@@ -238,7 +243,7 @@ class ServerAndScadaTests(unittest.TestCase):
             self.assertEqual(scada104.default_scada_root({}), Path(r"C:\custom\scada"))
 
     def test_efile_read_without_exec_preserves_conversion(self):
-        efile_src = (APP_ROOT / "src/hybrid_power_system_analysis/efile_read.py").read_text(encoding="utf-8")
+        efile_src = (SHARED_ROOT / "src/hybrid_power_system_analysis/efile_read.py").read_text(encoding="utf-8")
         self.assertNotIn("exec(", efile_src)
         import efile_read
 
@@ -263,7 +268,7 @@ class ServerAndScadaTests(unittest.TestCase):
         self.assertEqual(obj2.name, "n2")
 
     def test_hybrid_lf_has_no_utf8_bom(self):
-        path = APP_ROOT / "src/hybrid_power_system_analysis/lfcore/hybrid_lf.py"
+        path = SHARED_ROOT / "src/hybrid_power_system_analysis/lfcore/hybrid_lf.py"
         raw = path.read_bytes()
         self.assertFalse(raw.startswith(b"\xef\xbb\xbf"), "hybrid_lf.py 不应包含 UTF-8 BOM")
         ast.parse(raw.decode("utf-8"))

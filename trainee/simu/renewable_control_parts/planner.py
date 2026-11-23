@@ -76,6 +76,7 @@ from .settings import (
     _curve_boundary_value,
     _diesel_rows,
     _effective_step_minutes,
+    _environment_measurement_status,
     _load_boundary,
     _measurement_sample_clock,
     _normalized_generation_current,
@@ -170,6 +171,305 @@ from .dispatch import (
 )
 
 
+def _plan_sim_time_seconds(snapshot: Mapping[str, Any]) -> Optional[float]:
+    """从快照提取单调仿真时间（秒），用于跨周期驻留计时与响应失配判别。"""
+    for block_name in ("measurement_clock", "clock"):
+        block = snapshot.get(block_name)
+        if not (type(block) is dict or isinstance(block, Mapping)):
+            continue
+        sim_sec = _number(block.get("simu_time"))
+        if sim_sec is not None and math.isfinite(sim_sec):
+            return float(sim_sec)
+        abs_min = _number(block.get("absolute_minute", block.get("minute")))
+        if abs_min is not None and math.isfinite(abs_min):
+            return float(abs_min) * 60.0
+    compute = snapshot.get("compute")
+    if type(compute) is dict or isinstance(compute, Mapping):
+        sim_sec = _number(compute.get("simu_time"))
+        if sim_sec is not None and math.isfinite(sim_sec):
+            return float(sim_sec)
+        abs_min = _number(compute.get("absolute_minute"))
+        if abs_min is not None and math.isfinite(abs_min):
+            return float(abs_min) * 60.0
+    return None
+
+
+def _reset_runtime_memory_if_clock_rewound(
+    runtime_memory: Optional[MutableMapping[str, Any]],
+    sim_time_seconds: Optional[float],
+) -> None:
+    """仿真时钟回退（重启/重初始化）时清空跨周期状态机缓存，防止脏记忆跨运行污染。"""
+    if runtime_memory is None or sim_time_seconds is None or not math.isfinite(sim_time_seconds):
+        return
+    prev_ts = _number(runtime_memory.get("lastSimTimeSeconds"))
+    if prev_ts is not None and sim_time_seconds < prev_ts - 1e-6:
+        runtime_memory.pop("hydrogen_dwell", None)
+        runtime_memory.pop("renewable_saturation", None)
+    runtime_memory["lastSimTimeSeconds"] = float(sim_time_seconds)
+
+
+def _apply_renewable_natural_upper_bounds(
+    online_renewable: Sequence[MutableMapping[str, Any]],
+    renewable_target_by_device: MutableMapping[Tuple[str, str], float],
+    settings: RenewableControlSettings,
+    *,
+    runtime_memory: Optional[MutableMapping[str, Any]],
+    sim_time_seconds: Optional[float],
+    wind_measurement_status: Mapping[str, Any],
+    solar_measurement_status: Mapping[str, Any],
+    diesel_guard_blocked: bool,
+) -> Dict[str, Any]:
+    """双层融合自然资源上限判断：
+    1) 第一层（气象前馈）：严格受对应测点配置与可用状态门控——仅当太阳辐照量测值有效时进入光伏
+       夜间/低光判断，仅当风速量测值有效时进入风电无风/低风判断；
+    2) 第二层（电侧闭环指令-响应失配）：兜底测点停用、缺失或偏差场景，连续失配后在优化器中封顶，
+       并按固定周期执行不影响柴发平衡的解耦小步长探顶。
+    """
+    saturation_store: Optional[MutableMapping[str, Any]] = None
+    if runtime_memory is not None:
+        raw_store = runtime_memory.get("renewable_saturation")
+        if not isinstance(raw_store, dict):
+            raw_store = {}
+            runtime_memory["renewable_saturation"] = raw_store
+        saturation_store = raw_store
+
+    weather_limited_devices: List[str] = []
+    saturated_devices: List[str] = []
+    probing_devices: List[str] = []
+
+    for row in online_renewable:
+        if not row.get("commandable"):
+            continue
+        key = (str(row.get("dev_type", "")), str(row.get("dev_name", "")))
+        tech = str(row.get("technology", ""))
+        capacity = max(0.0, _finite_number(row.get("capacityKw")))
+        current_kw = _number(row.get("planningCurrentKw", row.get("currentKw")))
+        if current_kw is None or capacity <= EPSILON:
+            continue
+        current_kw = max(0.0, float(current_kw))
+        step_kw = settings.step_coefficient * capacity
+        cmd_deadband = max(1.0, 0.002 * capacity)
+        release_deadband = max(1.0, 0.005 * capacity)
+
+        weather_status = (
+            wind_measurement_status
+            if tech == "wind"
+            else solar_measurement_status
+            if tech == "pv"
+            else {"available": False, "value": None}
+        )
+        weather_available = bool(
+            row.get("weatherMeasurementAvailable") and weather_status.get("available")
+        )
+        weather_val = _number(weather_status.get("value")) if weather_available else None
+        control_weather_kw = (
+            _number(row.get("controlWeatherAvailableKw"))
+            if weather_available
+            else None
+        )
+
+        # 第一层：有效气象前馈自然上限（严控门控：仅对应测点有效时触发）
+        natural_upper: Optional[float] = None
+        natural_reason = ""
+        if control_weather_kw is not None:
+            natural_upper = max(0.0, min(capacity, float(control_weather_kw)))
+            natural_reason = (
+                "weather_zero_resource"
+                if natural_upper <= EPSILON
+                else "weather_available_limit"
+            )
+            if natural_upper < min(capacity, current_kw + step_kw) - EPSILON:
+                weather_limited_devices.append(key[1] or key[0])
+
+        # 第二层：电侧闭环指令-响应失配判别（抗气象停用/故障/测点误差）
+        saturated = False
+        probe_step_kw = 0.0
+        if saturation_store is not None:
+            dev_mem_key = f"{key[0]}:{key[1]}"
+            entry = saturation_store.get(dev_mem_key)
+            if not isinstance(entry, dict):
+                entry = {
+                    "lastSimTime": None,
+                    "lastCommandKw": None,
+                    "lastMeasuredKw": None,
+                    "mismatchCount": 0,
+                    "saturated": False,
+                    "saturatedBaselineKw": None,
+                    "saturatedWeatherValue": None,
+                    "probeCounter": 0,
+                }
+                saturation_store[dev_mem_key] = entry
+
+            prev_ts = _number(entry.get("lastSimTime"))
+            prev_cmd = _number(entry.get("lastCommandKw"))
+            prev_meas = _number(entry.get("lastMeasuredKw"))
+            clock_advanced = bool(
+                sim_time_seconds is not None
+                and prev_ts is not None
+                and float(sim_time_seconds) > prev_ts + EPSILON
+            )
+            if clock_advanced and prev_cmd is not None and prev_meas is not None:
+                cmd_delta = prev_cmd - prev_meas
+                meas_delta = current_kw - prev_meas
+                weather_rise_threshold = 0.3 if tech == "wind" else 15.0
+                sat_weather = _number(entry.get("saturatedWeatherValue"))
+                sat_baseline = _number(entry.get("saturatedBaselineKw"))
+
+                weather_rose = bool(
+                    weather_available
+                    and weather_val is not None
+                    and sat_weather is not None
+                    and weather_val > sat_weather + weather_rise_threshold
+                )
+                output_rose = bool(
+                    bool(entry.get("saturated"))
+                    and sat_baseline is not None
+                    and current_kw > sat_baseline + release_deadband
+                )
+                active_curtail_issued = cmd_delta < -cmd_deadband
+
+                if weather_rose or output_rose or active_curtail_issued:
+                    entry["saturated"] = False
+                    entry["mismatchCount"] = 0
+                    entry["probeCounter"] = 0
+                    entry["saturatedBaselineKw"] = None
+                    entry["saturatedWeatherValue"] = None
+                elif cmd_delta > cmd_deadband:
+                    if meas_delta >= 0.15 * cmd_delta:
+                        # 增发指令获得有效实测响应 -> 解除饱和
+                        entry["saturated"] = False
+                        entry["mismatchCount"] = 0
+                        entry["probeCounter"] = 0
+                        entry["saturatedBaselineKw"] = None
+                        entry["saturatedWeatherValue"] = None
+                    else:
+                        entry["mismatchCount"] = int(entry.get("mismatchCount", 0)) + 1
+                        if entry["mismatchCount"] >= 2:
+                            if not entry.get("saturated"):
+                                entry["saturatedBaselineKw"] = current_kw
+                                entry["saturatedWeatherValue"] = weather_val
+                                entry["probeCounter"] = 0
+                            entry["saturated"] = True
+
+            saturated = bool(entry.get("saturated"))
+            if saturated:
+                saturated_devices.append(key[1] or key[0])
+                if clock_advanced:
+                    entry["probeCounter"] = int(entry.get("probeCounter", 0)) + 1
+                # 若有效气象明确为 0（如夜间 0 辐照/无风）或柴发保护限电，则无需探顶
+                weather_confirmed_zero = bool(
+                    control_weather_kw is not None and control_weather_kw <= EPSILON
+                )
+                if (
+                    not diesel_guard_blocked
+                    and not weather_confirmed_zero
+                    and int(entry.get("probeCounter", 0)) >= 10
+                    and capacity - current_kw > cmd_deadband
+                ):
+                    probe_step_kw = min(
+                        max(0.0, capacity - current_kw),
+                        max(cmd_deadband * 1.5, 0.5 * step_kw),
+                    )
+                    entry["probeCounter"] = 0
+                    probing_devices.append(key[1] or key[0])
+
+        if saturated:
+            natural_upper = (
+                min(natural_upper, current_kw)
+                if natural_upper is not None
+                else current_kw
+            )
+            natural_reason = "electrical_response_saturated"
+
+        if natural_upper is not None:
+            row["naturalUpperKw"] = natural_upper
+            row["naturalUpperReason"] = natural_reason
+            existing_upper = _number(row.get("dispatchUpperKw"))
+            row["dispatchUpperKw"] = (
+                min(existing_upper, natural_upper)
+                if existing_upper is not None
+                else natural_upper
+            )
+            if not row.get("dispatchUpperReason"):
+                row["dispatchUpperReason"] = natural_reason
+            if key in renewable_target_by_device:
+                renewable_target_by_device[key] = min(
+                    float(renewable_target_by_device[key]),
+                    natural_upper,
+                )
+        row["naturalResourceSaturated"] = saturated
+        row["decoupledProbeStepKw"] = probe_step_kw
+
+    return {
+        "windMeasurement": dict(wind_measurement_status),
+        "solarMeasurement": dict(solar_measurement_status),
+        "weatherLimitedDevices": weather_limited_devices,
+        "saturatedDevices": saturated_devices,
+        "probingDevices": probing_devices,
+    }
+
+
+def _finalize_renewable_saturation_memory(
+    command_rows: Sequence[MutableMapping[str, Any]],
+    *,
+    runtime_memory: Optional[MutableMapping[str, Any]],
+    sim_time_seconds: Optional[float],
+    quality_blocked: bool,
+) -> None:
+    """在主优化器与氢能联动完成后：
+    1) 对标记了 decoupledProbeStepKw 的饱和新能源执行解耦小步长探顶（不改柴发/储能目标）；
+    2) 将本拍下发给在线可控新能源的指令与当前实测写入 runtime_memory，供下一拍闭环评估。
+    """
+    if quality_blocked:
+        return
+    saturation_store = (
+        runtime_memory.get("renewable_saturation")
+        if runtime_memory is not None
+        and isinstance(runtime_memory.get("renewable_saturation"), dict)
+        else None
+    )
+    for row in command_rows:
+        if row.get("technology") not in {"wind", "pv"}:
+            continue
+        if not row.get("online") or row.get("commandable") is False:
+            continue
+        current_kw = _number(row.get("planningCurrentKw", row.get("currentKw")))
+        command_kw = _number(row.get("commandKw"))
+        capacity = max(0.0, _finite_number(row.get("capacityKw")))
+        if current_kw is None or command_kw is None:
+            continue
+        probe_step_kw = max(0.0, _finite_number(row.get("decoupledProbeStepKw")))
+        # 仅在系统未要求主动限电（command_kw >= current_kw）时发出解耦试探
+        if (
+            probe_step_kw > EPSILON
+            and command_kw >= current_kw - EPSILON
+            and row.get("strategyCommand") is not False
+            and row.get("dispatchEnabled") is not False
+        ):
+            probed_kw = min(capacity, current_kw + probe_step_kw)
+            if probed_kw > command_kw + EPSILON:
+                row["commandKw"] = probed_kw
+                row["targetKw"] = probed_kw
+                row["decoupledProbeApplied"] = True
+                command_kw = probed_kw
+
+        if saturation_store is not None and sim_time_seconds is not None:
+            dev_mem_key = f"{row.get('dev_type', '')}:{row.get('dev_name', '')}"
+            entry = saturation_store.get(dev_mem_key)
+            if not isinstance(entry, dict):
+                entry = {
+                    "mismatchCount": 0,
+                    "saturated": False,
+                    "saturatedBaselineKw": None,
+                    "saturatedWeatherValue": None,
+                    "probeCounter": 0,
+                }
+                saturation_store[dev_mem_key] = entry
+            entry["lastSimTime"] = float(sim_time_seconds)
+            entry["lastCommandKw"] = float(command_kw)
+            entry["lastMeasuredKw"] = float(current_kw)
+
+
 def _prepare_plan_weather_and_resources(
     snapshot: Mapping[str, Any],
     quality: _Quality,
@@ -180,6 +480,8 @@ def _prepare_plan_weather_and_resources(
     Optional[float],
     Optional[float],
     Dict[str, Any],
+    Dict[str, Any],
+    Dict[str, Any],
     Tuple[_LinkedResourceSpec, ...],
     Tuple[_LinkedResourceSpec, ...],
     Tuple[ResourceRef, ...],
@@ -187,11 +489,35 @@ def _prepare_plan_weather_and_resources(
     List[Dict[str, Any]],
     Tuple[ResourceRef, ...],
 ]:
-    """阶段 1：单次索引量测、提取气象边界、关联资源规格与待解析拓扑资源清单。"""
+    """阶段 1：单次索引量测、提取气象边界与测点可用状态、关联资源规格与待解析拓扑资源清单。"""
     measurements = _measurement_index(snapshot)
     load_kw = _load_boundary(snapshot, measurements, quality)
-    wind_measurement = _measured(measurements, "Environment", "weather", ("WIND_SPEED",))
-    irradiance_measurement = _measured(measurements, "Environment", "weather", ("SOLAR_IRRADIANCE",))
+    wind_measurement_status = _environment_measurement_status(
+        snapshot, measurements, "WIND_SPEED"
+    )
+    solar_measurement_status = _environment_measurement_status(
+        snapshot, measurements, "SOLAR_IRRADIANCE"
+    )
+    wind_measurement = (
+        MeasurementValue(
+            value=float(wind_measurement_status["value"]),
+            source=str(wind_measurement_status["source"]),
+            row={},
+        )
+        if wind_measurement_status.get("available")
+        and wind_measurement_status.get("value") is not None
+        else None
+    )
+    irradiance_measurement = (
+        MeasurementValue(
+            value=float(solar_measurement_status["value"]),
+            source=str(solar_measurement_status["source"]),
+            row={},
+        )
+        if solar_measurement_status.get("available")
+        and solar_measurement_status.get("value") is not None
+        else None
+    )
     temperature_measurement = _measured(measurements, "Environment", "weather", ("AIR_TEMP",))
     observed_wind_speed = _observed_environment_value(
         snapshot,
@@ -211,14 +537,14 @@ def _prepare_plan_weather_and_resources(
     quality.input(
         "windSpeed",
         observed_wind_speed,
-        "scada_or_curve_boundary",
-        observed_wind_speed is not None,
+        str(wind_measurement_status.get("source") or "curve_boundary"),
+        bool(wind_measurement_status.get("available")),
     )
     quality.input(
         "solarIrradiance",
         observed_irradiance,
-        "scada_or_curve_boundary",
-        observed_irradiance is not None,
+        str(solar_measurement_status.get("source") or "curve_boundary"),
+        bool(solar_measurement_status.get("available")),
     )
     quality.input(
         "airTemperature",
@@ -263,6 +589,8 @@ def _prepare_plan_weather_and_resources(
         observed_wind_speed,
         observed_irradiance,
         observed_air_temperature,
+        wind_measurement_status,
+        solar_measurement_status,
         identity_diagnostics,
         tuple(renewable_specs),
         tuple(storage_specs),
@@ -280,12 +608,15 @@ def calculate_renewable_control_plan(
     data_source: str = "remote",
     snapshot_age_seconds: float = 0.0,
     topology_static_context: Optional[ResourceTopologyStaticContext] = None,
+    runtime_memory: Optional[MutableMapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     plan_started = time.perf_counter()
     configured_settings = (settings or RenewableControlSettings()).normalized()
     renewable_effective_decision_step_ratio = configured_settings.step_coefficient
     storage_effective_decision_step_ratio = configured_settings.storage_step_ratio
     settings = configured_settings
+    sim_time_seconds = _plan_sim_time_seconds(snapshot)
+    _reset_runtime_memory_if_clock_rewound(runtime_memory, sim_time_seconds)
     quality = _Quality(data_source, snapshot_age_seconds)
     (
         measurements,
@@ -293,6 +624,8 @@ def calculate_renewable_control_plan(
         observed_wind_speed,
         observed_irradiance,
         observed_air_temperature,
+        wind_measurement_status,
+        solar_measurement_status,
         identity_diagnostics,
         renewable_specs,
         storage_specs,
@@ -330,6 +663,10 @@ def calculate_renewable_control_plan(
         observed_wind_speed=observed_wind_speed,
         observed_solar_irradiance=observed_irradiance,
         observed_air_temperature=observed_air_temperature,
+        wind_measurement_available=bool(wind_measurement_status.get("available")),
+        solar_measurement_available=bool(solar_measurement_status.get("available")),
+        control_wind_speed=_number(wind_measurement_status.get("value")),
+        control_solar_irradiance=_number(solar_measurement_status.get("value")),
     )
     _annotate_diesel_topology(
         diesel_rows,
@@ -547,11 +884,20 @@ def calculate_renewable_control_plan(
         if renewable_storage_island
         else online_renewable
     )
+    has_ac_grid_forming_storage = any(
+        row.get("connectionSide") == "AC"
+        and row.get("role") == "balance"
+        and row.get("online")
+        and not row.get("automaticControlBlocked")
+        for row in storage_rows
+    )
     operating_mode = (
         "renewable_storage_island"
         if renewable_storage_island
         else "diesel_reference"
         if online_diesel
+        else "grid_forming_storage_reference"
+        if has_ac_grid_forming_storage
         else "blocked_no_diesel"
     )
 
@@ -747,8 +1093,8 @@ def calculate_renewable_control_plan(
             "交流侧全部退运且没有在线储能，相关优化岛将保持或闭锁",
             blocked=True,
         )
-    if not online_diesel and not renewable_storage_island:
-        quality.add("没有在线柴油发电机，优化器将由岛内其他构网电源或储能承担平衡")
+    if not online_diesel and not renewable_storage_island and not has_ac_grid_forming_storage:
+        quality.add("没有在线柴油发电机或交流构网储能，优化器将由岛内其他构网电源或储能承担平衡")
     elif len(measured_diesel) != len(online_diesel):
         quality.add("部分在线柴油发电机缺少有效实时有功，相关柴油机不参与本轮优化")
     diesel_current_for_control = diesel_current if diesel_current is not None else diesel_min
@@ -1476,6 +1822,18 @@ def calculate_renewable_control_plan(
                 else "diesel_guard_no_renewable_recovery"
             )
 
+    # 双层融合自然资源上限判断（气象测点可用性门控前馈 + 电侧指令-响应失配闭环饱和）
+    renewable_natural_limit_diagnostics = _apply_renewable_natural_upper_bounds(
+        online_renewable,
+        renewable_target_by_device,
+        settings,
+        runtime_memory=runtime_memory,
+        sim_time_seconds=sim_time_seconds,
+        wind_measurement_status=wind_measurement_status,
+        solar_measurement_status=solar_measurement_status,
+        diesel_guard_blocked=bool(renewable_raise_blocked_by_diesel_guard),
+    )
+
     island_component_plans: List[Dict[str, Any]] = []
     island_control_action_by_component: Dict[Tuple[str, str], str] = {}
     island_control_action_by_resource: Dict[Tuple[str, str], str] = {}
@@ -2160,8 +2518,12 @@ def calculate_renewable_control_plan(
         storage_rows=storage_rows,
         converter_rows=all_converter_rows,
         step_coefficient=settings.step_coefficient,
+        diesel_step_ratio=settings.diesel_step_ratio,
         converter_step_ratio=settings.converter_step_ratio,
+        converter_ramp_step_ratio=settings.converter_ramp_step_ratio,
+        converter_efficiency=settings.converter_efficiency,
         storage_step_ratio=settings.storage_step_ratio,
+        storage_soc_rebalance_deadband=settings.storage_soc_rebalance_deadband,
         storage_soc_correction_step_scale=(
             settings.storage_soc_correction_step_scale
         ),
@@ -2488,9 +2850,96 @@ def calculate_renewable_control_plan(
         ),
         apply_electrical_corrections=settings.hydrogen_closed_loop_enabled,
         optimization_result=optimization_result,
+        runtime_memory=runtime_memory,
+        sim_time_seconds=sim_time_seconds,
     )
+    # 氢能与主优化器单拍协同：氢能闭环发生非零电功率调节时，将氢能净电注入变更量回代重算主优化器，
+    # 使新能源恢复、柴发出力、储能充放与变流器并联均流在同一控制周期内满足精确功率平衡。
+    hydrogen_external_injection: Dict[Tuple[str, str], float] = {}
+    if settings.hydrogen_closed_loop_enabled and not renewable_storage_island:
+        for h_cmd in hydrogen_plan.get("commands", []) or []:
+            h_delta = _number(h_cmd.get("electricDeltaKw"))
+            h_comp = str(h_cmd.get("electricComponentId", "") or "").strip()
+            h_side = str(h_cmd.get("electricSide", "") or "").strip().upper()
+            if h_delta is None or abs(h_delta) <= 0.05 or not h_comp or h_side not in {"AC", "DC"}:
+                continue
+            # 电制氢为负荷（+delta 表示多耗电，净电源注入为 -delta）；燃料电池为电源（+delta 表示多发电）
+            signed_injection = -float(h_delta) if h_cmd.get("mode") == "electrolyzer" else float(h_delta)
+            comp_key = (h_comp, h_side)
+            hydrogen_external_injection[comp_key] = (
+                hydrogen_external_injection.get(comp_key, 0.0) + signed_injection
+            )
+    if hydrogen_external_injection:
+        coordinated_opt = optimize_topology_islands(
+            resource_topology,
+            renewable_rows=renewable_rows,
+            diesel_rows=diesel_rows,
+            storage_rows=storage_rows,
+            converter_rows=all_converter_rows,
+            step_coefficient=settings.step_coefficient,
+            diesel_step_ratio=settings.diesel_step_ratio,
+            converter_step_ratio=settings.converter_step_ratio,
+            converter_ramp_step_ratio=settings.converter_ramp_step_ratio,
+            converter_efficiency=settings.converter_efficiency,
+            storage_step_ratio=settings.storage_step_ratio,
+            storage_soc_rebalance_deadband=settings.storage_soc_rebalance_deadband,
+            storage_soc_correction_step_scale=settings.storage_soc_correction_step_scale,
+            diesel_power_protection_ratio=settings.diesel_power_protection_ratio,
+            grid_forming_storage_protection_ratio=settings.grid_forming_storage_protection_ratio,
+            soc_deadband=settings.soc_deadband,
+            renewable_curtailment_weight=settings.optimization_renewable_curtailment_weight,
+            diesel_output_weight=settings.optimization_diesel_output_weight,
+            curtailment_square_weight=settings.optimization_curtailment_square_weight,
+            source_storage_adjustment_square_weight=settings.optimization_source_storage_adjustment_square_weight,
+            balance_delta_square_weight=settings.optimization_balance_delta_square_weight,
+            balance_delta_warning_kw=settings.optimization_balance_delta_warning_kw,
+            balance_tolerance_kw=settings.optimization_balance_tolerance_kw,
+            bound_tolerance_kw=settings.optimization_bound_tolerance_kw,
+            optimization_ftol=settings.optimization_ftol,
+            optimization_max_iterations=settings.optimization_max_iterations,
+            blocked_component_ids=blocked_optimization_component_ids,
+            external_injection_delta_by_component=hydrogen_external_injection,
+        )
+        if coordinated_opt.islands and any(isl.success for isl in coordinated_opt.islands):
+            optimization_result = coordinated_opt
+            non_hydrogen_rows = [
+                row for row in command_rows if row.get("category") != "氢能"
+            ]
+            _apply_optimization_targets(
+                non_hydrogen_rows,
+                optimization_result,
+                apply_targets=True,
+            )
+            hydrogen_plan["singleCycleCoordinated"] = True
+            hydrogen_plan["coordinationSequence"] = [
+                "renewable-diesel-storage",
+                "hydrogen",
+                "single-cycle-reoptimization",
+            ]
+            renewable_target_by_device = {
+                (str(row.get("dev_type", "")), str(row.get("dev_name", ""))): float(row["commandKw"])
+                for row in command_rows
+                if row.get("technology") in {"wind", "pv"}
+                and row.get("online")
+                and _number(row.get("commandKw")) is not None
+            }
+            renewable_target = sum(renewable_target_by_device.values())
+            renewable_delta = renewable_target - renewable_current
+            storage_target = sum(
+                float(row["commandKw"])
+                for row in command_rows
+                if row.get("technology") == "storage"
+                and row.get("online")
+                and _number(row.get("commandKw")) is not None
+            )
     strategy_boundary_warnings = _clamp_final_command_rows_to_boundaries(
         command_rows
+    )
+    _finalize_renewable_saturation_memory(
+        command_rows,
+        runtime_memory=runtime_memory,
+        sim_time_seconds=sim_time_seconds,
+        quality_blocked=bool(quality.blocked),
     )
     diesel_by_name = {
         str(row.get("dev_name", "")): float(row["commandKw"])
@@ -3127,13 +3576,18 @@ def calculate_renewable_control_plan(
             "minute": _number(clock.get("absolute_minute", clock.get("minute")), 0.0) or 0.0,
             "windSpeed": wind_speed,
             "windSpeedKnown": wind_speed is not None,
+            "windMeasurementAvailable": bool(wind_measurement_status.get("available")),
+            "windMeasurementReason": str(wind_measurement_status.get("reason", "")),
             "solarIrradiance": irradiance,
             "solarIrradianceKnown": irradiance is not None,
+            "solarMeasurementAvailable": bool(solar_measurement_status.get("available")),
+            "solarMeasurementReason": str(solar_measurement_status.get("reason", "")),
             "airTemp": air_temperature,
             "observedWindSpeed": observed_wind_speed,
             "observedSolarIrradiance": observed_irradiance,
             "observedAirTemp": observed_air_temperature,
             "loadKw": load_kw,
+            "naturalLimitDiagnostics": renewable_natural_limit_diagnostics,
         },
         "commandRows": command_rows,
         "commands": commands,

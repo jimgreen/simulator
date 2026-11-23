@@ -20,6 +20,7 @@ class FuelCellControlParameters:
     electric_storage_soc_limit: float
     hydrogen_storage_soc_start_limit: float
     hydrogen_storage_soc_stop_limit: float
+    electric_storage_soc_deadband: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -72,7 +73,8 @@ def calculate_fuel_cell_power_decision(
     maximum_power = max(0.0, float(inputs.maximum_power_kw))
     minimum_power = max(0.0, float(inputs.minimum_power_kw))
     start_threshold = max(minimum_power, float(inputs.start_threshold_kw))
-    stop_threshold = max(0.0, float(inputs.stop_threshold_kw))
+    # 停机门槛不得低于最小允许运行功率，杜绝输出落入低载禁区
+    stop_threshold = max(minimum_power, max(0.0, float(inputs.stop_threshold_kw)))
     step_kw = max(0.0, float(parameters.power_step_kw))
     diesel_capacity = max(0.0, float(inputs.diesel_capacity_kw))
     if diesel_capacity <= EPSILON:
@@ -89,13 +91,15 @@ def calculate_fuel_cell_power_decision(
         diesel_stop_limit * diesel_capacity - diesel_power,
     )
 
+    electric_soc_deadband = max(0.0, float(parameters.electric_storage_soc_deadband))
     electric_soc_low = (
         float(electric_soc)
         < float(parameters.electric_storage_soc_limit) - EPSILON
     )
+    # 增补电储 SOC 上行回差死区，防止在限值附近高频启停/抖动
     electric_soc_high = (
         float(electric_soc)
-        > float(parameters.electric_storage_soc_limit) + EPSILON
+        > float(parameters.electric_storage_soc_limit) + electric_soc_deadband + EPSILON
     )
     hydrogen_soc_above_start = (
         float(hydrogen_soc)
@@ -178,7 +182,7 @@ def calculate_fuel_cell_power_decision(
     if storage_reduce_required or diesel_reduce_required:
         delta_kw = -min(step_kw, current_power)
         proposed_power = max(0.0, current_power + delta_kw)
-        if proposed_power < float(inputs.stop_threshold_kw) - EPSILON:
+        if proposed_power < stop_threshold - EPSILON:
             return FuelCellControlDecision(
                 action="stop",
                 requested_delta_kw=-current_power,

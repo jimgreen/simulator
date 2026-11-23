@@ -12,14 +12,30 @@ ROOT = Path(__file__).resolve().parent
 ROLE = "trainee"
 
 
+def _resolve_shared_root() -> Path:
+    env_shared = str(os.environ.get("POWER_SIMU_SHARED_ROOT", "") or "").strip()
+    if env_shared:
+        return Path(env_shared).resolve()
+    for candidate in (ROOT.parent / "shared", ROOT / "shared"):
+        if (candidate / "simu").is_dir():
+            return candidate.resolve()
+    return ROOT
+
+
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     if any(arg == "--role" or arg.startswith("--role=") for arg in args):
         raise SystemExit(f"This launcher runs the {ROLE} role.")
     if sys.version_info < (3, 11):
         raise SystemExit("Python 3.11 or newer is required.")
-    # An absolute script path also works with python -I and from another cwd.
-    sys.path.insert(0, str(ROOT))
+    shared_root = _resolve_shared_root()
+    os.environ["POWER_SIMU_APP_ROOT"] = str(ROOT)
+    os.environ["POWER_SIMU_SHARED_ROOT"] = str(shared_root)
+    # 保证 shared_root 位于 sys.path 最前以加载 shared/simu/__init__.py（extend_path 合并本端 simu/）
+    for entry in (str(ROOT), str(shared_root)):
+        if entry in sys.path:
+            sys.path.remove(entry)
+        sys.path.insert(0, entry)
     os.chdir(ROOT)
     try:
         # The package sets numeric thread limits before NumPy/BLAS is loaded.
@@ -29,9 +45,10 @@ def main(argv=None):
         from algorithm_parameters import DEFAULT_LF_PARAMETER_FILE
         from paths import DATA_DIR, STARTUP_SETTINGS
     except ImportError as exc:
+        req_file = shared_root / "requirements.txt" if (shared_root / "requirements.txt").is_file() else ROOT / "requirements.txt"
         raise SystemExit(
             f"Missing dependency: {exc}. Install with: "
-            f'"{sys.executable}" -m pip install -r "{ROOT / "requirements.txt"}"'
+            f'"{sys.executable}" -m pip install -r "{req_file}"'
         ) from exc
     settings = STARTUP_SETTINGS
     if not DEFAULT_LF_PARAMETER_FILE.is_file():

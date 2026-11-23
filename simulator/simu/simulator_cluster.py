@@ -849,6 +849,18 @@ class SimulatorClusterManager:
                     log_handle = log_path.open("ab", buffering=0)
                     environment = os.environ.copy()
                     environment.setdefault("PYTHONUTF8", "1")
+                    environment["POWER_SIMU_APP_ROOT"] = str(self.sim_dir)
+                    shared_root = Path(
+                        str(os.environ.get("POWER_SIMU_SHARED_ROOT", "") or "").strip()
+                        or (self.sim_dir.parent / "shared")
+                    ).resolve()
+                    if (shared_root / "simu").is_dir():
+                        environment["POWER_SIMU_SHARED_ROOT"] = str(shared_root)
+                        existing_py_path = environment.get("PYTHONPATH", "")
+                        path_parts = [str(shared_root), str(self.sim_dir)]
+                        if existing_py_path:
+                            path_parts.append(existing_py_path)
+                        environment["PYTHONPATH"] = os.pathsep.join(path_parts)
                     kwargs: dict[str, Any] = {
                         "cwd": str(self.sim_dir),
                         "env": environment,

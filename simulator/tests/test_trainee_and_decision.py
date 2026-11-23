@@ -16,8 +16,12 @@ from pathlib import Path
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = APP_ROOT.parent
-if str(APP_ROOT) not in sys.path:
-    sys.path.insert(0, str(APP_ROOT))
+SHARED_ROOT = REPO_ROOT / "shared"
+TRAINEE_ROOT = REPO_ROOT / "trainee"
+for _entry in (str(APP_ROOT), str(TRAINEE_ROOT), str(SHARED_ROOT)):
+    if _entry in sys.path:
+        sys.path.remove(_entry)
+    sys.path.insert(0, _entry)
 
 from simu import renewable_control, renewable_optimization, resource_topology, trainee_exchange
 from simu.http_common import EncodedResponseCache, StaticAssetCache
@@ -919,6 +923,717 @@ if (fn({{ tagName: "DIV" }})) throw new Error("normal DIV wrongly skipped");
 """
         res = subprocess.run([node, "-e", probe], capture_output=True, text=True, check=False)
         self.assertEqual(res.returncode, 0, f"SVG 节点跳过断言失败：{res.stderr}")
+
+
+class Batch1ControlStrategyTests(unittest.TestCase):
+    """验证第 1 批控制策略改进（低载禁区、氢能电气岛隔离、SOC 回差与驻留、双层融合防虚假增发）。"""
+
+    def test_fuel_cell_soc_hysteresis_and_no_low_load_forbidden_zone(self) -> None:
+        from simu.fuel_cell_control import (
+            FuelCellControlInputs,
+            FuelCellControlParameters,
+            calculate_fuel_cell_power_decision,
+        )
+
+        params = FuelCellControlParameters(
+            power_step_kw=10.0,
+            diesel_power_limit_ratio=0.50,
+            diesel_power_stop_minimum_ratio=0.30,
+            electric_storage_soc_limit=0.30,
+            hydrogen_storage_soc_start_limit=0.30,
+            hydrogen_storage_soc_stop_limit=0.20,
+            electric_storage_soc_deadband=0.05,
+        )
+        # SOC 处于 30%~35% 回差区时应保持当前功率，不得因微小波动频繁降载
+        hold_decision = calculate_fuel_cell_power_decision(
+            params,
+            FuelCellControlInputs(
+                current_power_kw=30.0,
+                maximum_power_kw=90.0,
+                minimum_power_kw=20.0,
+                start_threshold_kw=30.0,
+                stop_threshold_kw=10.0,  # 即使传入旧低阈值，算法也必须锁死不低于 minimum_power_kw
+                diesel_power_kw=40.0,
+                diesel_capacity_kw=100.0,
+                electric_storage_soc_average=0.33,
+                hydrogen_storage_soc_average=0.50,
+            ),
+        )
+        self.assertEqual(hold_decision.action, "hold")
+
+        # SOC 高于 35% 触发降载；若当前 20 kW 再降 10 kW 会落入低载禁区，必须直接 stop 到 0
+        stop_decision = calculate_fuel_cell_power_decision(
+            params,
+            FuelCellControlInputs(
+                current_power_kw=20.0,
+                maximum_power_kw=90.0,
+                minimum_power_kw=20.0,
+                start_threshold_kw=30.0,
+                stop_threshold_kw=10.0,
+                diesel_power_kw=40.0,
+                diesel_capacity_kw=100.0,
+                electric_storage_soc_average=0.36,
+                hydrogen_storage_soc_average=0.50,
+            ),
+        )
+        self.assertEqual(stop_decision.action, "stop")
+        self.assertAlmostEqual(stop_decision.requested_delta_kw, -20.0, places=6)
+
+    def test_hydrogen_island_isolation_and_single_bad_soc_fault_tolerance(self) -> None:
+        from simu.renewable_control_parts.hydrogen import _island_electric_storage_soc
+
+        storage_rows = [
+            {
+                "dev_type": "ACStorage",
+                "dev_name": "ES_A1",
+                "online": True,
+                "socKnown": True,
+                "soc": 0.88,
+                "gridComponentId": "AC_1",
+            },
+            {
+                "dev_type": "ACStorage",
+                "dev_name": "ES_A2_BAD",
+                "online": True,
+                "socKnown": False,
+                "soc": None,
+                "gridComponentId": "AC_1",
+            },
+            {
+                "dev_type": "ACStorage",
+                "dev_name": "ES_B1",
+                "online": True,
+                "socKnown": True,
+                "soc": 0.22,
+                "gridComponentId": "AC_2",
+            },
+        ]
+        warned: set[tuple[str, str]] = set()
+        warnings: list[str] = []
+        soc_a = _island_electric_storage_soc(storage_rows, "AC_1", None, warned, warnings)
+        soc_b = _island_electric_storage_soc(storage_rows, "AC_2", None, warned, warnings)
+        self.assertAlmostEqual(soc_a or 0.0, 0.88, places=6)
+        self.assertAlmostEqual(soc_b or 0.0, 0.22, places=6)
+        self.assertTrue(any("ES_A2_BAD" in w for w in warnings))
+
+        # 若某电气岛内电储 SOC 全部无效，则该岛返回 None（fail closed）
+        all_bad_soc = _island_electric_storage_soc(
+            [storage_rows[1]],
+            "AC_1",
+            None,
+            set(),
+            [],
+        )
+        self.assertIsNone(all_bad_soc)
+
+    def test_weather_measurement_availability_gating_and_dual_layer_fusion(self) -> None:
+        from simu.renewable_control_parts.planner import (
+            _apply_renewable_natural_upper_bounds,
+            _finalize_renewable_saturation_memory,
+        )
+        from simu.renewable_control_parts.settings import _environment_measurement_status
+        from simu.renewable_control_parts.common import _measurement_index
+
+        # 1) 测点配置停用（definitions.measurement valid=0）时，即使 curve_boundary 与 real 有值也必须判不可用
+        snap_disabled_def = {
+            "definitions": {
+                "measurement": [
+                    {
+                        "dev_type": "Environment",
+                        "dev_name": "weather",
+                        "meas_type": "SOLAR_IRRADIANCE",
+                        "valid": 0,
+                        "status": "invalid",
+                    },
+                    {
+                        "dev_type": "Environment",
+                        "dev_name": "weather",
+                        "meas_type": "WIND_SPEED",
+                        "valid": 1,
+                        "status": "valid",
+                    },
+                ]
+            },
+            "measurements": {
+                "scada": [
+                    {
+                        "dev_type": "Environment",
+                        "dev_name": "weather",
+                        "meas_type": "SOLAR_IRRADIANCE",
+                        "valid": 1,
+                        "value": 0.0,
+                    },
+                    {
+                        "dev_type": "Environment",
+                        "dev_name": "weather",
+                        "meas_type": "WIND_SPEED",
+                        "valid": 1,
+                        "value": 1.2,
+                    },
+                ]
+            },
+            "curve_boundary": {"point": {"solar_irradiance_w_m2": 0.0, "wind_speed_mps": 0.0}},
+        }
+        meas_idx = _measurement_index(snap_disabled_def)
+        solar_st = _environment_measurement_status(snap_disabled_def, meas_idx, "SOLAR_IRRADIANCE")
+        wind_st = _environment_measurement_status(snap_disabled_def, meas_idx, "WIND_SPEED")
+        self.assertFalse(solar_st["available"])
+        self.assertEqual(solar_st["reason"], "config_disabled")
+        self.assertTrue(wind_st["available"])
+        self.assertAlmostEqual(float(wind_st["value"]), 1.2, places=6)
+
+        # 2) SCADA 实时停用（valid=0）时严禁回退 real 或 curve_boundary
+        snap_scada_invalid = {
+            "measurements": {
+                "scada": [
+                    {
+                        "dev_type": "Environment",
+                        "dev_name": "weather",
+                        "meas_type": "WIND_SPEED",
+                        "valid": 0,
+                        "value": 0.0,
+                    }
+                ],
+                "real": [
+                    {
+                        "dev_type": "Environment",
+                        "dev_name": "weather",
+                        "meas_type": "WIND_SPEED",
+                        "valid": 1,
+                        "value": 0.0,
+                    }
+                ],
+            },
+            "curve_boundary": {"point": {"wind_speed_mps": 0.0}},
+        }
+        wind_scada_st = _environment_measurement_status(
+            snap_scada_invalid, _measurement_index(snap_scada_invalid), "WIND_SPEED"
+        )
+        self.assertFalse(wind_scada_st["available"])
+        self.assertEqual(wind_scada_st["reason"], "scada_invalid")
+
+        # 3) 双层融合测试：
+        # - 风速有效且为 0 -> 第一层气象前馈直接将风电 naturalUpperKw 置 0
+        # - 辐照度停用 -> 光伏不进第一层夜间前馈，转由第二层电侧响应失配 2 拍饱和、10 拍解耦探顶、响应后解锁
+        ctrl_settings = renewable_control.RenewableControlSettings(step_coefficient=0.05)
+        memory: dict[str, object] = {}
+        wind_ok = {"available": True, "value": 0.5, "reason": "valid"}
+        solar_off = {"available": False, "value": None, "reason": "config_disabled"}
+
+        def make_rows(pv_cur: float, wind_cur: float) -> list[dict[str, object]]:
+            return [
+                {
+                    "dev_type": "ACGenerator",
+                    "dev_name": "WT1",
+                    "technology": "wind",
+                    "online": True,
+                    "commandable": True,
+                    "capacityKw": 100.0,
+                    "currentKw": wind_cur,
+                    "planningCurrentKw": wind_cur,
+                    "weatherMeasurementAvailable": True,
+                    "controlWeatherAvailableKw": 0.0,
+                    "strategyCommand": True,
+                    "dispatchEnabled": True,
+                },
+                {
+                    "dev_type": "ACGenerator",
+                    "dev_name": "PV1",
+                    "technology": "pv",
+                    "online": True,
+                    "commandable": True,
+                    "capacityKw": 100.0,
+                    "currentKw": pv_cur,
+                    "planningCurrentKw": pv_cur,
+                    "weatherMeasurementAvailable": False,
+                    "controlWeatherAvailableKw": None,
+                    "strategyCommand": True,
+                    "dispatchEnabled": True,
+                },
+            ]
+
+        # 第 1 拍（t=0）：风电被第一层直接封顶为 0；光伏因辐照停用暂不封顶，下发增发 5 kW
+        rows = make_rows(pv_cur=0.0, wind_cur=0.0)
+        targets = {("ACGenerator", "WT1"): 5.0, ("ACGenerator", "PV1"): 5.0}
+        _apply_renewable_natural_upper_bounds(
+            rows,
+            targets,
+            ctrl_settings,
+            runtime_memory=memory,
+            sim_time_seconds=0.0,
+            wind_measurement_status=wind_ok,
+            solar_measurement_status=solar_off,
+            diesel_guard_blocked=False,
+        )
+        self.assertAlmostEqual(float(rows[0]["naturalUpperKw"]), 0.0, places=6)
+        self.assertAlmostEqual(targets[("ACGenerator", "WT1")], 0.0, places=6)
+        self.assertNotIn("naturalUpperKw", rows[1])
+        rows[0]["commandKw"] = 0.0
+        rows[1]["commandKw"] = 5.0
+        _finalize_renewable_saturation_memory(
+            rows, runtime_memory=memory, sim_time_seconds=0.0, quality_blocked=False
+        )
+
+        # 第 2 拍（t=2）：光伏实测仍为 0（第 1 次失配），尚未锁定
+        rows = make_rows(pv_cur=0.0, wind_cur=0.0)
+        targets = {("ACGenerator", "WT1"): 5.0, ("ACGenerator", "PV1"): 5.0}
+        _apply_renewable_natural_upper_bounds(
+            rows,
+            targets,
+            ctrl_settings,
+            runtime_memory=memory,
+            sim_time_seconds=2.0,
+            wind_measurement_status=wind_ok,
+            solar_measurement_status=solar_off,
+            diesel_guard_blocked=False,
+        )
+        self.assertFalse(bool(rows[1]["naturalResourceSaturated"]))
+        rows[0]["commandKw"] = 0.0
+        rows[1]["commandKw"] = 5.0
+        _finalize_renewable_saturation_memory(
+            rows, runtime_memory=memory, sim_time_seconds=2.0, quality_blocked=False
+        )
+
+        # 第 3 拍（t=4）：光伏实测仍为 0（连续第 2 次失配）-> 第二层进入饱和态，锁定自然上限为 0
+        rows = make_rows(pv_cur=0.0, wind_cur=0.0)
+        targets = {("ACGenerator", "WT1"): 5.0, ("ACGenerator", "PV1"): 5.0}
+        _apply_renewable_natural_upper_bounds(
+            rows,
+            targets,
+            ctrl_settings,
+            runtime_memory=memory,
+            sim_time_seconds=4.0,
+            wind_measurement_status=wind_ok,
+            solar_measurement_status=solar_off,
+            diesel_guard_blocked=False,
+        )
+        self.assertTrue(bool(rows[1]["naturalResourceSaturated"]))
+        self.assertAlmostEqual(float(rows[1]["naturalUpperKw"]), 0.0, places=6)
+        self.assertAlmostEqual(targets[("ACGenerator", "PV1")], 0.0, places=6)
+        rows[0]["commandKw"] = 0.0
+        rows[1]["commandKw"] = 0.0
+        _finalize_renewable_saturation_memory(
+            rows, runtime_memory=memory, sim_time_seconds=4.0, quality_blocked=False
+        )
+
+        # 持续推进至第 10 次饱和计数 -> 触发解耦探顶（不改优化器目标，仅抬高最终下发 commandKw）
+        probe_seen = False
+        for step_idx in range(1, 12):
+            t_sec = 4.0 + step_idx * 2.0
+            rows = make_rows(pv_cur=0.0, wind_cur=0.0)
+            targets = {("ACGenerator", "WT1"): 5.0, ("ACGenerator", "PV1"): 5.0}
+            _apply_renewable_natural_upper_bounds(
+                rows,
+                targets,
+                ctrl_settings,
+                runtime_memory=memory,
+                sim_time_seconds=t_sec,
+                wind_measurement_status=wind_ok,
+                solar_measurement_status=solar_off,
+                diesel_guard_blocked=False,
+            )
+            rows[0]["commandKw"] = 0.0
+            rows[1]["commandKw"] = 0.0
+            _finalize_renewable_saturation_memory(
+                rows, runtime_memory=memory, sim_time_seconds=t_sec, quality_blocked=False
+            )
+            if rows[1].get("decoupledProbeApplied"):
+                probe_seen = True
+                self.assertGreater(float(rows[1]["commandKw"]), 0.0)
+                # 下一拍模拟日出：光伏响应探顶涨至 2.0 kW -> 立刻解除饱和
+                next_rows = make_rows(pv_cur=2.0, wind_cur=0.0)
+                next_targets = {("ACGenerator", "WT1"): 5.0, ("ACGenerator", "PV1"): 7.0}
+                _apply_renewable_natural_upper_bounds(
+                    next_rows,
+                    next_targets,
+                    ctrl_settings,
+                    runtime_memory=memory,
+                    sim_time_seconds=t_sec + 2.0,
+                    wind_measurement_status=wind_ok,
+                    solar_measurement_status=solar_off,
+                    diesel_guard_blocked=False,
+                )
+                self.assertFalse(bool(next_rows[1]["naturalResourceSaturated"]))
+                break
+        self.assertTrue(probe_seen, "持续饱和达到探顶周期后应触发解耦探顶")
+
+    def test_real_model_night_pv_does_not_falsely_curtail_diesel(self) -> None:
+        """真实模型集成校验：夜间辐照测点有效为 0 时光伏目标为 0；停用该测点时不进夜间前馈。"""
+        import copy
+        from simu.service import PolarMicrogridSimulator
+
+        startup_file = APP_ROOT / "startup.json"
+        model_dir = None
+        if startup_file.is_file():
+            cfg = json.loads(startup_file.read_text(encoding="utf-8"))
+            data_dir = (APP_ROOT / str(cfg.get("data_dir") or "data")).resolve()
+            models_dir = data_dir / "models"
+            if (models_dir / "秦岭站" / "model.e").is_file():
+                model_dir = models_dir / "秦岭站"
+        if model_dir is None:
+            self.skipTest("未找到本地秦岭站测试模型")
+
+        with tempfile.TemporaryDirectory() as td:
+            svc = PolarMicrogridSimulator(
+                sim_dir=model_dir,
+                runtime_dir=Path(td) / "rt",
+                model_id=model_dir.name,
+                model_name=model_dir.name,
+                noise_std=0.0,
+            )
+            try:
+                snapshot = svc.step()
+            finally:
+                if hasattr(svc, "shutdown"):
+                    svc.shutdown()
+
+        # 构造夜间零辐照快照（辐照测点配置有效且实时值为 0，光伏实测为 0）
+        night_snap = copy.deepcopy(snapshot)
+        for channel in ("scada", "real"):
+            for row in night_snap.get("measurements", {}).get(channel, []) or []:
+                if (
+                    str(row.get("dev_type", "")) == "Environment"
+                    and str(row.get("dev_name", "")) == "weather"
+                    and str(row.get("meas_type", "")).upper() == "SOLAR_IRRADIANCE"
+                ):
+                    row["valid"] = 1
+                    row["value"] = 0.0
+                if "光伏" in str(row.get("dev_name", "")) and str(row.get("meas_type", "")).upper() in {"P", "P_GEN", "P_AC", "P_DC"}:
+                    row["value"] = 0.0
+        for row in night_snap.get("definitions", {}).get("measurement", []) or []:
+            if (
+                str(row.get("dev_type", "")) == "Environment"
+                and str(row.get("dev_name", "")) == "weather"
+                and str(row.get("meas_type", "")).upper() == "SOLAR_IRRADIANCE"
+            ):
+                row["valid"] = 1
+                row["status"] = "valid"
+
+        plan_night_valid = renewable_control.calculate_renewable_control_plan(
+            night_snap, renewable_control.RenewableControlSettings()
+        )
+        self.assertTrue(plan_night_valid["weather"]["solarMeasurementAvailable"])
+        pv_rows_valid = [
+            r for r in plan_night_valid["commandRows"] if r.get("technology") == "pv" and r.get("online")
+        ]
+        self.assertGreater(len(pv_rows_valid), 0)
+        for pv_row in pv_rows_valid:
+            self.assertAlmostEqual(float(pv_row.get("naturalUpperKw", -1.0)), 0.0, places=6)
+            self.assertAlmostEqual(float(pv_row.get("commandKw", -1.0)), 0.0, places=6)
+
+        # 将辐照测点自身配置置为停用（valid=0），光伏不应再进入夜间前馈截断
+        night_snap_disabled = copy.deepcopy(night_snap)
+        for row in night_snap_disabled.get("definitions", {}).get("measurement", []) or []:
+            if (
+                str(row.get("dev_type", "")) == "Environment"
+                and str(row.get("dev_name", "")) == "weather"
+                and str(row.get("meas_type", "")).upper() == "SOLAR_IRRADIANCE"
+            ):
+                row["valid"] = 0
+                row["status"] = "invalid"
+        plan_night_disabled = renewable_control.calculate_renewable_control_plan(
+            night_snap_disabled, renewable_control.RenewableControlSettings()
+        )
+        self.assertFalse(plan_night_disabled["weather"]["solarMeasurementAvailable"])
+        pv_rows_disabled = [
+            r for r in plan_night_disabled["commandRows"] if r.get("technology") == "pv" and r.get("online")
+        ]
+        for pv_row in pv_rows_disabled:
+            self.assertIsNone(pv_row.get("naturalUpperKw"))
+
+    def test_hydrogen_min_dwell_and_safety_override_on_real_model(self) -> None:
+        """验证氢能启停最小驻留冷却在常规经济性停机时保持最小运行功率，但安全停机不受阻塞。"""
+        import copy
+        from simu.renewable_control_parts.common import _measurement_index
+        from simu.renewable_control_parts.hydrogen import _optimize_hydrogen_within_topology_islands
+        from simu.resource_topology import resolve_resource_topology
+        from simu.service import PolarMicrogridSimulator
+
+        startup_file = APP_ROOT / "startup.json"
+        model_dir = None
+        if startup_file.is_file():
+            cfg = json.loads(startup_file.read_text(encoding="utf-8"))
+            data_dir = (APP_ROOT / str(cfg.get("data_dir") or "data")).resolve()
+            models_dir = data_dir / "models"
+            if (models_dir / "秦岭站" / "model.e").is_file():
+                model_dir = models_dir / "秦岭站"
+        if model_dir is None:
+            self.skipTest("未找到本地秦岭站测试模型")
+
+        with tempfile.TemporaryDirectory() as td:
+            svc = PolarMicrogridSimulator(
+                sim_dir=model_dir,
+                runtime_dir=Path(td) / "rt",
+                model_id=model_dir.name,
+                model_name=model_dir.name,
+                noise_std=0.0,
+            )
+            try:
+                snapshot = svc.step()
+            finally:
+                if hasattr(svc, "shutdown"):
+                    svc.shutdown()
+
+        # 构造电制氢正在以最小运行功率（20%）运行、但柴发高负载要求常规停机的快照
+        snap = copy.deepcopy(snapshot)
+        coupling_rows = (
+            snap.get("definitions", {}).get("model", {}).get("AcE2Hydro", {}).get("rows", [])
+            or snap.get("definitions", {}).get("model", {}).get("DcE2Hydro", {}).get("rows", [])
+        )
+        if not coupling_rows:
+            self.skipTest("当前模型不含电制氢耦合设备")
+
+        ctrl_settings = renewable_control.RenewableControlSettings(
+            hydrogen_min_dwell_seconds=30.0,
+        )
+        # 校验默认配置与序列化完整透出新增参数
+        payload = ctrl_settings.payload()
+        self.assertAlmostEqual(float(payload["hydrogenMinDwellSeconds"]), 30.0, places=6)
+        self.assertAlmostEqual(float(payload["fuelCellStorageSocDeadband"]), 0.05, places=6)
+
+        # 验证时钟回退重置 runtime_memory 的逻辑
+        from simu.renewable_control_parts.planner import _reset_runtime_memory_if_clock_rewound
+
+        mem: dict[str, object] = {
+            "lastSimTimeSeconds": 120.0,
+            "hydrogen_dwell": {"AcE2Hydro:E1": {"state": "running", "lastTransitionSimTime": 100.0}},
+            "renewable_saturation": {"ACGenerator:PV1": {"saturated": True}},
+        }
+        _reset_runtime_memory_if_clock_rewound(mem, 10.0)
+        self.assertNotIn("hydrogen_dwell", mem)
+        self.assertNotIn("renewable_saturation", mem)
+        self.assertAlmostEqual(float(mem["lastSimTimeSeconds"]), 10.0, places=6)
+
+
+class Batch2ControlStrategyTests(unittest.TestCase):
+    """验证第 2 批控制策略改进（氢能单拍协同、变流器效率损耗、平滑 SOC 均衡、柴发/变流器爬坡、启机滞后与零柴发构网）。"""
+
+    def _minimal_ac_dc_topology(self):
+        from simu.resource_topology import ResourceTopology
+
+        return ResourceTopology(
+            resources={},
+            dc_transfer_groups={},
+            converter_component_ids={("DCACConverter", "CONV1"): ("AC_1", "DC_1")},
+            device_component_ids={},
+        )
+
+    def test_external_injection_single_cycle_coordination(self) -> None:
+        """验证氢能外部注入变更量回代主优化器时，新能源与柴发在单拍内精确协同平衡。"""
+        topo = self._minimal_ac_dc_topology()
+        ren_rows = [
+            {
+                "dev_type": "ACGenerator",
+                "dev_name": "WT1",
+                "online": True,
+                "commandable": True,
+                "capacityKw": 200.0,
+                "currentKw": 100.0,
+                "planningCurrentKw": 100.0,
+                "connectionSide": "AC",
+                "gridComponentId": "AC_1",
+            }
+        ]
+        diesel_rows = [
+            {
+                "dev_type": "ACGenerator",
+                "dev_name": "DG1",
+                "online": True,
+                "commandable": True,
+                "capacityKw": 200.0,
+                "minKw": 20.0,
+                "currentKw": 100.0,
+                "connectionSide": "AC",
+                "gridComponentId": "AC_1",
+            }
+        ]
+        # 模拟电制氢本拍增耗电 25 kW（AC_1 外部净注入 -25 kW）
+        res = renewable_optimization.optimize_topology_islands(
+            topo,
+            renewable_rows=ren_rows,
+            diesel_rows=diesel_rows,
+            storage_rows=[],
+            converter_rows=[],
+            step_coefficient=0.20,  # 风电单拍最多恢复 +40 kW
+            diesel_step_ratio=0.50,
+            diesel_power_protection_ratio=0.0,
+            external_injection_delta_by_component={("AC_1", "AC"): -25.0},
+        )
+        self.assertTrue(res.all_success)
+        wt_tgt = res.targets[("ACGenerator", "WT1")]
+        dg_tgt = res.targets[("ACGenerator", "DG1")]
+        # 新能源增发 + 柴发变化 必须精确补齐制氢 +25 kW 负荷，且优先推高新能源、压低柴发
+        self.assertAlmostEqual((wt_tgt - 100.0) + (dg_tgt - 100.0), 25.0, places=3)
+        self.assertAlmostEqual(wt_tgt, 140.0, places=3)
+        self.assertAlmostEqual(dg_tgt, 85.0, places=3)
+
+    def test_converter_efficiency_asymmetric_balance(self) -> None:
+        """验证变流器效率系数生效时，跨交直流能量平衡系数体现损耗；效率 1.0 时严格无损。"""
+        topo = self._minimal_ac_dc_topology()
+        conv_row = {
+            "dev_type": "DCACConverter",
+            "dev_name": "CONV1",
+            "online": True,
+            "commandable": True,
+            "currentKw": -50.0,  # P_AC 口径 -50 kW 对应 DC -> AC 正向送电 +50 kW
+            "signedMinTargetKw": -100.0,
+            "signedMaxTargetKw": 100.0,
+            "transferCapacityKw": 100.0,
+            "set_type": "p_ac_set",
+        }
+        var_lossy = renewable_optimization._converter_variable(
+            conv_row, topo, 0.20, converter_efficiency=0.96
+        )
+        var_lossless = renewable_optimization._converter_variable(
+            conv_row, topo, 0.20, converter_efficiency=1.0
+        )
+        self.assertIsNotNone(var_lossy)
+        self.assertIsNotNone(var_lossless)
+        assert var_lossy is not None and var_lossless is not None
+        # DC->AC：AC 注入 +1.0 时 DC 侧须多吸取 1/0.96
+        self.assertAlmostEqual(abs(var_lossy.dc_balance_coefficient), 1.0 / 0.96, places=5)
+        self.assertAlmostEqual(abs(var_lossless.dc_balance_coefficient), 1.0, places=6)
+        # 常规爬坡步长 = 20% * 100 = 20 kW -> [30, 70]
+        self.assertAlmostEqual(var_lossy.lower_kw, 30.0, places=5)
+        self.assertAlmostEqual(var_lossy.upper_kw, 70.0, places=5)
+
+    def test_smooth_storage_soc_rebalance_and_deadband(self) -> None:
+        """验证多储能 SOC 差值在死区内均分不乒乓，超死区时平滑加权分摊且总功率守恒。"""
+        import numpy as np
+
+        def make_storage(name: str, soc: float):
+            return renewable_optimization._Variable(
+                key=("ACStorage", name),
+                kind="storage",
+                current_kw=0.0,
+                lower_kw=-100.0,
+                upper_kw=100.0,
+                side="AC",
+                component_id="AC_1",
+                storage_soc=soc,
+                storage_forced_direction=False,
+            )
+
+        # 场景 A：SOC 差值 1% <= 2% 死区 -> 两台应均分 60 kW 放电（各 30 kW），不倒手
+        vars_close = [make_storage("ES1", 0.505), make_storage("ES2", 0.495)]
+        out_close = renewable_optimization._rebalance_storage_targets_by_soc(
+            np.array([60.0, 0.0]),
+            vars_close,
+            np.array([-100.0, -100.0]),
+            np.array([100.0, 100.0]),
+            np.array([[1.0, 1.0]]),
+            np.zeros((0, 2)),
+            0.05,
+            1e-4,
+            100,
+            soc_rebalance_deadband=0.02,
+        )
+        self.assertAlmostEqual(float(np.sum(out_close)), 60.0, places=3)
+        self.assertAlmostEqual(float(out_close[0]), 30.0, places=2)
+        self.assertAlmostEqual(float(out_close[1]), 30.0, places=2)
+
+        # 场景 B：SOC 差值 20% > 2% -> 高 SOC 多放、低 SOC 也平滑分担（非 60/0 极端贪心）
+        vars_far = [make_storage("ES1", 0.70), make_storage("ES2", 0.50)]
+        out_far = renewable_optimization._rebalance_storage_targets_by_soc(
+            np.array([30.0, 30.0]),
+            vars_far,
+            np.array([-100.0, -100.0]),
+            np.array([100.0, 100.0]),
+            np.array([[1.0, 1.0]]),
+            np.zeros((0, 2)),
+            0.05,
+            1e-4,
+            100,
+            soc_rebalance_deadband=0.02,
+        )
+        self.assertAlmostEqual(float(np.sum(out_far)), 60.0, places=3)
+        self.assertGreater(float(out_far[0]), float(out_far[1]))
+        self.assertGreater(float(out_far[1]), 5.0)
+
+    def test_diesel_ramp_step_limit_and_safety_override(self) -> None:
+        """验证柴发常规步长限制生效且安全越限时允许两阶段机制自动兜底。"""
+        row = {
+            "dev_type": "ACGenerator",
+            "dev_name": "DG1",
+            "online": True,
+            "commandable": True,
+            "capacityKw": 200.0,
+            "minKw": 20.0,
+            "currentKw": 100.0,
+            "connectionSide": "AC",
+            "gridComponentId": "AC_1",
+        }
+        var_ramped = renewable_optimization._diesel_variable(row, 0.15, 0.03)
+        self.assertIsNotNone(var_ramped)
+        assert var_ramped is not None
+        # 15% * 200 = 30 kW -> [70, 130]，安全全区间仍为 [26, 194]
+        self.assertAlmostEqual(var_ramped.normal_step_kw, 30.0, places=6)
+        self.assertAlmostEqual(var_ramped.lower_kw, 70.0, places=6)
+        self.assertAlmostEqual(var_ramped.upper_kw, 130.0, places=6)
+        self.assertAlmostEqual(var_ramped.safety_lower_kw, 26.0, places=6)
+        self.assertAlmostEqual(var_ramped.safety_upper_kw, 194.0, places=6)
+
+    def test_zero_diesel_grid_forming_storage_reference_mode(self) -> None:
+        """验证全站柴发停机但交流构网储能在线时，进入 grid_forming_storage_reference 零碳模式而非闭锁。"""
+        import copy
+        from simu.service import PolarMicrogridSimulator
+
+        startup_file = APP_ROOT / "startup.json"
+        model_dir = None
+        if startup_file.is_file():
+            cfg = json.loads(startup_file.read_text(encoding="utf-8"))
+            data_dir = (APP_ROOT / str(cfg.get("data_dir") or "data")).resolve()
+            models_dir = data_dir / "models"
+            if (models_dir / "秦岭站" / "model.e").is_file():
+                model_dir = models_dir / "秦岭站"
+        if model_dir is None:
+            self.skipTest("未找到本地秦岭站测试模型")
+
+        with tempfile.TemporaryDirectory() as td:
+            svc = PolarMicrogridSimulator(
+                sim_dir=model_dir,
+                runtime_dir=Path(td) / "rt",
+                model_id=model_dir.name,
+                model_name=model_dir.name,
+                noise_std=0.0,
+            )
+            try:
+                snapshot = svc.step()
+            finally:
+                if hasattr(svc, "shutdown"):
+                    svc.shutdown()
+
+        snap = copy.deepcopy(snapshot)
+        # 找出所有柴发并置为停机，同时保留交流构网储能在线
+        diesel_names: set[str] = set()
+        for dev in snap.get("devices", []) or []:
+            name = str(dev.get("dev_name") or dev.get("name") or "")
+            if "柴发" in name or "柴油" in name:
+                dev["run_stat"] = 0
+                diesel_names.add(name)
+        for ch in ("scada", "real"):
+            for row in snap.get("measurements", {}).get(ch, []) or []:
+                if (
+                    str(row.get("dev_name", "")) in diesel_names
+                    and str(row.get("meas_type", "")).upper() == "RUN_STAT"
+                ):
+                    row["value"] = 0.0
+
+        plan = renewable_control.calculate_renewable_control_plan(
+            snap, renewable_control.RenewableControlSettings()
+        )
+        metrics = plan.get("metrics", {})
+        # 若模型本身含交流构网储能，则应进入零碳构网模式；绝不应出现 blocked_no_diesel 且伴随交流构网储能
+        has_ac_gf = any(
+            row.get("technology") == "storage"
+            and row.get("connectionSide") == "AC"
+            and row.get("role") == "balance"
+            and row.get("online")
+            for row in plan.get("commandRows", [])
+        )
+        if has_ac_gf:
+            self.assertEqual(metrics.get("operatingMode"), "grid_forming_storage_reference")
+            self.assertNotEqual(plan.get("dataQuality", {}).get("status"), "blocked")
 
 
 if __name__ == "__main__":

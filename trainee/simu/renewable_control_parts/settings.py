@@ -118,8 +118,14 @@ class RenewableControlSettings:
     soc_max: float = default_number("soc_max")
     large_step_threshold_kw: float = default_number("large_step_threshold_kw")
     step_coefficient: float = default_number("renewable_step_ratio")
+    diesel_step_ratio: float = default_number("diesel_step_ratio")
+    converter_ramp_step_ratio: float = default_number("converter_ramp_step_ratio")
+    converter_efficiency: float = default_number("converter_efficiency")
     storage_step_ratio: float = default_number(
         "grid_following_storage_step_ratio"
+    )
+    storage_soc_rebalance_deadband: float = default_number(
+        "storage_soc_rebalance_deadband"
     )
     storage_soc_correction_step_scale: float = default_number(
         "storage_soc_correction_step_scale"
@@ -136,6 +142,12 @@ class RenewableControlSettings:
     )
     hydrogen_pressure_deadband_ratio: float = default_number(
         "hydrogen_pressure_deadband_ratio"
+    )
+    hydrogen_min_dwell_seconds: float = default_number(
+        "hydrogen_min_dwell_seconds"
+    )
+    hydrogen_startup_grace_seconds: float = default_number(
+        "hydrogen_startup_grace_seconds"
     )
     electrolyzer_power_min_ratio: float = default_number("electrolyzer_power_min_ratio")
     electrolyzer_power_max_ratio: float = default_number("electrolyzer_power_max_ratio")
@@ -175,6 +187,9 @@ class RenewableControlSettings:
     )
     fuel_cell_storage_soc_limit: float = default_number(
         "fuel_cell_storage_soc_limit"
+    )
+    fuel_cell_storage_soc_deadband: float = default_number(
+        "fuel_cell_storage_soc_deadband"
     )
     fuel_cell_hydrogen_storage_soc_upper_limit: float = default_number(
         "fuel_cell_hydrogen_storage_soc_upper_limit"
@@ -307,7 +322,13 @@ class RenewableControlSettings:
             soc_max=maximum,
             large_step_threshold_kw=max(0.0, float(self.large_step_threshold_kw)),
             step_coefficient=max(0.0, float(self.step_coefficient)),
+            diesel_step_ratio=_clamp(float(self.diesel_step_ratio), 0.0, 1.0),
+            converter_ramp_step_ratio=_clamp(float(self.converter_ramp_step_ratio), 0.0, 1.0),
+            converter_efficiency=_clamp(float(self.converter_efficiency), 0.5, 1.0),
             storage_step_ratio=storage_step_ratio,
+            storage_soc_rebalance_deadband=_clamp(
+                float(self.storage_soc_rebalance_deadband), 0.0, 0.5
+            ),
             storage_soc_correction_step_scale=_clamp(
                 float(self.storage_soc_correction_step_scale),
                 0.10,
@@ -331,6 +352,14 @@ class RenewableControlSettings:
                 float(self.hydrogen_pressure_deadband_ratio),
                 0.0,
                 0.5,
+            ),
+            hydrogen_min_dwell_seconds=max(
+                0.0,
+                float(self.hydrogen_min_dwell_seconds),
+            ),
+            hydrogen_startup_grace_seconds=max(
+                0.0,
+                float(self.hydrogen_startup_grace_seconds),
             ),
             electrolyzer_power_min_ratio=electrolyzer_power_min_ratio,
             electrolyzer_power_max_ratio=electrolyzer_power_max_ratio,
@@ -384,6 +413,9 @@ class RenewableControlSettings:
             ),
             fuel_cell_storage_soc_limit=_clamp(
                 float(self.fuel_cell_storage_soc_limit), 0.0, 1.0
+            ),
+            fuel_cell_storage_soc_deadband=_clamp(
+                float(self.fuel_cell_storage_soc_deadband), 0.0, 0.5
             ),
             fuel_cell_hydrogen_storage_soc_upper_limit=fuel_cell_hydrogen_storage_soc_upper_limit,
             fuel_cell_hydrogen_storage_soc_lower_limit=fuel_cell_hydrogen_storage_soc_lower_limit,
@@ -453,11 +485,27 @@ class RenewableControlSettings:
                 "renewableStepRatePerMinute",
                 "renewableStepRatio",
             ),
+            "diesel_step_ratio": (
+                "diesel_step_ratio",
+                "dieselStepRatio",
+            ),
+            "converter_ramp_step_ratio": (
+                "converter_ramp_step_ratio",
+                "converterRampStepRatio",
+            ),
+            "converter_efficiency": (
+                "converter_efficiency",
+                "converterEfficiency",
+            ),
             "storage_step_ratio": (
                 "storage_step_ratio",
                 "storageStepRatePerMinute",
                 "storageStepRatio",
                 "gridFollowingStorageStepRatio",
+            ),
+            "storage_soc_rebalance_deadband": (
+                "storage_soc_rebalance_deadband",
+                "storageSocRebalanceDeadband",
             ),
             "storage_soc_correction_step_scale": (
                 "storage_soc_correction_step_scale",
@@ -477,6 +525,14 @@ class RenewableControlSettings:
             "hydrogen_pressure_deadband_ratio": (
                 "hydrogen_pressure_deadband_ratio",
                 "hydrogenPressureDeadbandRatio",
+            ),
+            "hydrogen_min_dwell_seconds": (
+                "hydrogen_min_dwell_seconds",
+                "hydrogenMinDwellSeconds",
+            ),
+            "hydrogen_startup_grace_seconds": (
+                "hydrogen_startup_grace_seconds",
+                "hydrogenStartupGraceSeconds",
             ),
             "electrolyzer_power_min_ratio": (
                 "electrolyzer_power_min_ratio",
@@ -551,6 +607,10 @@ class RenewableControlSettings:
             "fuel_cell_storage_soc_limit": (
                 "fuel_cell_storage_soc_limit",
                 "fuelCellStorageSocLimit",
+            ),
+            "fuel_cell_storage_soc_deadband": (
+                "fuel_cell_storage_soc_deadband",
+                "fuelCellStorageSocDeadband",
             ),
             "fuel_cell_hydrogen_storage_soc_upper_limit": (
                 "fuel_cell_hydrogen_storage_soc_upper_limit",
@@ -776,13 +836,19 @@ class RenewableControlSettings:
             "largeStepThresholdKw": self.large_step_threshold_kw,
             "stepCoefficient": self.step_coefficient,
             "renewableStepRatio": self.step_coefficient,
+            "dieselStepRatio": self.diesel_step_ratio,
+            "converterRampStepRatio": self.converter_ramp_step_ratio,
+            "converterEfficiency": self.converter_efficiency,
             "storageStepRatio": self.storage_step_ratio,
+            "storageSocRebalanceDeadband": self.storage_soc_rebalance_deadband,
             "storageSocCorrectionStepScale": self.storage_soc_correction_step_scale,
             "gridFormingStorageProtectionRatio": self.grid_forming_storage_protection_ratio,
             "dieselPowerProtectionRatio": self.diesel_power_protection_ratio,
             "socDeadband": self.soc_deadband,
             "hydrogenClosedLoopEnabled": self.hydrogen_closed_loop_enabled,
             "hydrogenPressureDeadbandRatio": self.hydrogen_pressure_deadband_ratio,
+            "hydrogenMinDwellSeconds": self.hydrogen_min_dwell_seconds,
+            "hydrogenStartupGraceSeconds": self.hydrogen_startup_grace_seconds,
             "electrolyzerPowerMinRatio": self.electrolyzer_power_min_ratio,
             "electrolyzerPowerMaxRatio": self.electrolyzer_power_max_ratio,
             "electrolyzerPowerDeadbandRatio": self.electrolyzer_power_deadband_ratio,
@@ -800,6 +866,7 @@ class RenewableControlSettings:
             "fuelCellDieselPowerLimitRatio": self.fuel_cell_diesel_power_limit_ratio,
             "fuelCellDieselPowerStopMinimumRatio": self.fuel_cell_diesel_power_stop_minimum_ratio,
             "fuelCellStorageSocLimit": self.fuel_cell_storage_soc_limit,
+            "fuelCellStorageSocDeadband": self.fuel_cell_storage_soc_deadband,
             "fuelCellHydrogenStorageSocUpperLimit": self.fuel_cell_hydrogen_storage_soc_upper_limit,
             "fuelCellHydrogenStorageSocLowerLimit": self.fuel_cell_hydrogen_storage_soc_lower_limit,
             "storageChargeDeratingCurve": _derating_curve_payload(self.storage_charge_derating_curve),
@@ -854,6 +921,162 @@ def _curve_boundary_value(snapshot: Mapping[str, Any], key: str) -> Optional[flo
     boundary = snapshot.get("curve_boundary")
     point = boundary.get("point") if (type(boundary) is dict or isinstance(boundary, Mapping)) else None
     return _number(point.get(key)) if (type(point) is dict or isinstance(point, Mapping)) else None
+
+def _measurement_row_enabled(row: Mapping[str, Any]) -> bool:
+    """检查单条测点配置行或实时量测行自身是否处于启用/有效状态。"""
+    raw_status = str(row.get("status", "") or "").strip().lower()
+    if raw_status in {"invalid", "disabled", "off", "0", "false"}:
+        return False
+    if "enabled" in row and not _boolean(row.get("enabled"), True):
+        return False
+    raw_valid = row.get("valid", 1)
+    if raw_valid == 1 or raw_valid is True:
+        return True
+    parsed_valid = _number(raw_valid)
+    return parsed_valid is not None and int(parsed_valid) == 1
+
+
+def _environment_measurement_status(
+    snapshot: Mapping[str, Any],
+    measurements: Mapping[Tuple[str, str, str], MeasurementValue],
+    meas_type: str,
+) -> Dict[str, Any]:
+    """联合检查气象测点自身配置状态与实时量测可用状态，绝不回退曲线边界。"""
+    target_type = str(meas_type or "").strip().upper()
+    key = ("Environment", "weather", target_type)
+
+    # 1. 检查测点自身定义配置（优先 definitions.measurement，其次 measurements.definitions）
+    raw_definitions: Optional[Sequence[Any]] = None
+    definitions_block = snapshot.get("definitions")
+    if type(definitions_block) is dict or isinstance(definitions_block, Mapping):
+        candidate = definitions_block.get("measurement")
+        if isinstance(candidate, Sequence) and not isinstance(candidate, (str, bytes)):
+            raw_definitions = candidate
+    if raw_definitions is None:
+        raw_measurements = snapshot.get("measurements")
+        if type(raw_measurements) is dict or isinstance(raw_measurements, Mapping):
+            candidate = raw_measurements.get("definitions")
+            if isinstance(candidate, Sequence) and not isinstance(candidate, (str, bytes)):
+                raw_definitions = candidate
+
+    configured = True
+    config_valid = True
+    if raw_definitions is not None and len(raw_definitions) > 0:
+        matched_def: Optional[Mapping[str, Any]] = None
+        for row in raw_definitions:
+            if not (type(row) is dict or isinstance(row, Mapping)):
+                continue
+            if (
+                str(row.get("dev_type", "")) == key[0]
+                and str(row.get("dev_name", "")) == key[1]
+                and str(row.get("meas_type", "")).strip().upper() == key[2]
+            ):
+                matched_def = row
+                break
+        if matched_def is None:
+            configured = False
+            config_valid = False
+        else:
+            configured = True
+            config_valid = _measurement_row_enabled(matched_def)
+
+    if not configured:
+        return {
+            "available": False,
+            "configured": False,
+            "configValid": False,
+            "liveValid": False,
+            "value": None,
+            "source": "none",
+            "reason": "not_configured",
+        }
+    if not config_valid:
+        return {
+            "available": False,
+            "configured": True,
+            "configValid": False,
+            "liveValid": False,
+            "value": None,
+            "source": "none",
+            "reason": "config_disabled",
+        }
+
+    # 2. 检查实时量测通道：SCADA 显式标为无效/停用时严禁回退 real 或 curve_boundary
+    raw_measurements = snapshot.get("measurements")
+    scada_matched: Optional[Mapping[str, Any]] = None
+    if type(raw_measurements) is dict or isinstance(raw_measurements, Mapping):
+        scada_rows = raw_measurements.get("scada")
+        if isinstance(scada_rows, Sequence) and not isinstance(scada_rows, (str, bytes)):
+            for row in scada_rows:
+                if not (type(row) is dict or isinstance(row, Mapping)):
+                    continue
+                if (
+                    str(row.get("dev_type", "")) == key[0]
+                    and str(row.get("dev_name", "")) == key[1]
+                    and str(row.get("meas_type", "")).strip().upper() == key[2]
+                ):
+                    scada_matched = row
+                    break
+
+    if scada_matched is not None:
+        if not _measurement_row_enabled(scada_matched):
+            return {
+                "available": False,
+                "configured": True,
+                "configValid": True,
+                "liveValid": False,
+                "value": None,
+                "source": "scada",
+                "reason": "scada_invalid",
+            }
+        scada_value = _number(scada_matched.get("value"))
+        if scada_value is None or not math.isfinite(scada_value) or scada_value < 0.0:
+            return {
+                "available": False,
+                "configured": True,
+                "configValid": True,
+                "liveValid": False,
+                "value": None,
+                "source": "scada",
+                "reason": "scada_value_invalid",
+            }
+        return {
+            "available": True,
+            "configured": True,
+            "configValid": True,
+            "liveValid": True,
+            "value": float(scada_value),
+            "source": "scada",
+            "reason": "valid",
+        }
+
+    indexed = measurements.get(key)
+    if (
+        indexed is not None
+        and _measurement_row_enabled(indexed.row)
+        and math.isfinite(indexed.value)
+        and indexed.value >= 0.0
+    ):
+        return {
+            "available": True,
+            "configured": True,
+            "configValid": True,
+            "liveValid": True,
+            "value": float(indexed.value),
+            "source": str(indexed.source or "real"),
+            "reason": "valid",
+        }
+
+    return {
+        "available": False,
+        "configured": True,
+        "configValid": True,
+        "liveValid": False,
+        "value": None,
+        "source": "none",
+        "reason": "measurement_missing",
+    }
+
 
 def _observed_environment_value(
     snapshot: Mapping[str, Any],
@@ -984,6 +1207,10 @@ def _renewable_rows(
     observed_wind_speed: Optional[float] = None,
     observed_solar_irradiance: Optional[float] = None,
     observed_air_temperature: Optional[float] = None,
+    wind_measurement_available: bool = False,
+    solar_measurement_available: bool = False,
+    control_wind_speed: Optional[float] = None,
+    control_solar_irradiance: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     categories = {
@@ -1013,6 +1240,33 @@ def _renewable_rows(
             solar_irradiance=observed_solar_irradiance,
             air_temperature=observed_air_temperature,
         )
+        # 仅当对应气象测点配置与实时状态均有效时，才计算用于控制决策的理论可发上限
+        weather_measurement_available = bool(
+            wind_measurement_available
+            if spec.technology == "wind"
+            else solar_measurement_available
+            if spec.technology == "pv"
+            else False
+        )
+        control_weather_available_kw: Optional[float] = None
+        if weather_measurement_available:
+            if (
+                spec.technology == "pv"
+                and control_solar_irradiance is not None
+                and control_solar_irradiance <= 1.0
+            ):
+                control_weather_available_kw = 0.0
+            else:
+                control_weather_available_kw = _renewable_weather_available_kw(
+                    spec.technology,
+                    spec.parameter,
+                    capacity,
+                    wind_speed=control_wind_speed if spec.technology == "wind" else None,
+                    solar_irradiance=(
+                        control_solar_irradiance if spec.technology == "pv" else None
+                    ),
+                    air_temperature=observed_air_temperature,
+                )
         measured = (
             _measured(measurements, dev_type, name, ("P_GEN", "P", "P_AC", "P_DC"))
             if device_online
@@ -1090,7 +1344,9 @@ def _renewable_rows(
                 "source_name": name,
                 "deviceOnline": device_online,
                 "online": online,
-                "environmentKnown": False,
+                "environmentKnown": weather_measurement_available and control_weather_available_kw is not None,
+                "weatherMeasurementAvailable": weather_measurement_available,
+                "controlWeatherAvailableKw": control_weather_available_kw,
                 "weatherAvailableKnown": weather_available_kw is not None,
                 "weatherAvailableKw": weather_available_kw,
                 "capabilityKnown": capability_known,
