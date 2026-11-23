@@ -286,7 +286,8 @@ def _plan_renewable_storage_island_component(
         targets[key] = target
 
     if action == "recover_one_step_storage_island" and renewable_states:
-        charge_headroom_kw = sum(
+        # 扣除变流器归零后回灌至本地孤岛的充电功率（-converter_current），避免瞬时超限恢复。
+        raw_charge_headroom_kw = sum(
             max(
                 0.0,
                 _finite_number(row.get("chargePower"))
@@ -294,6 +295,13 @@ def _plan_renewable_storage_island_component(
             )
             for row in component.storage_rows
         )
+        charge_headroom_kw = max(0.0, raw_charge_headroom_kw + converter_current)
+        # 若同岛存在已满电无剩余充电能力的在线储能，阻止继续盲目恢复新能源。
+        if any(
+            row.get("online") and _finite_number(row.get("chargePower")) <= EPSILON
+            for row in component.storage_rows
+        ):
+            charge_headroom_kw = 0.0
         allocations = _allocate_by_margin(
             renewable_states,
             min(
@@ -486,6 +494,9 @@ def _clamp_final_command_rows_to_boundaries(
         if (
             not row.get("online")
             or row.get("commandable") is False
+            or row.get("strategyCommand") is False
+            or row.get("automaticControlBlocked")
+            or row.get("optimizationStatus") == "failed"
             or not row.get("set_type")
         ):
             continue
@@ -2157,6 +2168,14 @@ def _side_aware_renewable_recovery_plan(
             else step_kw
         )
         remaining_step_kw = max(0.0, step_kw - used_step_kw)
+        converter_export_eligible = bool(
+            row.get("commandable")
+            and current_kw is not None
+            and current_kw <= EPSILON
+            and target_kw is not None
+            and capacity_kw is not None
+            and capacity_kw > EPSILON
+        )
         converter_states.append(
             {
                 "row": row,
@@ -2166,16 +2185,13 @@ def _side_aware_renewable_recovery_plan(
                 "targetKw": target_kw,
                 "capacityKw": capacity_kw,
                 "exportMarginKw": (
-                    max(0.0, capacity_kw + target_kw)
-                    if group_id in increase_export_protective_group_ids
-                    and group_id not in reduce_export_protective_group_ids
-                    else min(max(0.0, capacity_kw + target_kw), remaining_step_kw)
-                    if row.get("commandable")
-                    and current_kw is not None
-                    and current_kw <= EPSILON
-                    and target_kw is not None
-                    and capacity_kw is not None
-                    and capacity_kw > EPSILON
+                    (
+                        max(0.0, capacity_kw + target_kw)
+                        if group_id in increase_export_protective_group_ids
+                        and group_id not in reduce_export_protective_group_ids
+                        else min(max(0.0, capacity_kw + target_kw), remaining_step_kw)
+                    )
+                    if converter_export_eligible
                     else 0.0
                 ),
                 "exportReductionMarginKw": (

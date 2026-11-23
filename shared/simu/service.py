@@ -296,6 +296,9 @@ class PolarMicrogridSimulator(
         )
         self.latest_real_rows: List[List[str]] = []
         self.latest_scada_rows: List[List[str]] = []
+        self._base_scada_rows: List[List[str]] = []
+        self._dead_fault_frozen_values: Dict[str, float] = {}
+        self._local_settings_revision = 0
         self._fault_restore: Dict[Tuple[str, str, str], str] = {}
         self._last_scada_values: Dict[str, float] = {}
         self._internal_power_converter_keys_cache: Optional[
@@ -925,12 +928,23 @@ class PolarMicrogridSimulator(
                 "p_set",
                 "q_set",
                 "v_set",
+                "i_set",
                 "p_ac_set",
                 "q_ac_set",
                 "v_ac_set",
                 "p_dc_set",
                 "q_dc_set",
                 "v_dc_set",
+                "p_from_set",
+                "q_from_set",
+                "v_from_set",
+                "p_to_set",
+                "q_to_set",
+                "v_to_set",
+                "flow_set",
+                "heat_power",
+                "pv0",
+                "qv0",
             ):
                 if key in item:
                     expanded.append(
@@ -952,6 +966,7 @@ class PolarMicrogridSimulator(
                 "measurement_statuses": ("measurement_statuses", "measurementStatuses"),
                 "modes": ("modes", "device_modes", "deviceModes"),
             }
+            settings_changed = False
             for target_key, names in aliases.items():
                 for name in names:
                     if name in payload:
@@ -962,10 +977,14 @@ class PolarMicrogridSimulator(
                             normalized_value = list(value) if isinstance(value, Sequence) else []
                         if self.local_settings.get(target_key) != normalized_value:
                             self.local_settings[target_key] = normalized_value
+                            settings_changed = True
                             if target_key in {"measurement_faults", "measurement_statuses"}:
                                 measurement_cache_changed = True
                         break
+            if settings_changed:
+                self._local_settings_revision = int(getattr(self, "_local_settings_revision", 0) or 0) + 1
             if measurement_cache_changed:
+                self._reapply_measurement_overlays_locked()
                 self._invalidate_measurement_delta_cache()
             _write_json(self.settings_file, self.local_settings)
             return {

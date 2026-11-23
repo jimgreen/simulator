@@ -28,6 +28,7 @@ from model.dc_array_model import (
     BREAK_COLS as DC_BREAK_COLS,
     BUS_COLS as DC_BUS_COLS,
     DCDC_COLS as DC_DCDC_COLS,
+    CTRL_NONE as DC_CTRL_NONE,
     CTRL_V as DC_CTRL_V,
     GEN_COLS as DC_GEN_COLS,
     LOAD_COLS as DC_LOAD_COLS,
@@ -340,6 +341,40 @@ def ensure_hybrid_ppc_topology(ppc: Dict) -> Dict:
     if ac_ppc is not None:
         _ensure_ac_ppc_topology_with_signature(ac_ppc, ac_signature)
     _apply_hybrid_operational_island_filter(ppc)
+    # 活岛过滤后校验跨网 DCAC 注入的外部参考节点：若驱动侧处于死岛，则剥离该幽灵参考并重算拓扑
+    for _ in range(2):
+        ac_topology = None if ac_ppc is None else ac_ppc.get("_topology_arrays")
+        dc_topology = None if dc_ppc is None else dc_ppc.get("_topology_arrays")
+        ac_alive_ids = (
+            ac_topology.node_ids[ac_topology.node_alive_mask].astype(np.int64, copy=False)
+            if ac_topology is not None
+            else np.empty(0, dtype=np.int64)
+        )
+        dc_alive_ids = (
+            dc_topology.node_ids[dc_topology.node_alive_mask].astype(np.int64, copy=False)
+            if dc_topology is not None
+            else np.empty(0, dtype=np.int64)
+        )
+        dc_ref_changed = False
+        ac_ref_changed = False
+        if dc_ppc is not None and ac_ppc is not None:
+            dc_ref_changed = _attach_hybrid_dc_reference_nodes(
+                ppc,
+                allowed_ac_ids=ac_alive_ids,
+            )
+            ac_ref_changed = _attach_hybrid_ac_reference_nodes(
+                ppc,
+                allowed_dc_ids=dc_alive_ids,
+            )
+        if not (dc_ref_changed or ac_ref_changed):
+            break
+        if dc_ppc is not None:
+            dc_ppc.pop("_topology_arrays", None)
+            _ensure_dc_ppc_topology_with_signature(dc_ppc, _dc_topology_signature(dc_ppc))
+        if ac_ppc is not None:
+            ac_ppc.pop("_topology_arrays", None)
+            _ensure_ac_ppc_topology_with_signature(ac_ppc, _ac_topology_signature(ac_ppc))
+        _apply_hybrid_operational_island_filter(ppc)
     return ppc
 
 
@@ -423,6 +458,62 @@ def _apply_hybrid_operational_island_filter(ppc: Dict) -> None:
                 == DC_CTRL_V
             )
             dc_balance_islands = dc_gen_islands[balance_rows]
+        dc_dcdc = np.asarray(dc_ppc.get("dcdc", ()), dtype=np.float64)
+        dcdc_term = dc_input.terminals.get("dcdc")
+        if dc_dcdc.ndim == 2 and dc_dcdc.size and dcdc_term is not None:
+            dcdc_i_pos = dcdc_term.i_node_pos
+            dcdc_j_pos = dcdc_term.j_node_pos
+            dcdc_run_mask = dcdc_term.run_mask
+            if dcdc_i_pos.size == dc_dcdc.shape[0]:
+                valid_dcdc = (dcdc_i_pos >= 0) & (dcdc_j_pos >= 0)
+                dcdc_i_islands = np.full(dcdc_i_pos.shape, -1, dtype=np.int32)
+                dcdc_j_islands = np.full(dcdc_j_pos.shape, -1, dtype=np.int32)
+                if np.any(valid_dcdc):
+                    dcdc_i_islands[valid_dcdc] = dc_topology.node_to_island_pos[
+                        dcdc_i_pos[valid_dcdc]
+                    ]
+                    dcdc_j_islands[valid_dcdc] = dc_topology.node_to_island_pos[
+                        dcdc_j_pos[valid_dcdc]
+                    ]
+                i_control = dc_dcdc[:, DC_DCDC_COLS["i_control_type"]].astype(
+                    np.int64,
+                    copy=False,
+                )
+                j_control = dc_dcdc[:, DC_DCDC_COLS["j_control_type"]].astype(
+                    np.int64,
+                    copy=False,
+                )
+                i_v_mask = (
+                    dcdc_run_mask
+                    & valid_dcdc
+                    & (dcdc_i_islands >= 0)
+                    & (i_control == DC_CTRL_V)
+                    & (j_control == DC_CTRL_NONE)
+                )
+                j_v_mask = (
+                    dcdc_run_mask
+                    & valid_dcdc
+                    & (dcdc_j_islands >= 0)
+                    & (j_control == DC_CTRL_V)
+                    & (i_control == DC_CTRL_NONE)
+                )
+                dcdc_v_mask = i_v_mask | j_v_mask
+                if np.any(dcdc_v_mask):
+                    controlled_islands = np.where(
+                        i_v_mask[dcdc_v_mask],
+                        dcdc_i_islands[dcdc_v_mask],
+                        dcdc_j_islands[dcdc_v_mask],
+                    )
+                    dcdc_balance_islands = controlled_islands[
+                        controlled_islands >= 0
+                    ].astype(np.int32, copy=False)
+                    if dcdc_balance_islands.size:
+                        dc_balance_islands = np.concatenate(
+                            (dc_balance_islands, dcdc_balance_islands)
+                        ).astype(np.int32, copy=False)
+                        dc_gen_islands = np.concatenate(
+                            (dc_gen_islands, dcdc_balance_islands)
+                        ).astype(np.int32, copy=False)
 
     ac_operational, dc_operational = network_topology.hybrid_operational_island_masks(
         ac_topology,
@@ -602,23 +693,38 @@ def _sync_hybrid_reference_metadata(
             for key, value in effective_view.items()
         },
     }
-    if hybrid_changed or effective_changed:
+    changed = bool(hybrid_changed or effective_changed)
+    if changed:
         child_ppc.pop("_topology_arrays", None)
+    return changed
 
 
-def _attach_hybrid_dc_reference_nodes(ppc: Dict) -> None:
+def _attach_hybrid_dc_reference_nodes(
+    ppc: Dict,
+    *,
+    allowed_ac_ids=None,
+    allowed_dc_ids=None,
+) -> bool:
     ac_ppc = ppc.get("ac")
     dc_ppc = ppc.get("dc")
     if dc_ppc is None:
-        return
+        return False
     ref_nodes = np.empty(0, dtype=np.int64)
     ref_values = np.empty(0, dtype=np.float64)
     dcac = np.asarray(ppc.get("dcac", ()), dtype=np.float64)
     if ac_ppc is not None and dcac.ndim == 2 and dcac.size:
         ctrl = dcac[:, DCAC_COLS["dc_control_type"]].astype(np.int64, copy=False)
         run = dcac[:, DCAC_COLS["run_stat"]].astype(np.int64, copy=False) == 1
-        active_ac_ids = _running_node_ids(ac_ppc, AC_BUS_COLS)
-        active_dc_ids = _running_node_ids(dc_ppc, DC_BUS_COLS)
+        active_ac_ids = (
+            _running_node_ids(ac_ppc, AC_BUS_COLS)
+            if allowed_ac_ids is None
+            else np.asarray(allowed_ac_ids, dtype=np.int64).reshape(-1)
+        )
+        active_dc_ids = (
+            _running_node_ids(dc_ppc, DC_BUS_COLS)
+            if allowed_dc_ids is None
+            else np.asarray(allowed_dc_ids, dtype=np.int64).reshape(-1)
+        )
         dcv_mask = (
             run
             & (ctrl == DCAC_DC_CONTROL_CODE["V"])
@@ -643,7 +749,7 @@ def _attach_hybrid_dc_reference_nodes(ppc: Dict) -> None:
                 dcv_mask,
                 DCAC_COLS["v_dc_set"],
             ][unique_pos].astype(np.float64, copy=False)
-    _sync_hybrid_reference_metadata(
+    return _sync_hybrid_reference_metadata(
         dc_ppc,
         "_external_voltage_reference_node_ids",
         "_external_voltage_reference_pu",
@@ -655,19 +761,32 @@ def _attach_hybrid_dc_reference_nodes(ppc: Dict) -> None:
     )
 
 
-def _attach_hybrid_ac_reference_nodes(ppc: Dict) -> None:
+def _attach_hybrid_ac_reference_nodes(
+    ppc: Dict,
+    *,
+    allowed_ac_ids=None,
+    allowed_dc_ids=None,
+) -> bool:
     ac_ppc = ppc.get("ac")
     dc_ppc = ppc.get("dc")
     if ac_ppc is None:
-        return
+        return False
     ref_nodes = np.empty(0, dtype=np.int64)
     ref_values = np.empty(0, dtype=np.float64)
     dcac = np.asarray(ppc.get("dcac", ()), dtype=np.float64)
     if dc_ppc is not None and dcac.ndim == 2 and dcac.size:
         ctrl = dcac[:, DCAC_COLS["ac_control_type"]].astype(np.int64, copy=False)
         run = dcac[:, DCAC_COLS["run_stat"]].astype(np.int64, copy=False) == 1
-        active_ac_ids = _running_node_ids(ac_ppc, AC_BUS_COLS)
-        active_dc_ids = _running_node_ids(dc_ppc, DC_BUS_COLS)
+        active_ac_ids = (
+            _running_node_ids(ac_ppc, AC_BUS_COLS)
+            if allowed_ac_ids is None
+            else np.asarray(allowed_ac_ids, dtype=np.int64).reshape(-1)
+        )
+        active_dc_ids = (
+            _running_node_ids(dc_ppc, DC_BUS_COLS)
+            if allowed_dc_ids is None
+            else np.asarray(allowed_dc_ids, dtype=np.int64).reshape(-1)
+        )
         acv_mask = (
             run
             & (ctrl == DCAC_AC_CONTROL_CODE["PH"])
@@ -692,7 +811,7 @@ def _attach_hybrid_ac_reference_nodes(ppc: Dict) -> None:
                 acv_mask,
                 DCAC_COLS["v_ac_set"],
             ][unique_pos].astype(np.float64, copy=False)
-    _sync_hybrid_reference_metadata(
+    return _sync_hybrid_reference_metadata(
         ac_ppc,
         "_external_angle_reference_node_ids",
         "_external_voltage_reference_pu",

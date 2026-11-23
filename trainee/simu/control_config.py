@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Tuple
@@ -34,9 +35,12 @@ def default_number(name: str) -> float:
     if name not in DEFAULT_CONTROL_CONFIG:
         raise RuntimeError(f"missing renewable control default: {name}")
     try:
-        return float(DEFAULT_CONTROL_CONFIG[name])
+        value = float(DEFAULT_CONTROL_CONFIG[name])
     except (TypeError, ValueError) as exc:
         raise RuntimeError(f"invalid renewable control default: {name}") from exc
+    if not math.isfinite(value):
+        raise RuntimeError(f"non-finite renewable control default: {name}")
+    return value
 
 
 def default_integer(name: str) -> int:
@@ -76,5 +80,14 @@ def default_derating_curve(name: str) -> Tuple[Tuple[float, float], ...]:
             raise RuntimeError(
                 f"invalid renewable control derating point: {name}"
             ) from exc
+        if not (
+            math.isfinite(soc)
+            and math.isfinite(power_ratio)
+            and 0.0 <= soc <= 1.0
+            and 0.0 <= power_ratio <= 1.0
+        ):
+            raise RuntimeError(
+                f"out-of-range renewable control derating point: {name}"
+            )
         result.append((soc, power_ratio))
     return tuple(result)

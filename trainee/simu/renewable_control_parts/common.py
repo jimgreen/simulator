@@ -373,9 +373,29 @@ def _ratio(value: Any, default: Optional[float]) -> Optional[float]:
         number /= 100.0
     return _clamp(number, 0.0, 1.0)
 
-def _storage_efficiency(parameter: Mapping[str, Any]) -> float:
+def _storage_efficiency(parameter: Mapping[str, Any], *, direction: Optional[str] = None) -> float:
+    """读取储能效率；兼容分立 charge_efficiency / discharge_efficiency 与合并字段。"""
+    if direction == "charge":
+        eff = _number(parameter.get("charge_efficiency"))
+        if eff is not None and eff > EPSILON:
+            return eff
+    elif direction == "discharge":
+        eff = _number(parameter.get("discharge_efficiency"))
+        if eff is not None and eff > EPSILON:
+            return eff
     efficiency = _number(parameter.get("charge_discharge_efficiency"))
-    return efficiency if efficiency is not None and efficiency > EPSILON else 1.0
+    if efficiency is not None and efficiency > EPSILON:
+        return efficiency
+    charge_eff = _number(parameter.get("charge_efficiency"))
+    discharge_eff = _number(parameter.get("discharge_efficiency"))
+    if charge_eff is not None and charge_eff > EPSILON and discharge_eff is not None and discharge_eff > EPSILON:
+        return math.sqrt(charge_eff * discharge_eff)
+    if charge_eff is not None and charge_eff > EPSILON:
+        return charge_eff
+    if discharge_eff is not None and discharge_eff > EPSILON:
+        return discharge_eff
+    generic = _number(parameter.get("efficiency"))
+    return generic if generic is not None and generic > EPSILON else 1.0
 
 def _live_soc_ratio(value: Any, default: Optional[float] = None) -> Optional[float]:
     number = _number(value)
@@ -834,6 +854,8 @@ def _measurement_index(snapshot: Mapping[str, Any]) -> Dict[Tuple[str, str, str]
     if not (type(measurements) is dict or isinstance(measurements, Mapping)):
         return {}
     index: Dict[Tuple[str, str, str], MeasurementValue] = {}
+    scada_invalid_keys: set[Tuple[str, str, str]] = set()
+    invalid_status_tokens = {"invalid", "undefined", "disabled", "off", "0", "false", "zero", "dead"}
     for source in ("scada", "real"):
         rows = measurements.get(source)
         if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
@@ -847,13 +869,18 @@ def _measurement_index(snapshot: Mapping[str, Any]) -> Dict[Tuple[str, str, str]
                 str(row.get("dev_name", "")),
                 str(row.get("meas_type", "")).upper(),
             )
-            if is_fallback_source and key in index:
+            if is_fallback_source and (key in index or key in scada_invalid_keys):
                 continue
             raw_valid = row.get("valid", 1)
-            if raw_valid != 1 and int(_number(raw_valid, 1.0) or 0) != 1:
-                continue
-            value = _number(row.get("value"))
+            status_token = str(row.get("status", "") or "").strip().casefold()
+            is_valid = (
+                (raw_valid == 1 or int(_number(raw_valid, 1.0) or 0) == 1)
+                and status_token not in invalid_status_tokens
+            )
+            value = _number(row.get("value")) if is_valid else None
             if value is None:
+                if not is_fallback_source:
+                    scada_invalid_keys.add(key)
                 continue
             if key not in index:
                 index[key] = MeasurementValue(value=value, source=source, row=row)
@@ -877,9 +904,17 @@ def _is_online(
 ) -> bool:
     if not device:
         return False
-    run_measurement = _measured(measurements, _device_type(device), _device_name(device), ("RUN_STAT",))
+    dev_type = _device_type(device)
+    dev_name = _device_name(device)
+    run_measurement = _measured(measurements, dev_type, dev_name, ("RUN_STAT",))
     run_stat = run_measurement.value if run_measurement else _number(device.get("run_stat"), 1.0)
-    status = _number(device.get("status"), 1.0)
+    status_measurement = _measured(measurements, dev_type, dev_name, ("CLOSED_STATUS", "STATUS"))
+    if status_measurement is not None:
+        status = status_measurement.value
+    elif "closed_status" in device and device.get("closed_status") not in (None, ""):
+        status = _number(device.get("closed_status"), 1.0)
+    else:
+        status = _number(device.get("status"), 1.0)
     return int(run_stat or 0) == 1 and int(status or 0) != 0
 
 def _raw_control_definition_rows(
@@ -1028,15 +1063,38 @@ def _hydrogen_pressure_states(
         )
         pressure_min = _number(row.get("pressure_min"))
         pressure_max = _number(row.get("pressure_max"))
+        water_volume = _positive(
+            (
+                row.get("water_volume"),
+                row.get("volume"),
+                row.get("tank_volume"),
+            )
+        )
+        full_tank_pressure = (
+            float(rated_capacity_nm3) / float(water_volume) / 10.0
+            if rated_capacity_nm3 > EPSILON and water_volume > EPSILON
+            else None
+        )
+        effective_pressure_max = (
+            min(float(pressure_max), float(full_tank_pressure))
+            if pressure_max is not None and full_tank_pressure is not None and full_tank_pressure > EPSILON
+            else pressure_max
+        )
         limits_valid = bool(
             pressure_min is not None
             and pressure_max is not None
             and pressure_max > pressure_min + EPSILON
         )
+        pressure_limits_consistent = bool(
+            limits_valid
+            and effective_pressure_max is not None
+            and float(effective_pressure_max) > float(pressure_min) + EPSILON
+        )
+        effective_deadband_ratio = _clamp(float(settings.hydrogen_pressure_deadband_ratio), 0.0, 0.249999)
         deadband = (
-            settings.hydrogen_pressure_deadband_ratio
-            * (float(pressure_max) - float(pressure_min))
-            if limits_valid
+            effective_deadband_ratio
+            * (float(effective_pressure_max) - float(pressure_min))
+            if pressure_limits_consistent
             else None
         )
         online = bool(device and _is_online(device, measurements))
@@ -1055,9 +1113,12 @@ def _hydrogen_pressure_states(
                 "gasQuantityNm3": gas_quantity_nm3,
                 "pressureMin": pressure_min,
                 "pressureMax": pressure_max,
+                "effectivePressureMax": effective_pressure_max,
+                "fullTankPressure": full_tank_pressure,
+                "pressureLimitsConsistent": pressure_limits_consistent,
                 "pressureDeadband": deadband,
-                "lowGuard": float(pressure_min) + float(deadband) if limits_valid else None,
-                "highGuard": float(pressure_max) - float(deadband) if limits_valid else None,
+                "lowGuard": float(pressure_min) + float(deadband) if pressure_limits_consistent and deadband is not None else None,
+                "highGuard": float(effective_pressure_max) - float(deadband) if pressure_limits_consistent and deadband is not None else None,
                 "limitsValid": limits_valid,
                 "hydrogenIslandId": "",
             }

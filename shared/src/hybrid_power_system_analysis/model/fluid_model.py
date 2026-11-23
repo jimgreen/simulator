@@ -1022,10 +1022,27 @@ class FluidNetwork:
             island_nodes = np.flatnonzero(self.node_island == island)
             if any(int(node) in fixed_pressure_by_node for node in island_nodes.tolist()):
                 continue
+            if not self.thermal:
+                # 氢/气/蒸汽网被阀门隔离出无压力源孤岛时，必须将该孤岛内所有定流源与负荷流量清零，
+                # 防止假定压锚点吞吐无限流量破坏质量守恒；锚点仅保留作非奇异零流数值参考。
+                island_node_set = set(island_nodes.tolist())
+                for src_pos in range(len(self.sources)):
+                    node_pos = int(self.source_node_pos[src_pos])
+                    if node_pos in island_node_set and not bool(self.source_is_pressure_controlled[src_pos]):
+                        self.source_flow_set[src_pos] = 0.0
+                        self.sources[src_pos].flow_set = 0.0
+                for load_pos in range(len(self.loads)):
+                    node_pos = int(self.load_node_pos[load_pos])
+                    if node_pos in island_node_set:
+                        self.load_flow_set[load_pos] = 0.0
+                        self.loads[load_pos].flow_set = 0.0
+                for node_pos in island_node_set:
+                    self.fixed_injection[node_pos] = 0.0
+                    self.demand[node_pos] = 0.0
             anchor = int(island_nodes[0])
             fixed_pressure_by_node[anchor] = [float(self.node_pressure[anchor])]
             self.warnings.append(
-                f"island {island} has no pressure-controlled source; node {self.node_name[anchor]} is the pressure anchor"
+                f"island {island} has no pressure-controlled source; isolated dead island flows zeroed and node {self.node_name[anchor]} used as zero-flow anchor"
             )
         self.fixed_node_pos = np.asarray(sorted(fixed_pressure_by_node), dtype=np.int64)
         self.fixed_pressure = np.asarray(

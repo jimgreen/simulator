@@ -381,7 +381,7 @@ class _CurvesMixin:
                     best_distance = distance
             return best_index + 1
         step = max(1e-9, _to_float(self.curves.get("time_step_minutes"), 1.0) or 1.0)
-        return int((target_minute % period_minutes) // step) + 1
+        return int(((target_minute % period_minutes) + 1e-9) // step) + 1
 
     def set_curves(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
         with self.lock, self.curves_lock:

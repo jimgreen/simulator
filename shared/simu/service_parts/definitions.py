@@ -231,6 +231,8 @@ class _DefinitionsMixin:
             "HydroSource",
             "HydroLoad",
             "HydroStorage",
+            "HydroValve",
+            "HydroStopValve",
             "AcE2Hydro",
             "DcE2Hydro",
             "Hydro2AcE",
@@ -871,36 +873,37 @@ class _DefinitionsMixin:
                     f"人工修改安全校验失败：{block_name}/{dev_name} 的修改超出允许范围"
                     f"（{exc}）；修改未生效，人工覆盖层、运行控制文件和仿真边界均未更新。"
                 ) from exc
-            if "p_set" in normalized_changes and self.enforce_runtime_setpoint_bounds:
-                try:
-                    hydrogen_safety = validate_hydrogen_power_setpoint_safety(
-                        model_book,
-                        block_name,
-                        str(row.get("name", row.get("dev_name", ""))).strip(),
-                        "p_set",
-                        normalized_changes["p_set"],
-                        clamp_to_bounds=True,
-                    )
-                    if hydrogen_safety and hydrogen_safety.get("clamped"):
-                        normalized_changes["p_set"] = _number_text(
-                            hydrogen_safety["p_set"]
+            for coupled_field in ("p_set", "flow_set"):
+                if coupled_field in normalized_changes and self.enforce_runtime_setpoint_bounds:
+                    try:
+                        hydrogen_safety = validate_hydrogen_power_setpoint_safety(
+                            model_book,
+                            block_name,
+                            str(row.get("name", row.get("dev_name", ""))).strip(),
+                            coupled_field,
+                            normalized_changes[coupled_field],
+                            clamp_to_bounds=True,
                         )
-                    prospective_row = {**row, **normalized_changes}
-                    final_power, _bounds, _clamped = (
-                        clamp_setpoint_safety_bounds(
-                            prospective_row,
-                            "p_set",
-                            normalized_changes["p_set"],
+                        if hydrogen_safety and hydrogen_safety.get("clamped"):
+                            normalized_changes[coupled_field] = _number_text(
+                                hydrogen_safety.get(coupled_field, normalized_changes[coupled_field])
+                            )
+                        prospective_row = {**row, **normalized_changes}
+                        final_val, _bounds, _clamped = (
+                            clamp_setpoint_safety_bounds(
+                                prospective_row,
+                                coupled_field,
+                                normalized_changes[coupled_field],
+                            )
                         )
-                    )
-                    normalized_changes["p_set"] = _number_text(final_power)
-                except ValueError as exc:
-                    dev_name = str(row.get("name", row.get("dev_name", ""))).strip()
-                    raise ValueError(
-                        f"人工修改模型校验失败：{block_name}/{dev_name} 的跨域换算无法形成"
-                        f"有效有限目标（{exc}）；修改未生效，人工覆盖层、运行控制文件和"
-                        "仿真边界均未更新。"
-                    ) from exc
+                        normalized_changes[coupled_field] = _number_text(final_val)
+                    except ValueError as exc:
+                        dev_name = str(row.get("name", row.get("dev_name", ""))).strip()
+                        raise ValueError(
+                            f"人工修改模型校验失败：{block_name}/{dev_name} 的跨域换算无法形成"
+                            f"有效有限目标（{exc}）；修改未生效，人工覆盖层、运行控制文件和"
+                            "仿真边界均未更新。"
+                        ) from exc
             clamped_setpoint_details = []
             for field_name, normalized_value in normalized_changes.items():
                 normalized_field = str(field_name).strip().casefold()

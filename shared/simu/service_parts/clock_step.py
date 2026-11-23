@@ -111,6 +111,8 @@ class _ClockStepMixin:
                 self.latest_device_states = []
                 self.latest_real_rows = []
                 self.latest_scada_rows = []
+                self._base_scada_rows = []
+                self._dead_fault_frozen_values = {}
                 self._fault_restore = {}
                 self._last_scada_values = {}
                 self._clear_manual_definition_changes_unlocked()
@@ -1837,6 +1839,8 @@ class _ClockStepMixin:
         ]
         self.latest_real_rows = []
         self.latest_scada_rows = []
+        self._base_scada_rows = []
+        self._dead_fault_frozen_values = {}
         self._automatic_runtime_state_invalidated = True
         self.latest_measurements = {
             "definitions": definitions,

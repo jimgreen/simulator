@@ -325,18 +325,39 @@ class _MeasurementsMixin:
             changed = True
         if scada_rows is not None:
             self.latest_scada_rows = [list(row) for row in scada_rows]
+            self._base_scada_rows = [list(row) for row in scada_rows]
             changed = True
         if changed:
             self._invalidate_measurement_delta_cache()
+
+    def _reapply_measurement_overlays_locked(self) -> None:
+        """基于本拍原始加噪 SCADA 重新叠加量测故障与状态覆盖，支持暂停态即时生效与无损回退。"""
+        base_rows = getattr(self, "_base_scada_rows", None)
+        if not base_rows:
+            return
+        self.latest_scada_rows = [list(row) for row in base_rows]
+        minute = float(self.clock.minute)
+        absolute_minute = float(self.clock.absolute_minute)
+        self._apply_measurement_faults(minute, absolute_minute)
+        self._apply_measurement_statuses(minute, absolute_minute)
+        self.latest_measurements = self._measurements_locked()
+        self._latest_power_summary_cache_key = None
+        self._latest_power_summary_cache_value = None
 
     def _apply_measurement_faults(self, minute: int | float, absolute_minute: int | float) -> None:
         faults = [fault for fault in self.local_settings.get("measurement_faults", []) if (type(fault) is dict or isinstance(fault, Mapping))]
         curve_mode = str(self.curves.get("mode", "day") or "day").lower()
         active_faults = [fault for fault in faults if _active_window(fault, minute, absolute_minute, curve_mode)]
+        frozen_map = getattr(self, "_dead_fault_frozen_values", None)
+        if not isinstance(frozen_map, dict):
+            frozen_map = {}
+            self._dead_fault_frozen_values = frozen_map
         if not active_faults or not self.latest_scada_rows:
+            frozen_map.clear()
             return
         rows = [list(row) for row in self.latest_scada_rows]
         changed = False
+        active_dead_keys: set[str] = set()
         for row in rows:
             row_key = self._measurement_key(row)
             for fault in active_faults:
@@ -354,12 +375,22 @@ class _MeasurementsMixin:
                         None,
                     )
                     bias = _to_float(fault.get("bias", fault.get("error", 0.0)), 0.0) or 0.0
-                    base_value = median if median is not None else self._last_scada_values.get(row_key, current_value)
+                    if median is not None:
+                        base_value = median
+                    else:
+                        # 首次进入卡滞故障时冻结未加偏的基值，避免每拍叠加 bias 造成无限线性漂移。
+                        active_dead_keys.add(row_key)
+                        if row_key not in frozen_map:
+                            frozen_map[row_key] = float(self._last_scada_values.get(row_key, current_value))
+                        base_value = frozen_map[row_key]
                     row[7] = _number_text(base_value + bias)
                 else:
                     bias = _to_float(fault.get("bias", fault.get("error", fault.get("offset", 10.0))), 10.0) or 0.0
                     row[7] = _number_text(current_value + bias)
                 changed = True
+        for stale_key in list(frozen_map):
+            if stale_key not in active_dead_keys:
+                frozen_map.pop(stale_key, None)
         if changed:
             self.latest_scada_rows = rows
             self._invalidate_measurement_delta_cache()
@@ -832,7 +863,8 @@ class _MeasurementsMixin:
                 for row in channel_rows:
                     row_valid = int(_to_float(row.get("valid"), 1) or 0)
                     status, fixed_value = self._measurement_status_override(row)
-                    if channel_name != "definitions" and status == "normal" and row_valid == 0:
+                    if channel_name != "definitions" and status in {"valid", "normal"} and row_valid == 0:
+                        # 保护本拍潮流计算缺失或无效气象产生的 valid=0，不被默认/显式 "valid" 状态覆盖洗白。
                         row["status"] = "invalid"
                         row["fixed_value"] = None
                         row["valid"] = 0
@@ -841,12 +873,12 @@ class _MeasurementsMixin:
                         row["fixed_value"] = fixed_value
                         row["valid"] = MEASUREMENT_STATUS_VALIDITY.get(status, row_valid)
         else:
-            # 快路径：无自定义状态覆盖时直接按 valid 字段映射，免去每步数千次字典查表。
+            # 快路径：无自定义状态覆盖时直接按 valid 字段映射，状态词法与慢路径保持严格一致（"valid"/"invalid"）。
             for channel_rows in measurements.values():
                 for row in channel_rows:
                     raw_valid = row.get("valid", 1)
                     if raw_valid == 1 or raw_valid == "1":
-                        row["status"] = "normal"
+                        row["status"] = "valid"
                         row["fixed_value"] = None
                         row["valid"] = 1
                     elif raw_valid == 0 or raw_valid == "0":

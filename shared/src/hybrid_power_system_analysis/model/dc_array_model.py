@@ -479,7 +479,13 @@ def _build_dc_ppc_from_rows_dict(rows: Dict, source) -> Dict:
         dcdc[:, DCDC_COLS["i_control_type"]] = i_control
         dcdc[:, DCDC_COLS["j_control_type"]] = j_control
         dcdc[:, DCDC_COLS["p_set"]] = _float_column(table_rows, columns, "p_set") / p_base
-        _assign_current_if_present(dcdc, DCDC_COLS["i_set"], table_rows, columns, "i_set", dcdc[:, DCDC_COLS["i_node"]], get_current_scale_by_node)
+        i_control_nodes = np.where(
+            (j_control.astype(np.int64, copy=False) == CTRL_I)
+            & (i_control.astype(np.int64, copy=False) != CTRL_I),
+            dcdc[:, DCDC_COLS["j_node"]],
+            dcdc[:, DCDC_COLS["i_node"]],
+        )
+        _assign_current_if_present(dcdc, DCDC_COLS["i_set"], table_rows, columns, "i_set", i_control_nodes, get_current_scale_by_node)
         v_control_nodes = np.where(
             j_control.astype(np.int64, copy=False) == CTRL_V,
             dcdc[:, DCDC_COLS["j_node"]],

@@ -86,6 +86,9 @@ class _PersistenceMixin:
             curve_mode = _normalize_simulation_mode(self.curves.get("mode", "day"))
         self.clock.speed = _simulation_mode_default_clock_speed(curve_mode)
         self._apply_stored_system_parameters()
+        # 必须先加载人工参数覆盖（如教员放宽的 p_max/v_max），再读取并校验持久化指令历史，
+        # 防止重启瞬间用原始 model.e 旧限值静默限幅或丢弃原本合法的持久化人工指令。
+        self._load_manual_definition_changes()
         self.command_history = self._read_command_history()
         self._rebuild_strategy_generation_index()
         if self.clear_commands_on_start_and_reset:
@@ -93,8 +96,8 @@ class _PersistenceMixin:
         self._last_command_response_index = len(self.command_history)
         self.runtime_logs = self._read_runtime_logs()
         self._runtime_log_seq = max((int(_to_float(item.get("seq"), 0) or 0) for item in self.runtime_logs), default=0)
-        self._load_manual_definition_changes()
-        self._reset_hydrogen_storage_state_to_initial()
+        self._reset_storage_soc_to_initial(sync_latest_measurements=False)
+        self._reset_hydrogen_storage_state_to_initial(sync_latest_measurements=False)
         self._materialize_active_control_commands(self.clock.absolute_minute, persist=True)
 
     @property
@@ -944,15 +947,28 @@ class _PersistenceMixin:
                 "",
             )
         for measurement_name, desired_values in measurement_groups.items():
-            index, current_item = self._measurement_definition_row(
-                measurement_rows,
-                {"name": measurement_name},
-            )
-            current_item["median_deviation"] = measurement_median_deviations.get(
-                measurement_name,
-                0.0,
-            )
-            normalized = normalize_measurement_changes(current_item, desired_values)
+            try:
+                index, current_item = self._measurement_definition_row(
+                    measurement_rows,
+                    {"name": measurement_name},
+                )
+                current_item["median_deviation"] = measurement_median_deviations.get(
+                    measurement_name,
+                    0.0,
+                )
+                normalized = normalize_measurement_changes(current_item, desired_values)
+            except (KeyError, ValueError) as exc:
+                # 单个已删除或失效的测点人工覆盖仅标记为跳过，不向上抛错连带销毁整份 manual_overrides.json。
+                for item in items:
+                    if (
+                        isinstance(item, dict)
+                        and item.get("kind") == "measurement"
+                        and str(item.get("measurement_name", "")) == measurement_name
+                    ):
+                        item["effective"] = False
+                        item["application_status"] = "skipped"
+                        item["application_error"] = str(exc)
+                continue
             changed = changed or not self._manual_change_values_equal(
                 measurement_rows[index][5],
                 normalized["weight"],

@@ -534,8 +534,9 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 status=500,
             )
         finally:
-            # 仅在写操作成功返回后清空响应缓存与指令/设备补充帧缓存，避免只读 query POST 或失败请求击穿热点缓存。
+            # 仅在写操作成功返回后递增写世代并清空响应缓存，杜绝并发 GET 回填旧帧污染缓存。
             if mutated_successfully and path not in _READONLY_POST_PATHS:
+                self._ctx._post_mutation_epoch = int(getattr(self._ctx, "_post_mutation_epoch", 0) or 0) + 1
                 self._ctx.response_cache.clear()
                 try:
                     root_svc = self._ctx.service
@@ -1186,6 +1187,8 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
             getattr(target, "_runtime_log_seq", 0),
             getattr(target, "_curve_revision", 0),
             getattr(target, "_command_mutation_seq", 0),
+            getattr(target, "_local_settings_revision", 0),
+            getattr(self._ctx, "_post_mutation_epoch", 0),
             len(getattr(target, "command_history", ())),
             bool(getattr(target, "_automatic_runtime_state_invalidated", False)),
             getattr(target, "_remote_adjustment_cycle_seq", 0),
@@ -1508,7 +1511,9 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
             )
             if self._ctx.role == "trainee" or self._truthy_query("trainee_view"):
                 delta_payload = strip_trainee_truth_from_measurement_delta(delta_payload)
-            self._send_cached_json(delta_cache_key, delta_payload)
+            # 若 measurement_delta 内部触发了刷新并推进 seq，使用最新帧键存入缓存避免旧键存新帧。
+            post_delta_cache_key = self._frame_cache_key(target, "measurements-delta")
+            self._send_cached_json(post_delta_cache_key, delta_payload)
         elif path == "/api/measurement-history":
             history_payload = target.measurement_history(
                 indices=self._measurement_indices_query(),
@@ -1932,6 +1937,8 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 raise JsonApiError(404, f"Unknown API route: {path}")
             self._send_json(target.delete_active_commands(payload, source="simulator-ui"))
         elif path == "/api/trainee/receive-state":
+            if self._ctx.role != "trainee":
+                raise JsonApiError(404, f"Unknown API route: {path}")
             exchange_notified = False
             with target.lock:
                 _require_active_service_instance_locked(target)
@@ -2012,7 +2019,11 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 raise JsonApiError(400, str(exc), target._external_response_metadata()) from exc
             self._send_json(result)
         elif path == "/api/external/controls":
-            self._send_json(target.apply_external_control_values(payload))
+            try:
+                result = target.apply_external_control_values(payload)
+            except ValueError as exc:
+                raise JsonApiError(400, str(exc), target._external_response_metadata()) from exc
+            self._send_json(result)
         elif path == "/api/external/controls/execute":
             requested_model = self._request_model_id(payload)
             if requested_model is not None and requested_model != target.model_id:
@@ -2058,9 +2069,17 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
         elif path == "/api/step":
             self._send_json(target.step())
         elif path == "/api/curves":
-            self._send_json(target.set_curves(payload))
+            try:
+                result = target.set_curves(payload)
+            except ValueError as exc:
+                raise JsonApiError(400, str(exc)) from exc
+            self._send_json(result)
         elif path == "/api/curves/series":
-            self._send_json(target.update_curve_series(payload))
+            try:
+                result = target.update_curve_series(payload)
+            except ValueError as exc:
+                raise JsonApiError(400, str(exc)) from exc
+            self._send_json(result)
         elif path == "/api/settings":
             self._send_json(target.set_local_settings(payload))
         elif path == "/api/device-faults":

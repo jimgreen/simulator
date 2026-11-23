@@ -638,6 +638,14 @@ class TraineeRenewableControlManager:
         settings = RenewableControlSettings().updated(
             settings_payload if (type(settings_payload) is dict or isinstance(settings_payload, Mapping)) else payload
         )
+        try:
+            settings.validate()
+        except ValueError as exc:
+            _TRAINEE_CTRL_LOG.warning(
+                "Persisted renewable control settings failed validation (%s); falling back to defaults.",
+                exc,
+            )
+            settings = RenewableControlSettings()
         loop_mode = "closed" if str(payload.get("loopMode", payload.get("loop_mode", "open"))).lower() == "closed" else "open"
         desired_enabled = bool(
             payload.get(
@@ -904,7 +912,21 @@ class TraineeRenewableControlManager:
     @staticmethod
     def _snapshot_simulation_paused(snapshot: Mapping[str, Any]) -> bool:
         clock = snapshot.get("clock") if isinstance(snapshot.get("clock"), Mapping) else {}
-        return str(clock.get("state") or "").strip().casefold() == "paused"
+        return str(clock.get("state") or "").strip().casefold() in {"paused", "stopped"}
+
+    @staticmethod
+    def _reset_controller_session_memory_locked(
+        state: _ControllerState,
+        *,
+        clear_strategy_active: bool = True,
+    ) -> None:
+        """统一清理跨仿真轮次/重置/改参后的陈旧内部记忆与去重键。"""
+        state.runtime_memory.clear()
+        state.effective_target_snapshot = None
+        state.last_dispatched_clock_key = ""
+        state.last_dispatched_generation_key = ()
+        if clear_strategy_active:
+            state.strategy_generation_active = False
 
     @staticmethod
     def _simulation_control_clock(
@@ -962,7 +984,10 @@ class TraineeRenewableControlManager:
         )
         if state.control_clock_anchor_second is None or lifecycle_changed:
             if lifecycle_changed:
-                state.runtime_memory.clear()
+                TraineeRenewableControlManager._reset_controller_session_memory_locked(
+                    state,
+                    clear_strategy_active=True,
+                )
             state.control_clock_run_id = clock.run_id
             state.control_clock_anchor_second = clock.absolute_second
             state.control_clock_last_second = clock.absolute_second
@@ -981,6 +1006,25 @@ class TraineeRenewableControlManager:
         state: _ControllerState,
         clock: _SimulationControlClock,
     ) -> None:
+        lifecycle_changed = bool(
+            state.control_clock_run_id is not None
+            and (
+                clock.run_id != state.control_clock_run_id
+                or (
+                    state.control_clock_last_step_count is not None
+                    and clock.step_count < state.control_clock_last_step_count
+                )
+                or (
+                    state.control_clock_last_second is not None
+                    and clock.absolute_second < state.control_clock_last_second - EPSILON
+                )
+            )
+        )
+        if lifecycle_changed:
+            TraineeRenewableControlManager._reset_controller_session_memory_locked(
+                state,
+                clear_strategy_active=True,
+            )
         state.control_clock_run_id = clock.run_id
         state.control_clock_anchor_second = clock.absolute_second
         state.control_clock_last_second = clock.absolute_second
@@ -2745,6 +2789,21 @@ class TraineeRenewableControlManager:
                         if (type(result) is dict or isinstance(result, Mapping))
                         else len(run_commands)
                     )
+                    blocked_items = (
+                        result.get("blocked")
+                        if (type(result) is dict or isinstance(result, Mapping))
+                        and isinstance(result.get("blocked"), Sequence)
+                        and not isinstance(result.get("blocked"), (str, bytes))
+                        else ()
+                    )
+                    queued_items = (
+                        result.get("queued")
+                        if (type(result) is dict or isinstance(result, Mapping))
+                        and isinstance(result.get("queued"), Sequence)
+                        and not isinstance(result.get("queued"), (str, bytes))
+                        else ()
+                    )
+                    suppressed_count = len(blocked_items) + len(queued_items)
                     with state.lock:
                         result_guard = (
                             dispatch_ticket.guard()
@@ -2767,17 +2826,22 @@ class TraineeRenewableControlManager:
                                 state.last_sent_at = _now_text()
                                 state.last_preview_started = time.monotonic()
                                 state.strategy_generation_active = has_dispatch_commands
+                                suppressed_note = (
+                                    f"（另有 {suppressed_count} 条因人工/教员锁定被阻断或排队）"
+                                    if suppressed_count > 0
+                                    else ""
+                                )
                                 state.status = (
-                                    f"已下发 {accepted_run} 条遥控、{accepted_set} 条遥调指令。"
+                                    f"已下发 {accepted_run} 条遥控、{accepted_set} 条遥调指令{suppressed_note}。"
                                 )
                                 if record_log:
                                     response_runtime_logs.append(
                                         self._append_log(
                                             state,
                                             "指令下发",
-                                            "下发成功",
-                                            f"已下发遥控 {accepted_run} 条、遥调 {accepted_set} 条（仿真时刻 {plan.get('time', '--')}）",
-                                            level="ok",
+                                            "下发成功（部分人工锁定）" if suppressed_count > 0 else "下发成功",
+                                            f"已下发遥控 {accepted_run} 条、遥调 {accepted_set} 条{suppressed_note}（仿真时刻 {plan.get('time', '--')}）",
+                                            level="warn" if suppressed_count > 0 else "ok",
                                             simu_time=str(plan.get("time", "--")),
                                             persist_runtime=False,
                                         )
@@ -3263,7 +3327,7 @@ class TraineeRenewableControlManager:
                 state.strategy_cancel_pending
                 and state.strategy_cancel_operation_epoch == stop_operation_epoch
                 and state.operation_epoch == stop_operation_epoch
-                and not state.enabled
+                and (not state.enabled or state.loop_mode != "closed")
                 and self._service_instance_id(service) == state.service_instance_id
             )
             if not cancel_allowed:
@@ -3291,11 +3355,13 @@ class TraineeRenewableControlManager:
             with state.lock:
                 if (
                     state.operation_epoch == stop_operation_epoch
-                    and not state.enabled
+                    and (not state.enabled or state.loop_mode != "closed")
                 ):
+                    # cancel_strategy_generation 本身幂等，网络抖动失败时保留重试标记，避免策略代次永久滞留。
+                    state.strategy_cancel_pending = True
                     state.status = (
-                        "实时控制已停止，但策略代次结束状态登记失败："
-                        f"{exc}；已下发指令仍按本仿真周期保持有效。"
+                        "实时控制已停止/切开环，但策略代次结束状态登记失败："
+                        f"{exc}；已下发指令仍按本仿真周期保持有效，将自动重试。"
                     )
                     runtime_log_entry = self._append_log(
                         state,
@@ -3401,6 +3467,7 @@ class TraineeRenewableControlManager:
                     )
                     self._validate_electrolyzer_soc_hysteresis(next_settings)
                     self._validate_hydrogen_diesel_hysteresis(next_settings)
+                    next_settings.validate()
                     self._persist_configuration(
                         service,
                         next_settings,
@@ -3410,6 +3477,10 @@ class TraineeRenewableControlManager:
                     if next_settings != state.settings:
                         state.operation_epoch += 1
                         state.settings_revision += 1
+                        self._reset_controller_session_memory_locked(
+                            state,
+                            clear_strategy_active=False,
+                        )
                     state.settings = next_settings
                     state.status = (
                         "新能源实时控制参数已更新并持久化；"
@@ -3435,6 +3506,15 @@ class TraineeRenewableControlManager:
                     )
                     if next_mode != previous:
                         state.operation_epoch += 1
+                        if previous == "closed" and next_mode == "open":
+                            cancel_needed = bool(state.strategy_generation_active)
+                            self._reset_controller_session_memory_locked(
+                                state,
+                                clear_strategy_active=not cancel_needed,
+                            )
+                            if cancel_needed:
+                                state.strategy_cancel_pending = True
+                                state.strategy_cancel_operation_epoch = state.operation_epoch
                     state.loop_mode = next_mode
                     prev_label = "闭环" if previous == "closed" else "开环"
                     next_label = "闭环" if next_mode == "closed" else "开环"
@@ -3456,6 +3536,7 @@ class TraineeRenewableControlManager:
                     state.model_id,
                     exc,
                 )
+            self._drain_pending_strategy_cancel(service, state)
             self._wake_worker()
             return self._serialize_for_service(service, state)
         if action == "start":
@@ -3589,7 +3670,10 @@ class TraineeRenewableControlManager:
                     except RuntimeError as exc:
                         persistence_error = str(exc)
                     state.strategy_cancel_pending = state.strategy_generation_active
-                    state.effective_target_snapshot = None
+                    self._reset_controller_session_memory_locked(
+                        state,
+                        clear_strategy_active=not state.strategy_cancel_pending,
+                    )
                     state.strategy_cancel_operation_epoch = (
                         stop_operation_epoch
                         if state.strategy_cancel_pending

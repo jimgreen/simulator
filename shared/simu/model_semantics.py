@@ -229,12 +229,12 @@ def validate_hydrogen_power_setpoint_safety(
     target_type = str(dev_type or "").strip()
     target_name = str(dev_name or "").strip()
     target_set_type = str(set_type or "").strip()
-    if target_set_type != "p_set" or not target_type or not target_name:
+    if target_set_type not in {"p_set", "flow_set"} or not target_type or not target_name:
         return None
 
     number = _finite_semantic_number(value)
     if number is None:
-        raise ValueError(f"p_set={value!s} 不是有限数值")
+        raise ValueError(f"{target_set_type}={value!s} 不是有限数值")
 
     coupling_rows = {
         (block_name, str(row.get("name", "")).strip()): row
@@ -242,6 +242,131 @@ def validate_hydrogen_power_setpoint_safety(
         for row in model_rows(model, block_name)
         if str(row.get("name", "")).strip()
     }
+    if target_set_type == "flow_set":
+        electric_rows = {
+            (block_name, str(row.get("name", "")).strip()): row
+            for block_name in ("ACGenerator", "DCGenerator", "ACLoad", "DCLoad")
+            for row in model_rows(model, block_name)
+            if str(row.get("name", "")).strip()
+        }
+        flow_matches: list[tuple[DeviceKey, Mapping[str, Any], Mapping[str, Any]]] = []
+        for coupling_key, bindings in energy_coupling_control_bindings(model).items():
+            flow_binding = next(
+                (
+                    binding
+                    for binding in bindings
+                    if binding.get("active")
+                    and str(binding.get("target_set_type", binding.get("set_type", ""))) == "flow_set"
+                    and str(binding.get("target_dev_type", "")) == target_type
+                    and str(binding.get("target_dev_name", "")) == target_name
+                ),
+                None,
+            )
+            power_binding = next(
+                (
+                    binding
+                    for binding in bindings
+                    if str(binding.get("target_set_type", binding.get("set_type", ""))) == "p_set"
+                ),
+                None,
+            )
+            if flow_binding is not None and power_binding is not None:
+                flow_matches.append((coupling_key, power_binding, flow_binding))
+        if not flow_matches:
+            return None
+        if len(flow_matches) != 1:
+            names = ", ".join(f"{key[0]}/{key[1]}" for key, _p, _f in flow_matches)
+            raise ValueError(f"{target_type}/{target_name}.flow_set 同时关联多个氢能转换设备：{names}")
+        coupling_key, power_binding, _flow_binding = flow_matches[0]
+        coupling_type, coupling_name = coupling_key
+        coupling_row = coupling_rows.get(coupling_key, {})
+        if coupling_type in {"AcE2Hydro", "DcE2Hydro"}:
+            coefficient_name = "e2h_coeff"
+            coefficient = _finite_semantic_number(coupling_row.get(coefficient_name))
+            if coefficient is None or coefficient <= 0.0:
+                raise ValueError(
+                    f"{coupling_type}/{coupling_name} 的 {coefficient_name}="
+                    f"{coupling_row.get(coefficient_name, '')} 必须是大于 0 的有限数值"
+                )
+            implied_power = abs(number) / coefficient
+        else:
+            coefficient_name = "h2e_coeff"
+            coefficient = _finite_semantic_number(coupling_row.get(coefficient_name))
+            if coefficient is None or coefficient <= 0.0:
+                raise ValueError(
+                    f"{coupling_type}/{coupling_name} 的 {coefficient_name}="
+                    f"{coupling_row.get(coefficient_name, '')} 必须是大于 0 的有限数值"
+                )
+            implied_power = abs(number) * coefficient
+        electric_type = str(power_binding.get("target_dev_type", ""))
+        electric_name = str(power_binding.get("target_dev_name", ""))
+        electric_row = electric_rows.get((electric_type, electric_name), {})
+        p_min = _finite_semantic_number(electric_row.get("p_min"))
+        p_max = _finite_semantic_number(electric_row.get("p_max"))
+        result = {
+            "coupling_type": coupling_type,
+            "coupling_name": coupling_name,
+            "electric_dev_type": electric_type,
+            "electric_dev_name": electric_name,
+            "p_set": implied_power,
+            "flow_set": number,
+            "coefficient_name": coefficient_name,
+            "coefficient": coefficient,
+            "hydrogen_dev_type": target_type,
+            "hydrogen_dev_name": target_name,
+            "flow": abs(number),
+            "p_min": p_min,
+            "p_max": p_max,
+        }
+        if p_min is None and p_max is None:
+            result["clamped"] = False
+            return result
+        tolerance = 1e-9 * max(
+            1.0,
+            abs(implied_power),
+            abs(p_min) if p_min is not None else 0.0,
+            abs(p_max) if p_max is not None else 0.0,
+        )
+        outside_lower = abs(number) > tolerance and p_min is not None and implied_power < p_min - tolerance
+        outside_upper = p_max is not None and implied_power > p_max + tolerance
+        if outside_lower or outside_upper:
+            if clamp_to_bounds:
+                safe_power = implied_power
+                if p_min is not None:
+                    safe_power = max(safe_power, p_min)
+                if p_max is not None:
+                    safe_power = min(safe_power, p_max)
+                safe_flow_mag = (
+                    safe_power * coefficient
+                    if coupling_type in {"AcE2Hydro", "DcE2Hydro"}
+                    else safe_power / coefficient
+                )
+                safe_flow = math.copysign(safe_flow_mag, number)
+                result.update(
+                    {
+                        "requested_flow_set": number,
+                        "requested_p_set": implied_power,
+                        "flow_set": safe_flow,
+                        "p_set": safe_power,
+                        "flow": abs(safe_flow),
+                        "clamped": True,
+                    }
+                )
+                return result
+            bounds = []
+            if p_min is not None:
+                bounds.append(f"p_min={_semantic_number_text(p_min)}")
+            if p_max is not None:
+                bounds.append(f"p_max={_semantic_number_text(p_max)}")
+            raise ValueError(
+                f"{coupling_type}/{coupling_name} 将 {target_type}/{target_name} 的 "
+                f"flow_set={_semantic_number_text(number)} 按 {coefficient_name}="
+                f"{_semantic_number_text(coefficient)} 换算为电功率 "
+                f"{_semantic_number_text(implied_power)} kW，超出 "
+                f"{electric_type}/{electric_name} 的 {', '.join(bounds)}"
+            )
+        result["clamped"] = False
+        return result
     endpoint_rows = {
         (block_name, str(row.get("name", "")).strip()): row
         for block_name in ("HydroSource", "HydroLoad")

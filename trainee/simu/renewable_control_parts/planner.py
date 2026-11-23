@@ -172,40 +172,62 @@ from .dispatch import (
 
 
 def _plan_sim_time_seconds(snapshot: Mapping[str, Any]) -> Optional[float]:
-    """从快照提取单调仿真时间（秒），用于跨周期驻留计时与响应失配判别。"""
-    for block_name in ("measurement_clock", "clock"):
+    """从快照提取单调仿真时间（秒），优先数值字段，禁止对 HH:MM:SS 字符串误提取小时数。"""
+    for block_name in ("measurement_clock", "clock", "compute"):
         block = snapshot.get(block_name)
         if not (type(block) is dict or isinstance(block, Mapping)):
             continue
-        sim_sec = _number(block.get("simu_time"))
-        if sim_sec is not None and math.isfinite(sim_sec):
-            return float(sim_sec)
-        abs_min = _number(block.get("absolute_minute", block.get("minute")))
+        abs_sec = _number(block.get("absolute_second"))
+        if abs_sec is not None and math.isfinite(abs_sec):
+            return float(abs_sec)
+        abs_min = _number(block.get("absolute_minute"))
         if abs_min is not None and math.isfinite(abs_min):
             return float(abs_min) * 60.0
-    compute = snapshot.get("compute")
-    if type(compute) is dict or isinstance(compute, Mapping):
-        sim_sec = _number(compute.get("simu_time"))
-        if sim_sec is not None and math.isfinite(sim_sec):
-            return float(sim_sec)
-        abs_min = _number(compute.get("absolute_minute"))
-        if abs_min is not None and math.isfinite(abs_min):
-            return float(abs_min) * 60.0
+        raw_simu_time = block.get("simu_time")
+        if not (isinstance(raw_simu_time, str) and ":" in raw_simu_time):
+            sim_sec = _number(raw_simu_time)
+            if sim_sec is not None and math.isfinite(sim_sec):
+                return float(sim_sec)
+        minute_val = _number(block.get("minute"))
+        if minute_val is not None and math.isfinite(minute_val):
+            return float(minute_val) * 60.0
     return None
 
 
 def _reset_runtime_memory_if_clock_rewound(
     runtime_memory: Optional[MutableMapping[str, Any]],
     sim_time_seconds: Optional[float],
+    *,
+    run_id: Optional[int] = None,
+    step_count: Optional[int] = None,
 ) -> None:
-    """仿真时钟回退（重启/重初始化）时清空跨周期状态机缓存，防止脏记忆跨运行污染。"""
-    if runtime_memory is None or sim_time_seconds is None or not math.isfinite(sim_time_seconds):
+    """仿真重启、跨日 run_id 切换、步数或时钟回退时清空跨周期状态机缓存，防止脏记忆跨轮次污染。"""
+    if runtime_memory is None:
         return
+    prev_run_id = runtime_memory.get("lastRunId")
+    prev_step = runtime_memory.get("lastStepCount")
     prev_ts = _number(runtime_memory.get("lastSimTimeSeconds"))
-    if prev_ts is not None and sim_time_seconds < prev_ts - 1e-6:
+    reset_needed = False
+    if run_id is not None and prev_run_id is not None and int(run_id) != int(prev_run_id):
+        reset_needed = True
+    if step_count is not None and prev_step is not None and int(step_count) < int(prev_step):
+        reset_needed = True
+    if (
+        sim_time_seconds is not None
+        and math.isfinite(sim_time_seconds)
+        and prev_ts is not None
+        and sim_time_seconds < prev_ts - 1e-6
+    ):
+        reset_needed = True
+    if reset_needed:
         runtime_memory.pop("hydrogen_dwell", None)
         runtime_memory.pop("renewable_saturation", None)
-    runtime_memory["lastSimTimeSeconds"] = float(sim_time_seconds)
+    if run_id is not None:
+        runtime_memory["lastRunId"] = int(run_id)
+    if step_count is not None:
+        runtime_memory["lastStepCount"] = int(step_count)
+    if sim_time_seconds is not None and math.isfinite(sim_time_seconds):
+        runtime_memory["lastSimTimeSeconds"] = float(sim_time_seconds)
 
 
 def _apply_renewable_natural_upper_bounds(
@@ -218,6 +240,7 @@ def _apply_renewable_natural_upper_bounds(
     wind_measurement_status: Mapping[str, Any],
     solar_measurement_status: Mapping[str, Any],
     diesel_guard_blocked: bool,
+    boundary_backtracked: bool = False,
 ) -> Dict[str, Any]:
     """双层融合自然资源上限判断：
     1) 第一层（气象前馈）：严格受对应测点配置与可用状态门控——仅当太阳辐照量测值有效时进入光伏
@@ -339,7 +362,10 @@ def _apply_renewable_natural_upper_bounds(
                     entry["saturatedBaselineKw"] = None
                     entry["saturatedWeatherValue"] = None
                 elif cmd_delta > cmd_deadband:
-                    if meas_delta >= 0.15 * cmd_delta:
+                    if boundary_backtracked:
+                        # 模拟台本拍潮流回溯未完整执行增量，冻结失配计数，防止误锁自然资源饱和。
+                        pass
+                    elif meas_delta >= 0.15 * cmd_delta:
                         # 增发指令获得有效实测响应 -> 解除饱和
                         entry["saturated"] = False
                         entry["mismatchCount"] = 0
@@ -432,10 +458,20 @@ def _finalize_renewable_saturation_memory(
         and isinstance(runtime_memory.get("renewable_saturation"), dict)
         else None
     )
+    # 为防止多机同拍同时探顶产生大阶跃冲击平衡节点，每拍按岛最多允许 1 台饱和机组执行小步探顶，
+    # 且必须确认对应分量未处于高 SOC 过充/闭锁保护态。
+    probed_islands: set[str] = set()
+    blocked_probe_components: set[str] = set()
+    for row in command_rows:
+        if row.get("technology") == "storage" and row.get("online"):
+            if row.get("socConstraint") == "above_upper" or row.get("automaticControlBlocked"):
+                comp = str(row.get("dcTransferGroupId") or row.get("gridComponentId") or "").strip()
+                if comp:
+                    blocked_probe_components.add(comp)
     for row in command_rows:
         if row.get("technology") not in {"wind", "pv"}:
             continue
-        if not row.get("online") or row.get("commandable") is False:
+        if not row.get("online") or row.get("commandable") is False or row.get("manualLocked"):
             continue
         current_kw = _number(row.get("planningCurrentKw", row.get("currentKw")))
         command_kw = _number(row.get("commandKw"))
@@ -443,12 +479,17 @@ def _finalize_renewable_saturation_memory(
         if current_kw is None or command_kw is None:
             continue
         probe_step_kw = max(0.0, _finite_number(row.get("decoupledProbeStepKw")))
-        # 仅在系统未要求主动限电（command_kw >= current_kw）时发出解耦试探
+        probe_island = str(row.get("optimizationIslandId") or row.get("gridComponentId") or "")
+        probe_comp = str(row.get("dcTransferGroupId") or row.get("gridComponentId") or "").strip()
+        # 仅在系统未要求主动限电、未处高 SOC 保护且本岛本拍尚未有其他机组探顶时发出小步试探
         if (
             probe_step_kw > EPSILON
             and command_kw >= current_kw - EPSILON
             and row.get("strategyCommand") is not False
             and row.get("dispatchEnabled") is not False
+            and not row.get("automaticControlBlocked")
+            and probe_comp not in blocked_probe_components
+            and probe_island not in probed_islands
         ):
             probed_kw = min(capacity, current_kw + probe_step_kw)
             if probed_kw > command_kw + EPSILON:
@@ -456,6 +497,7 @@ def _finalize_renewable_saturation_memory(
                 row["targetKw"] = probed_kw
                 row["decoupledProbeApplied"] = True
                 command_kw = probed_kw
+                probed_islands.add(probe_island)
 
         if saturation_store is not None and sim_time_seconds is not None:
             dev_mem_key = f"{row.get('dev_type', '')}:{row.get('dev_name', '')}"
@@ -620,7 +662,23 @@ def calculate_renewable_control_plan(
     storage_effective_decision_step_ratio = configured_settings.storage_step_ratio
     settings = configured_settings
     sim_time_seconds = _plan_sim_time_seconds(snapshot)
-    _reset_runtime_memory_if_clock_rewound(runtime_memory, sim_time_seconds)
+    sample_clock_for_mem = _measurement_sample_clock(snapshot)
+    mem_run_id = (
+        int(_number(sample_clock_for_mem.get("run_id"), 0.0) or 0)
+        if sample_clock_for_mem.get("run_id") is not None
+        else None
+    )
+    mem_step_count = (
+        int(_number(sample_clock_for_mem.get("step_count"), 0.0) or 0)
+        if sample_clock_for_mem.get("step_count") is not None
+        else None
+    )
+    _reset_runtime_memory_if_clock_rewound(
+        runtime_memory,
+        sim_time_seconds,
+        run_id=mem_run_id,
+        step_count=mem_step_count,
+    )
     quality = _Quality(data_source, snapshot_age_seconds)
     (
         measurements,
@@ -1292,16 +1350,35 @@ def calculate_renewable_control_plan(
         if renewable_curtail_capacity_step_kw > EPSILON
         else 0.0
     )
+    # 仅在柴发已跌破最小出力下限或储能无剩余充电空间时，才启用柴发保护限电启发式；
+    # 柴发合规运行在保护带内且电池仍有充电空间时，交由逐岛优化器统筹新能源恢复与储能充电，避免限电死锁与倒弃绿电。
+    has_storage_charge_headroom = any(
+        row.get("online")
+        and row.get("commandable")
+        and row.get("socConstraint") != "above_upper"
+        and _finite_number(row.get("chargePower")) - max(0.0, -_finite_number(row.get("currentKw"))) > EPSILON
+        for row in storage_rows
+    )
     renewable_raise_blocked_by_diesel_guard = bool(
         not renewable_storage_island
         and storage_soc is not None
         and storage_soc_lower_limit is not None
         and storage_soc > storage_soc_lower_limit + EPSILON
-        and diesel_current_for_control < diesel_deadband_upper_kw - EPSILON
+        and (
+            diesel_current_for_control < diesel_min - EPSILON
+            or (
+                diesel_current_for_control < diesel_deadband_upper_kw - EPSILON
+                and not has_storage_charge_headroom
+            )
+        )
     )
     renewable_curtailment_required_by_charging = bool(
         renewable_raise_blocked_by_diesel_guard
         and storage_charge_current_kw > EPSILON
+        and (
+            diesel_current_for_control < diesel_min - EPSILON
+            or storage_soc_region in {"high_guard", "above_upper"}
+        )
     )
     renewable_diesel_guard_curtail_request_kw = (
         min(renewable_curtail_capacity_step_kw, storage_charge_current_kw)
@@ -1826,9 +1903,14 @@ def calculate_renewable_control_plan(
                 else "diesel_guard_no_renewable_recovery"
             )
 
-    # 双层融合自然资源上限判断（气象测点可用性门控前馈 + 电侧指令-响应失配闭环饱和）
+    # 双层融合自然资源上限判断（对全部在线新能源含次孤岛统一生效，并识别潮流回溯拍冻结失配计数）
+    all_online_renewable_for_limits = [
+        row for row in renewable_rows if row.get("online")
+    ]
+    compute_block = snapshot.get("compute") if isinstance(snapshot.get("compute"), Mapping) else {}
+    boundary_backtracked = bool(compute_block.get("boundary_backtracked"))
     renewable_natural_limit_diagnostics = _apply_renewable_natural_upper_bounds(
-        online_renewable,
+        all_online_renewable_for_limits,
         renewable_target_by_device,
         settings,
         runtime_memory=runtime_memory,
@@ -1836,6 +1918,7 @@ def calculate_renewable_control_plan(
         wind_measurement_status=wind_measurement_status,
         solar_measurement_status=solar_measurement_status,
         diesel_guard_blocked=bool(renewable_raise_blocked_by_diesel_guard),
+        boundary_backtracked=boundary_backtracked,
     )
 
     island_component_plans: List[Dict[str, Any]] = []
@@ -1983,7 +2066,11 @@ def calculate_renewable_control_plan(
         diesel_current_kw=diesel_current_for_control,
         diesel_min_kw=diesel_min,
         diesel_deadband_upper_kw=diesel_deadband_upper_kw,
-        enabled=bool(online_diesel or renewable_storage_island),
+        enabled=bool(
+            online_diesel
+            or renewable_storage_island
+            or operating_mode == "grid_forming_storage_reference"
+        ),
         dc_load_kw=dc_load_for_dispatch_validation,
     )
     renewable_target_by_device = direct_grid_forming_plan["renewableTargets"]
@@ -2253,27 +2340,41 @@ def calculate_renewable_control_plan(
         for index, row in enumerate(converter_rows)
     ]
 
-    active_dc_transfer_group_ids = _active_dc_transfer_group_ids(
-        resource_topology,
-        (*renewable_rows, *storage_rows, *all_converter_rows),
+    active_dc_transfer_group_ids = set(
+        _active_dc_transfer_group_ids(
+            resource_topology,
+            (*renewable_rows, *storage_rows, *all_converter_rows),
+        )
     )
+    # 独立直流孤岛（不含在线 ACDC 变流器，但本地存在在线合格构网直流储能）同样允许本地直流可控设备协同。
+    for s_row in storage_rows:
+        if (
+            s_row.get("connectionSide") == "DC"
+            and s_row.get("role") == "balance"
+            and s_row.get("online")
+            and s_row.get("stateEligible")
+        ):
+            dc_gid = str(s_row.get("dcTransferGroupId") or s_row.get("gridComponentId") or "").strip()
+            if dc_gid:
+                active_dc_transfer_group_ids.add(dc_gid)
 
     command_rows: List[Dict[str, Any]] = []
     for row in renewable_rows:
         key = (row["dev_type"], row["dev_name"])
         dc_group_command_safe = (
             row.get("connectionSide") != "DC"
-            or str(row.get("dcTransferGroupId", "")) in active_dc_transfer_group_ids
+            or str(row.get("dcTransferGroupId") or row.get("gridComponentId") or "") in active_dc_transfer_group_ids
         )
+        effective_commandable = bool(row["commandable"] and dc_group_command_safe)
         strategy_command = (
-            row["commandable"] and row["capabilityKnown"]
+            effective_commandable and row["capabilityKnown"]
             if row["environmentKnown"]
-            else row["commandable"] and row.get("planningCurrentKw") is not None and _finite_number(row.get("capacityKw")) > 0
+            else effective_commandable and row.get("planningCurrentKw") is not None and _finite_number(row.get("capacityKw")) > 0
         )
-        strategy_command = bool(strategy_command and dc_group_command_safe)
         command_rows.append(
             {
                 **row,
+                "commandable": effective_commandable,
                 "islandControlAction": island_control_action_by_resource.get(key, ""),
                 "recoveryKw": max(
                     0.0,
@@ -2513,13 +2614,27 @@ def calculate_renewable_control_plan(
         converter_inventory_rows,
         quality,
     )
+    # 单一事实来源：将 command_rows 最终的 commandable 标志同步给优化器输入，彻底消除优化器与下发层的剪刀差。
+    effective_commandable_by_key = {
+        (str(r.get("dev_type", "")), str(r.get("dev_name", ""))): bool(r.get("commandable"))
+        for r in command_rows
+        if r.get("technology") in {"wind", "pv", "storage"}
+    }
+    opt_renewable_rows = [
+        {**r, "commandable": effective_commandable_by_key.get((str(r.get("dev_type", "")), str(r.get("dev_name", ""))), bool(r.get("commandable")))}
+        for r in renewable_rows
+    ]
+    opt_storage_rows = [
+        {**r, "commandable": effective_commandable_by_key.get((str(r.get("dev_type", "")), str(r.get("dev_name", ""))), bool(r.get("commandable")))}
+        for r in storage_rows
+    ]
     optimization_started = time.perf_counter()
     strategy_preparation_seconds = optimization_started - topology_finished
     optimization_result = optimize_topology_islands(
         resource_topology,
-        renewable_rows=renewable_rows,
+        renewable_rows=opt_renewable_rows,
         diesel_rows=diesel_rows,
-        storage_rows=storage_rows,
+        storage_rows=opt_storage_rows,
         converter_rows=all_converter_rows,
         step_coefficient=settings.step_coefficient,
         diesel_step_ratio=settings.diesel_step_ratio,
@@ -2589,10 +2704,21 @@ def calculate_renewable_control_plan(
             component_plan = island_plan_by_resource.get(key)
             if component_plan is None:
                 continue
+            comp_ids_for_row = {
+                str(row.get("gridComponentId", "")).strip(),
+                str(row.get("dcTransferGroupId", "")).strip(),
+            }
+            if row.get("automaticControlBlocked") or bool(
+                comp_ids_for_row.intersection(blocked_optimization_component_ids)
+            ):
+                continue
             target = _number(component_plan.get("renewableTargets", {}).get(key))
             current = _number(row.get("planningCurrentKw", row.get("currentKw")))
             if target is None:
                 continue
+            nat_upper = _number(row.get("naturalUpperKw"))
+            if nat_upper is not None:
+                target = min(target, nat_upper)
             row["commandKw"] = target
             row["targetKw"] = target
             row["optimizationSuggestedKw"] = target
@@ -2614,8 +2740,19 @@ def calculate_renewable_control_plan(
                 str(component_plan.get("gridComponentId", "")),
                 str(component_plan.get("dcTransferGroupId", "")),
             )
+            if set(component_key).intersection(blocked_optimization_component_ids):
+                continue
             renewable_delta_kw = sum(
-                _finite_number(target)
+                _finite_number(
+                    next(
+                        (
+                            row.get("commandKw")
+                            for row in command_rows
+                            if (str(row.get("dev_type", "")), str(row.get("dev_name", ""))) == resource_key
+                        ),
+                        target,
+                    )
+                )
                 - _finite_number(
                     next(
                         (
@@ -2639,6 +2776,8 @@ def calculate_renewable_control_plan(
                 for row in command_rows
                 if row.get("technology") == "storage"
                 and row.get("role") == "balance"
+                and row.get("online")
+                and row.get("stateEligible")
                 and (
                     str(row.get("gridComponentId", "")),
                     str(row.get("dcTransferGroupId", "")),
@@ -2859,6 +2998,7 @@ def calculate_renewable_control_plan(
         zero_diesel_grid_forming=bool(
             operating_mode == "grid_forming_storage_reference"
         ),
+        defer_dwell_commit=True,
     )
     # 氢能与主优化器单拍协同：氢能闭环发生非零电功率调节时，将氢能净电注入变更量回代重算主优化器，
     # 使新能源恢复、柴发出力、储能充放与变流器并联均流在同一控制周期内满足精确功率平衡。
@@ -2897,7 +3037,7 @@ def calculate_renewable_control_plan(
             if electrolyzer_load_components.intersection(isl.component_ids):
                 electrolyzer_island_components.update(isl.component_ids)
         coordinated_renewable_rows = []
-        for row in renewable_rows:
+        for row in opt_renewable_rows:
             row_copy = dict(row)
             row_side = str(row_copy.get("connectionSide", "") or "").strip().upper()
             row_comp = (
@@ -2907,7 +3047,10 @@ def calculate_renewable_control_plan(
             )
             if (
                 row_comp in electrolyzer_island_components
-                and row_copy.get("dispatchUpperReason") == "diesel_guard_no_renewable_recovery"
+                and row_copy.get("dispatchUpperReason") in {
+                    "diesel_guard_no_renewable_recovery",
+                    "diesel_guard_storage_charging_curtailment",
+                }
             ):
                 nat_upper = _number(row_copy.get("naturalUpperKw"))
                 if nat_upper is not None:
@@ -2924,7 +3067,7 @@ def calculate_renewable_control_plan(
             resource_topology,
             renewable_rows=coordinated_renewable_rows,
             diesel_rows=diesel_rows,
-            storage_rows=storage_rows,
+            storage_rows=opt_storage_rows,
             converter_rows=all_converter_rows,
             step_coefficient=settings.step_coefficient,
             diesel_step_ratio=settings.diesel_step_ratio,
@@ -3062,7 +3205,57 @@ def calculate_renewable_control_plan(
                     ):
                         row["commandKw"] = float(_number(row.get("currentKw"), 0.0) or 0.0)
                         row["strategyCommand"] = False
-                # 同步恢复非氢能行至首轮平衡优化目标（撤销 hydrogen.py 中的临时柴发/DCAC 手工修正）
+                # 同步恢复非氢能行：若存在保留的硬安全停机氢能扰动，基于硬安全停机注入量重算一次平衡，避免抹掉硬安全停机的电侧配平。
+                hard_safety_injection: Dict[Tuple[str, str], float] = {}
+                for h_cmd in hydrogen_external_cmds:
+                    if not h_cmd.get("hardSafetyStop"):
+                        continue
+                    h_delta = _number(h_cmd.get("electricDeltaKw"))
+                    h_side = str(h_cmd.get("electricSide", "") or "").strip().upper()
+                    h_comp = (
+                        str(h_cmd.get("dcTransferGroupId") or h_cmd.get("electricComponentId") or "").strip()
+                        if h_side == "DC"
+                        else str(h_cmd.get("electricComponentId") or "").strip()
+                    )
+                    if h_delta is None or abs(h_delta) <= 0.05 or not h_comp or h_side not in {"AC", "DC"}:
+                        continue
+                    signed_inj = -float(h_delta) if h_cmd.get("mode") == "electrolyzer" else float(h_delta)
+                    hard_safety_injection[(h_comp, h_side)] = (
+                        hard_safety_injection.get((h_comp, h_side), 0.0) + signed_inj
+                    )
+                if hard_safety_injection:
+                    safety_reopt = optimize_topology_islands(
+                        resource_topology,
+                        renewable_rows=opt_renewable_rows,
+                        diesel_rows=diesel_rows,
+                        storage_rows=opt_storage_rows,
+                        converter_rows=all_converter_rows,
+                        step_coefficient=settings.step_coefficient,
+                        diesel_step_ratio=settings.diesel_step_ratio,
+                        converter_step_ratio=settings.converter_step_ratio,
+                        converter_ramp_step_ratio=settings.converter_ramp_step_ratio,
+                        converter_efficiency=settings.converter_efficiency,
+                        storage_step_ratio=settings.storage_step_ratio,
+                        storage_soc_rebalance_deadband=settings.storage_soc_rebalance_deadband,
+                        storage_soc_correction_step_scale=settings.storage_soc_correction_step_scale,
+                        diesel_power_protection_ratio=settings.diesel_power_protection_ratio,
+                        grid_forming_storage_protection_ratio=settings.grid_forming_storage_protection_ratio,
+                        soc_deadband=settings.soc_deadband,
+                        renewable_curtailment_weight=settings.optimization_renewable_curtailment_weight,
+                        diesel_output_weight=settings.optimization_diesel_output_weight,
+                        curtailment_square_weight=settings.optimization_curtailment_square_weight,
+                        source_storage_adjustment_square_weight=settings.optimization_source_storage_adjustment_square_weight,
+                        balance_delta_square_weight=settings.optimization_balance_delta_square_weight,
+                        balance_delta_warning_kw=settings.optimization_balance_delta_warning_kw,
+                        balance_tolerance_kw=settings.optimization_balance_tolerance_kw,
+                        bound_tolerance_kw=settings.optimization_bound_tolerance_kw,
+                        optimization_ftol=settings.optimization_ftol,
+                        optimization_max_iterations=settings.optimization_max_iterations,
+                        blocked_component_ids=blocked_optimization_component_ids,
+                        external_injection_delta_by_component=hard_safety_injection,
+                    )
+                    if safety_reopt.all_success:
+                        optimization_result = safety_reopt
                 non_hydrogen_rows = [
                     row for row in command_rows if row.get("category") != "氢能"
                 ]
@@ -3078,6 +3271,17 @@ def calculate_renewable_control_plan(
                     h_cmd["electricDeltaKw"] = 0.0
                     h_cmd["action"] = "hold"
                     h_cmd["controlReason"] = "single_cycle_reoptimization_balance_rejected"
+                # 撤回已回滚氢能设备的待提交驻留记忆，防止污染下一拍冷却计时器。
+                pending_dwell = hydrogen_plan.get("pendingDwellMemory")
+                if isinstance(pending_dwell, dict) and runtime_memory is not None:
+                    prev_dwell = runtime_memory.get("hydrogen_dwell")
+                    prev_dwell_map = prev_dwell if isinstance(prev_dwell, dict) else {}
+                    for c_type, c_name in rollback_couplings:
+                        d_key = f"{c_type}:{c_name}"
+                        if d_key in prev_dwell_map:
+                            pending_dwell[d_key] = copy.deepcopy(prev_dwell_map[d_key])
+                        else:
+                            pending_dwell.pop(d_key, None)
                 hydrogen_plan["singleCycleCoordinated"] = False
                 hydrogen_plan["electricPowerAdjustmentKw"] = sum(
                     float(_number(r.get("electricDeltaKw"), 0.0) or 0.0)
@@ -3090,6 +3294,14 @@ def calculate_renewable_control_plan(
                 hydrogen_plan.setdefault("warnings", []).append(
                     "氢能经济性增量在单拍主优化器协同校核中无法满足电侧平衡，已保守保持当前氢能功率"
                 )
+    # 仅在未发生质量阻断且启用氢能闭环时，原子提交氢能驻留记忆（杜绝开环预览/回滚/阻断提前脏写）。
+    if (
+        runtime_memory is not None
+        and not quality.blocked
+        and settings.hydrogen_closed_loop_enabled
+        and isinstance(hydrogen_plan.get("pendingDwellMemory"), dict)
+    ):
+        runtime_memory["hydrogen_dwell"] = hydrogen_plan["pendingDwellMemory"]
     strategy_boundary_warnings = _clamp_final_command_rows_to_boundaries(
         command_rows
     )
@@ -3317,7 +3529,8 @@ def calculate_renewable_control_plan(
     clock = _measurement_sample_clock(snapshot)
     time_text = str(clock.get("time", "--"))
     run_id = int(_number(clock.get("run_id"), 0.0) or 0)
-    clock_key = f"{run_id}|{clock.get('absolute_minute', clock.get('minute', ''))}|{time_text}"
+    step_count_key = int(_number(clock.get("step_count"), 0.0) or 0)
+    clock_key = f"{run_id}|{step_count_key}|{clock.get('absolute_minute', clock.get('minute', ''))}|{time_text}"
     quality_payload = quality.payload()
     island_component_metrics = [
         {

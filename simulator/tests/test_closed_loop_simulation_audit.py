@@ -965,5 +965,563 @@ class ClosedLoopSimulationAuditRound3Tests(unittest.TestCase):
         self.assertTrue(parse_bool_flag("1"))
 
 
+class ClosedLoopSimulationAuditRound4Tests(unittest.TestCase):
+    """第四轮深水区审计 12 项核心修复的专项回归测试。"""
+
+    def test_measurement_status_valid_no_whitewash_dead_no_drift_and_paused_overlay(self) -> None:
+        """验证量测状态统一 valid、不洗白 row_valid=0、dead 带 bias 不漂移及暂停态覆写即时生效且无损回退。"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim = _make_simulator(tmp_dir)
+            sim.step(advance_seconds=1.0, return_snapshot=False)
+            meas = sim.measurements()
+            scada_rows = meas["scada"]
+            self.assertTrue(scada_rows)
+
+            # 1) 快/慢路径状态词法统一为 "valid"
+            first_valid = next(r for r in scada_rows if int(r.get("valid", 0)) == 1)
+            self.assertEqual(first_valid["status"], "valid")
+            target_name = str(first_valid["name"])
+            base_val = float(first_valid["value"])
+
+            # 2) row_valid=0 时不得被误标记为 "valid" 或洗白成 1
+            for row in sim.latest_scada_rows:
+                if str(row[1]) == target_name:
+                    row[6] = "0"
+                    break
+            meas_invalid = sim.measurements()
+            invalid_item = next(r for r in meas_invalid["scada"] if r["name"] == target_name)
+            self.assertEqual(int(invalid_item["valid"]), 0)
+            self.assertEqual(invalid_item["status"], "invalid")
+
+            # 3) 暂停态下配置 dead 故障（无 median 带 bias）与固定值立即生效，且连续多拍不漂移，清除后无损回退
+            sim.set_local_settings(
+                {
+                    "measurement_faults": [
+                        {
+                            "meas_name": target_name,
+                            "type": "dead",
+                            "bias": 10.0,
+                            "start_minute": 0,
+                            "end_minute": 1440,
+                        }
+                    ],
+                    "measurement_statuses": {},
+                }
+            )
+            meas_dead = sim.measurements()
+            dead_item = next(r for r in meas_dead["scada"] if r["name"] == target_name)
+            self.assertAlmostEqual(float(dead_item["value"]), base_val + 10.0, places=6)
+
+            # 连续多次调用 _apply_measurement_faults 不得每拍累加 bias 无限漂移
+            sim._apply_measurement_faults(sim.clock.minute, sim.clock.absolute_minute + 1.0 / 60.0)
+            sim._apply_measurement_faults(sim.clock.minute, sim.clock.absolute_minute + 2.0 / 60.0)
+            v_after = float(next(r[7] for r in sim.latest_scada_rows if str(r[1]) == target_name))
+            self.assertAlmostEqual(v_after, base_val + 10.0, places=6)
+
+            # 暂停态切换为 fixed 状态与固定值立即生效
+            sim.set_local_settings(
+                {
+                    "measurement_faults": [],
+                    "measurement_statuses": {target_name: {"status": "fixed", "fixed_value": 88.5}},
+                }
+            )
+            meas_fixed = sim.measurements()
+            fixed_item = next(r for r in meas_fixed["scada"] if r["name"] == target_name)
+            self.assertEqual(fixed_item["status"], "fixed")
+            self.assertAlmostEqual(float(fixed_item["value"]), 88.5, places=6)
+
+            # 清除故障与状态后立即回退至本拍原始 base_val
+            sim.set_local_settings({"measurement_statuses": {}, "measurement_faults": []})
+            meas_restored = sim.measurements()
+            restored_item = next(r for r in meas_restored["scada"] if r["name"] == target_name)
+            self.assertEqual(restored_item["status"], "valid")
+            self.assertAlmostEqual(float(restored_item["value"]), base_val, places=6)
+
+    def test_ghost_latched_strategy_command_deletable_and_empty_status_filtered(self) -> None:
+        """验证策略换代/撤销后仍在锁存生效的自动指令可被教员删除，且空串 status 被过滤。"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim = _make_simulator(tmp_dir)
+            gens = [str(r["name"]) for r in sim.source_model_book.data["ACGenerator"].data]
+            self.assertTrue(gens)
+            gen_name = gens[0]
+
+            # 过滤空串 status
+            filtered = sim._filter_defined_run_command_items(
+                [{"dev_type": "ACGenerator", "dev_name": gen_name, "status": ""}]
+            )
+            self.assertEqual(filtered, [])
+
+            # 下发一代自动策略指令，再标记该策略撤销但保留锁存语义，确认教员 delete_active_commands 可删除
+            sim.apply_student_commands(
+                {
+                    "command_origin": "strategy",
+                    "strategy_id": "strat-test",
+                    "strategy_generation": 1,
+                    "set_values": [
+                        {"dev_type": "ACGenerator", "dev_name": gen_name, "set_type": "p_set", "set_value": 12.0}
+                    ],
+                },
+                source="trainee-strategy",
+            )
+            with sim.lock:
+                self.assertTrue(sim.command_history)
+                entry = sim.command_history[-1]
+                entry["strategy_cancelled"] = True
+                entry["superseded_by_generation"] = 2
+                self.assertTrue(sim._command_entry_is_active(entry, sim.clock.absolute_minute))
+                self.assertTrue(sim._command_entry_can_be_cancelled(entry, sim.clock.absolute_minute))
+
+            deleted = sim.delete_active_commands(
+                {"cancel_commands": [{"dev_type": "ACGenerator", "dev_name": gen_name, "set_type": "p_set"}]},
+                source="simulator-ui",
+            )
+            self.assertGreaterEqual(int(deleted.get("remote_adjustments", 0)), 1)
+            self.assertNotIn(
+                ("ACGenerator", gen_name, "p_set"),
+                sim._active_remote_adjustment_keys(sim.clock.absolute_minute),
+            )
+
+    def test_restart_loads_manual_overrides_before_commands_and_tolerates_stale_measurement_group(self) -> None:
+        """验证重启先加载人工修改再加载指令历史，且单个失效测点覆盖不销毁整份 manual_overrides.json。"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            model_dir = _resolve_active_model_dir()
+            runtime_dir = Path(tmp_dir) / "runtime"
+            sim1 = service.PolarMicrogridSimulator(
+                sim_dir=model_dir,
+                runtime_dir=runtime_dir,
+                model_id=model_dir.name,
+                model_name=model_dir.name,
+                noise_std=0.0,
+                random_seed=7,
+            )
+            gen_row = next(
+                r for r in sim1.source_model_book.data["ACGenerator"].data
+                if float(r.get("p_max", 0.0) or 0.0) > 0.0
+            )
+            gen_name = str(gen_row["name"])
+            orig_p_max = float(gen_row["p_max"])
+            raised_p_max = orig_p_max + 200.0
+            target_p = orig_p_max + 100.0
+
+            sim1.update_device_parameters(
+                {
+                    "block_name": "ACGenerator",
+                    "row_key": {"name": gen_name},
+                    "changes": {"p_max": raised_p_max},
+                }
+            )
+            sim1.apply_student_commands(
+                {
+                    "command_origin": "manual",
+                    "set_values": [
+                        {"dev_type": "ACGenerator", "dev_name": gen_name, "set_type": "p_set", "set_value": target_p}
+                    ],
+                },
+                source="trainee-ui",
+            )
+
+            # 在 manual_overrides.json 中人为注入一个已失效测点分组项，验证重启不整体丢弃合法修改
+            overrides_path = runtime_dir / "manual_overrides.json"
+            overrides_payload = json.loads(overrides_path.read_text(encoding="utf-8"))
+            overrides_payload.setdefault("measurement_groups", {})["NON_EXISTENT_MEAS_GROUP"] = {"value": 999.0}
+            overrides_path.write_text(json.dumps(overrides_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            # 重启构造第二个实例
+            sim2 = service.PolarMicrogridSimulator(
+                sim_dir=model_dir,
+                runtime_dir=runtime_dir,
+                model_id=model_dir.name,
+                model_name=model_dir.name,
+                noise_std=0.0,
+                random_seed=7,
+            )
+            reloaded_gen = next(
+                r for r in sim2.definition_snapshot.model_book.data["ACGenerator"].data if str(r.get("name")) == gen_name
+            )
+            self.assertAlmostEqual(float(reloaded_gen["p_max"]), raised_p_max, places=6)
+            reloaded_cmd = sim2.command_history[-1]["normalized"]["set_values"][0]
+            self.assertAlmostEqual(float(reloaded_cmd["set_value"]), target_p, places=6)
+
+    def test_hour_mode_external_realtime_indexing_and_sparse_curve_upsert(self) -> None:
+        """验证 hour 模式 3600 个整秒点无浮点错格，且稀疏曲线外部实时输入按时间戳安全 upsert。"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim = _make_simulator(tmp_dir)
+            orig_loads = dict(sim.curves.get("loads", {}))
+            self.assertTrue(orig_loads)
+            load_key = next(iter(orig_loads.keys()))
+            sim.set_curves({"mode": "hour", "loads": {load_key: [{"minute": 0.0, "p_kw": 10.0}, {"minute": 30.0, "p_kw": 20.0}]}})
+            with sim.lock:
+                for sec in range(3600):
+                    info = sim._external_realtime_target_locked(sec / 60.0)
+                    self.assertEqual(int(info["index"]), sec, f"sec={sec} indexed wrong")
+
+            # 稀疏 2 点负荷曲线上写入外部实时输入，验证不会破坏时间轴或截断曲线
+            sim.clock.absolute_minute = 15.0
+            sim.clock.minute = 15.0
+            resp = sim.apply_external_realtime_inputs(
+                {
+                    "loads": {load_key: 42.5},
+                    "advance_step": False,
+                }
+            )
+            self.assertTrue(resp.get("ok", True))
+            pts = sim.curves["loads"][load_key]
+            minutes = [round(float(p["minute"]), 6) for p in pts]
+            self.assertEqual(minutes, [0.0, 15.0, 30.0])
+            self.assertAlmostEqual(float(pts[1]["p_kw"]), 42.5, places=6)
+
+    def test_hydrogen_flow_set_safety_validation_checks_electric_bounds(self) -> None:
+        """验证 FLOW 模式下氢能 flow_set 遥调反向换算电侧功率并执行安全限幅。"""
+        from simu.model_semantics import HYDROGEN_CONVERSION_BLOCKS, validate_hydrogen_power_setpoint_safety
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim = _make_simulator(tmp_dir)
+            book = simu_loop._clone_ebook(sim.source_model_book)
+            # 将任意一台电氢耦合设备设为 FLOW 控制模式，验证氢端 flow_set 反向换算至电侧并限幅
+            checked = False
+            for block_name in HYDROGEN_CONVERSION_BLOCKS:
+                block = book.data.get(block_name)
+                if block is None or not block.data:
+                    continue
+                for row in block.data:
+                    row["control_type"] = "FLOW"
+            for hydro_type in ("HydroLoad", "HydroSource"):
+                block = book.data.get(hydro_type)
+                if block is None:
+                    continue
+                for row in block.data:
+                    hydro_name = str(row.get("name") or "")
+                    if not hydro_name:
+                        continue
+                    res = validate_hydrogen_power_setpoint_safety(
+                        book,
+                        hydro_type,
+                        hydro_name,
+                        "flow_set",
+                        1e6,
+                        clamp_to_bounds=True,
+                    )
+                    if res is not None:
+                        checked = True
+                        self.assertTrue(res["clamped"])
+                        self.assertLess(float(res["flow_set"]), 1e6)
+                        self.assertGreaterEqual(float(res["flow_set"]), 0.0)
+                        break
+                if checked:
+                    break
+            self.assertTrue(checked, "未能触发任意电氢耦合设备的 flow_set 反向电侧安全限幅")
+
+    def test_hybrid_topology_keeps_dcdc_voltage_island_and_strips_dead_dcac_ghost_ref(self) -> None:
+        """验证混合拓扑保留定压 DCDC 构网直流孤岛，且死岛 DCAC 不注入幽灵电压参考。"""
+        import numpy as np
+        from src.hybrid_power_system_analysis.model.ppc_topology import ensure_hybrid_ppc_topology
+        from src.hybrid_power_system_analysis.model.ac_array_model import (
+            BUS_COLS as AC_BUS_COLS,
+            GEN_COLS as AC_GEN_COLS,
+            LOAD_COLS as AC_LOAD_COLS,
+            CTRL_SLACK as AC_CTRL_SLACK,
+        )
+        from src.hybrid_power_system_analysis.model.dc_array_model import (
+            BUS_COLS as DC_BUS_COLS,
+            DCDC_COLS as DC_DCDC_COLS,
+            GEN_COLS as DC_GEN_COLS,
+            LOAD_COLS as DC_LOAD_COLS,
+            CTRL_V as DC_CTRL_V,
+            CTRL_NONE as DC_CTRL_NONE,
+        )
+        from src.hybrid_power_system_analysis.model.hybrid_array_model import (
+            DCAC_COLS,
+            DCAC_AC_CONTROL_CODE,
+            DCAC_DC_CONTROL_CODE,
+        )
+
+        # 1) 定压 DCDC 构网直流孤岛：DC1(有平衡机) --DCDC(j定压)--> DC2(无平衡机，有负荷)
+        dc_bus = np.zeros((2, len(DC_BUS_COLS)), dtype=np.float64)
+        dc_bus[0, [DC_BUS_COLS["idx"], DC_BUS_COLS["vbase"], DC_BUS_COLS["voltage"], DC_BUS_COLS["run_stat"]]] = [1, 0.75, 1.0, 1]
+        dc_bus[1, [DC_BUS_COLS["idx"], DC_BUS_COLS["vbase"], DC_BUS_COLS["voltage"], DC_BUS_COLS["run_stat"]]] = [2, 0.75, 1.0, 1]
+        dc_gen = np.zeros((1, len(DC_GEN_COLS)), dtype=np.float64)
+        dc_gen[0, [DC_GEN_COLS["idx"], DC_GEN_COLS["node"], DC_GEN_COLS["control_type"], DC_GEN_COLS["v_set"], DC_GEN_COLS["run_stat"]]] = [1, 1, DC_CTRL_V, 1.0, 1]
+        dc_load = np.zeros((1, len(DC_LOAD_COLS)), dtype=np.float64)
+        dc_load[0, [DC_LOAD_COLS["idx"], DC_LOAD_COLS["node"], DC_LOAD_COLS["pbase"], DC_LOAD_COLS["pv0"], DC_LOAD_COLS["run_stat"]]] = [1, 2, 0.2, 1.0, 1]
+        dc_dcdc = np.zeros((1, len(DC_DCDC_COLS)), dtype=np.float64)
+        dc_dcdc[0, [
+            DC_DCDC_COLS["idx"],
+            DC_DCDC_COLS["i_node"],
+            DC_DCDC_COLS["j_node"],
+            DC_DCDC_COLS["i_control_type"],
+            DC_DCDC_COLS["j_control_type"],
+            DC_DCDC_COLS["v_set"],
+            DC_DCDC_COLS["run_stat"],
+        ]] = [1, 1, 2, DC_CTRL_NONE, DC_CTRL_V, 1.0, 1]
+
+        ac_bus = np.zeros((1, len(AC_BUS_COLS)), dtype=np.float64)
+        ac_bus[0, [AC_BUS_COLS["idx"], AC_BUS_COLS["vbase"], AC_BUS_COLS["voltage"], AC_BUS_COLS["run_stat"]]] = [1, 0.4, 1.0, 1]
+        ac_gen = np.zeros((1, len(AC_GEN_COLS)), dtype=np.float64)
+        ac_gen[0, [AC_GEN_COLS["idx"], AC_GEN_COLS["node"], AC_GEN_COLS["control_type"], AC_GEN_COLS["v_set"], AC_GEN_COLS["run_stat"]]] = [1, 1, AC_CTRL_SLACK, 1.0, 1]
+        ac_load = np.zeros((1, len(AC_LOAD_COLS)), dtype=np.float64)
+        ac_load[0, [AC_LOAD_COLS["idx"], AC_LOAD_COLS["node"], AC_LOAD_COLS["pbase"], AC_LOAD_COLS["pv0"], AC_LOAD_COLS["run_stat"]]] = [1, 1, 0.1, 1.0, 1]
+
+        ppc = {
+            "ac": {"bus": ac_bus, "gen": ac_gen, "load": ac_load, "shunt": np.zeros((0, 7)), "branch": np.zeros((0, 11)), "transformer": np.zeros((0, 15)), "three_winding_transformer": np.zeros((0, 20)), "zero_branch": np.zeros((0, 7)), "switch": np.zeros((0, 8)), "break": np.zeros((0, 8)), "acac": np.zeros((0, 15))},
+            "dc": {"bus": dc_bus, "gen": dc_gen, "load": dc_load, "branch": np.zeros((0, 8)), "zero_branch": np.zeros((0, 7)), "switch": np.zeros((0, 8)), "break": np.zeros((0, 8)), "dcdc": dc_dcdc},
+            "dcac": np.zeros((0, len(DCAC_COLS)), dtype=np.float64),
+        }
+        ensure_hybrid_ppc_topology(ppc)
+        dc_topo = ppc["dc"]["_topology_arrays"]
+        self.assertTrue(bool(np.all(dc_topo.node_alive_mask)), "定压 DCDC 构网的直流孤岛应全部存活")
+
+        # 2) AC 侧死岛（无平衡机、仅 bus.run_stat=1），连着一台 DCAC(dc_ctrl=V) -> 必须剥离幽灵 DC 电压参考，DC 孤岛不得凭幽灵参考存活
+        ac_bus_dead = np.zeros((1, len(AC_BUS_COLS)), dtype=np.float64)
+        ac_bus_dead[0, [AC_BUS_COLS["idx"], AC_BUS_COLS["vbase"], AC_BUS_COLS["voltage"], AC_BUS_COLS["run_stat"]]] = [1, 0.4, 1.0, 1]
+        dc_bus_iso = np.zeros((1, len(DC_BUS_COLS)), dtype=np.float64)
+        dc_bus_iso[0, [DC_BUS_COLS["idx"], DC_BUS_COLS["vbase"], DC_BUS_COLS["voltage"], DC_BUS_COLS["run_stat"]]] = [1, 0.75, 1.0, 1]
+        dc_load_iso = np.zeros((1, len(DC_LOAD_COLS)), dtype=np.float64)
+        dc_load_iso[0, [DC_LOAD_COLS["idx"], DC_LOAD_COLS["node"], DC_LOAD_COLS["pbase"], DC_LOAD_COLS["pv0"], DC_LOAD_COLS["run_stat"]]] = [1, 1, 0.2, 1.0, 1]
+        dcac_ghost = np.zeros((1, len(DCAC_COLS)), dtype=np.float64)
+        dcac_ghost[0, [
+            DCAC_COLS["idx"],
+            DCAC_COLS["ac_node"],
+            DCAC_COLS["dc_node"],
+            DCAC_COLS["ac_control_type"],
+            DCAC_COLS["dc_control_type"],
+            DCAC_COLS["v_dc_set"],
+            DCAC_COLS["run_stat"],
+        ]] = [1, 1, 1, DCAC_AC_CONTROL_CODE["NONE"], DCAC_DC_CONTROL_CODE["V"], 1.0, 1]
+        ppc_ghost = {
+            "ac": {"bus": ac_bus_dead, "gen": np.zeros((0, len(AC_GEN_COLS))), "load": np.zeros((0, len(AC_LOAD_COLS))), "shunt": np.zeros((0, 7)), "branch": np.zeros((0, 11)), "transformer": np.zeros((0, 15)), "three_winding_transformer": np.zeros((0, 20)), "zero_branch": np.zeros((0, 7)), "switch": np.zeros((0, 8)), "break": np.zeros((0, 8)), "acac": np.zeros((0, 15))},
+            "dc": {"bus": dc_bus_iso, "gen": np.zeros((0, len(DC_GEN_COLS))), "load": dc_load_iso, "branch": np.zeros((0, 8)), "zero_branch": np.zeros((0, 7)), "switch": np.zeros((0, 8)), "break": np.zeros((0, 8)), "dcdc": np.zeros((0, len(DC_DCDC_COLS)))},
+            "dcac": dcac_ghost,
+        }
+        ensure_hybrid_ppc_topology(ppc_ghost)
+        self.assertEqual(len(ppc_ghost["dc"].get("_external_voltage_reference_node_ids", ())), 0)
+        self.assertFalse(bool(np.any(ppc_ghost["dc"]["_topology_arrays"].node_alive_mask)))
+
+    def test_dead_fluid_island_zeroes_flow_and_empty_electric_with_single_hydro_node(self) -> None:
+        """验证阀门隔离的无压源氢孤岛流量清零，且全电网失电含单节点氢网求解正常收敛不崩溃。"""
+        from src.hybrid_power_system_analysis.model.fluid_model import build_fluid_network_from_model
+        from src.hybrid_power_system_analysis.lfcore.fluid_lf import FluidPowerFlowCalc
+        from src.hybrid_power_system_analysis.lfcore.hybrid_lf import HybridPowerFlowCalc
+        from src.hybrid_power_system_analysis.model.hybrid_model import (
+            ACPowerNetwork,
+            DCPowerNetwork,
+            HybridPowerNetwork,
+        )
+
+        # 1) 阀门断开将负荷侧隔离为无压力源孤岛 -> 孤岛负荷与定流源流量必须归零
+        model = SimpleNamespace(
+            HydroNode=[
+                SimpleNamespace(idx=1, name="HN1", p_init=1.0, run_stat=1),
+                SimpleNamespace(idx=2, name="HN2", p_init=1.0, run_stat=1),
+            ],
+            HydroSource=[
+                SimpleNamespace(idx=1, name="HS1", node=1, control_type="PRESSURE", p_set=1.0, flow_set=0.0, run_stat=1),
+                SimpleNamespace(idx=2, name="HS2", node=2, control_type="FLOW", p_set=1.0, flow_set=5.0, run_stat=1),
+            ],
+            HydroLoad=[
+                SimpleNamespace(idx=1, name="HL2", node=2, flow_set=3.0, run_stat=1),
+            ],
+            HydroValve=[
+                SimpleNamespace(idx=1, name="HV1", i_node=1, j_node=2, run_stat=0),
+            ],
+            HydroPipe=[],
+            HydroCompressor=[],
+            HydroStorage=[],
+        )
+        fluid_net = build_fluid_network_from_model(
+            model,
+            prefix="Hydro",
+            potential_power=2,
+            controller_suffix="Compressor",
+        )
+        self.assertAlmostEqual(float(fluid_net.load_flow_set[0]), 0.0, places=9)
+        self.assertAlmostEqual(float(fluid_net.source_flow_set[1]), 0.0, places=9)
+        fcalc = FluidPowerFlowCalc(fluid_net)
+        self.assertEqual(fcalc.run(), 0)
+        self.assertAlmostEqual(float(fcalc.source_flow[1]), 0.0, places=9)
+
+        # 2) 全电网空系统 + 单定压节点氢网 -> _finish_empty_system 正确提交流体状态不崩溃
+        single_model = SimpleNamespace(
+            HydroNode=[SimpleNamespace(idx=1, name="HN1", p_init=1.0, run_stat=1)],
+            HydroSource=[SimpleNamespace(idx=1, name="HS1", node=1, control_type="PRESSURE", p_set=1.0, flow_set=0.0, run_stat=1)],
+            HydroLoad=[],
+            HydroValve=[],
+            HydroPipe=[],
+            HydroCompressor=[],
+            HydroStorage=[],
+        )
+        single_hydro = build_fluid_network_from_model(
+            single_model,
+            prefix="Hydro",
+            potential_power=2,
+            controller_suffix="Compressor",
+        )
+        from src.hybrid_power_system_analysis.model.multi_energy_model import MultiEnergyContext
+
+        net = HybridPowerNetwork(
+            ACPowerNetwork(),
+            DCPowerNetwork(),
+            [],
+            [],
+            fluid_networks={"hydro": single_hydro},
+            multi_energy=MultiEnergyContext(fluid_networks={"hydro": single_hydro}),
+        )
+        hcalc = HybridPowerFlowCalc(net)
+        rc = hcalc.run()
+        self.assertEqual(rc, 0)
+        self.assertTrue(hcalc.converged)
+        self.assertTrue(hcalc.fluid_calcs["hydro"].converged)
+
+    def test_dcdc_j_side_current_base_and_infeasible_loss_no_false_convergence(self) -> None:
+        """验证 DCDCConverter j 端定电流按 j_node 基准标幺化，且无实根损耗不伪收敛。"""
+        from src.hybrid_power_system_analysis.model.dc_array_model import build_dc_ppc_from_efile_rows, DCDC_COLS
+        from src.hybrid_power_system_analysis.lfcore.dc_lf import DCPowerFlowCalc
+        from src.hybrid_power_system_analysis.unit_system import UnitSettings, normalize_model_named_units
+
+        # 1) DCDC j 端定电流：i_node=1.0 kV, j_node=0.5 kV, p_base=100 kW
+        # j 端电流基准 = 100 / 0.5 = 200 A = 0.2 kA；i_set = 0.1 kA -> 标幺值应为 0.5
+        rows = {
+            "Model": {"header_list": ["p_base", "u_unit", "p_unit", "i_unit"], "rows": [["100", "kV", "kW", "kA"]]},
+            "DCNode": {
+                "header_list": ["idx", "name", "vbase", "voltage", "run_stat"],
+                "rows": [
+                    ["1", "DC1", "1.0", "1.0", "1"],
+                    ["2", "DC2", "0.5", "0.5", "1"],
+                ],
+            },
+            "DCGenerator": {
+                "header_list": ["idx", "name", "node", "control_type", "v_set", "p_set", "run_stat"],
+                "rows": [
+                    ["1", "G1", "1", "V", "1.0", "0.0", "1"],
+                    ["2", "G2", "2", "V", "0.5", "0.0", "1"],
+                ],
+            },
+            "DCDCConverter": {
+                "header_list": ["idx", "name", "i_node", "j_node", "r1", "r2", "i_control_type", "j_control_type", "p_set", "i_set", "v_set", "run_stat"],
+                "rows": [
+                    ["1", "DCDC1", "1", "2", "0.0", "0.0", "NONE", "I", "0.0", "0.1", "0.5", "1"],
+                ],
+            },
+        }
+        ppc = build_dc_ppc_from_efile_rows("mem.e", rows)
+        self.assertAlmostEqual(float(ppc["dcdc"][0, DCDC_COLS["i_set"]]), 0.5, places=6)
+
+        # unit_system.normalize_model_named_units 对象路径同样按 j_node 基准标幺化
+        fake_model = SimpleNamespace(
+            Model=[SimpleNamespace(p_base=100.0, u_unit="kV", p_unit="kW", i_unit="kA")],
+            ACNode=[],
+            DCNode=[
+                SimpleNamespace(idx=1, vbase=1.0, voltage=1.0),
+                SimpleNamespace(idx=2, vbase=0.5, voltage=0.5),
+            ],
+            DCDCConverter=[
+                SimpleNamespace(
+                    idx=1,
+                    i_node=1,
+                    j_node=2,
+                    i_control_type="NONE",
+                    j_control_type="I",
+                    p_set=0.0,
+                    i_set=0.1,
+                    v_set=0.5,
+                    i_p=0.0,
+                    j_p=0.0,
+                    i_c=0.0,
+                    j_c=0.0,
+                )
+            ],
+        )
+        normalize_model_named_units(fake_model)
+        self.assertAlmostEqual(float(fake_model.DCDCConverter[0].i_set), 0.5, places=6)
+
+        # 2) DCDC 无实根损耗时 DCPowerFlowCalc 不得伪收敛
+        rows_infeasible = {
+            "Model": {"header_list": ["p_base", "u_unit", "p_unit", "i_unit"], "rows": [["100", "kV", "kW", "kA"]]},
+            "DCNode": {
+                "header_list": ["idx", "name", "vbase", "voltage", "run_stat"],
+                "rows": [
+                    ["1", "DC1", "1.0", "1.0", "1"],
+                    ["2", "DC2", "1.0", "1.0", "1"],
+                ],
+            },
+            "DCGenerator": {
+                "header_list": ["idx", "name", "node", "control_type", "v_set", "p_set", "run_stat"],
+                "rows": [
+                    ["1", "G1", "1", "V", "1.0", "0.0", "1"],
+                    ["2", "G2", "2", "V", "1.0", "0.0", "1"],
+                ],
+            },
+            "DCDCConverter": {
+                "header_list": ["idx", "name", "i_node", "j_node", "r1", "r2", "i_control_type", "j_control_type", "p_set", "i_set", "v_set", "run_stat"],
+                "rows": [
+                    ["1", "DCDC1", "1", "2", "0.0", "1.0", "P", "NONE", "-200.0", "0.0", "1.0", "1"],
+                ],
+            },
+        }
+        ppc_inf = build_dc_ppc_from_efile_rows("mem_inf.e", rows_infeasible)
+        dc_calc = DCPowerFlowCalc(ppc_inf)
+        rc = dc_calc.run()
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(dc_calc.converged)
+        self.assertIn("infeasible", dc_calc.failure_reason.lower())
+
+    def test_http_routes_value_error_400_role_guard_and_cache_epoch(self) -> None:
+        """验证 HTTP 写路由 ValueError 返回 400、教员台拒绝 receive-state 及缓存 epoch 防并发污染。"""
+        import io
+        from email.message import Message
+        from simu.http_routes import EncodedResponseCache, PolarMicrogridHandler, StaticAssetCache, _ServerContext
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sim = _make_simulator(tmp_dir)
+            ctx = _ServerContext(
+                service=sim,
+                role="simulator",
+                static_root=APP_ROOT / "web",
+                sim_url=None,
+                exchange=None,
+                renewable_manager=None,
+                direct_simulator_ui=False,
+                static_cache=StaticAssetCache(),
+                response_cache=EncodedResponseCache(),
+            )
+
+            def invoke_post(path: str, body: dict) -> tuple[int, dict]:
+                raw = json.dumps(body).encode("utf-8")
+                handler = PolarMicrogridHandler.__new__(PolarMicrogridHandler)
+                handler.server = SimpleNamespace(_ctx=ctx)
+                handler.path = path
+                handler.command = "POST"
+                handler.request_version = "HTTP/1.1"
+                headers = Message()
+                headers["Content-Type"] = "application/json"
+                headers["Content-Length"] = str(len(raw))
+                handler.headers = headers
+                handler.rfile = io.BytesIO(raw)
+                handler.wfile = io.BytesIO()
+                status_holder = {"code": 0}
+                handler.send_response = lambda code, message=None: status_holder.__setitem__("code", int(code))  # type: ignore[method-assign]
+                handler.send_header = lambda *_a, **_kw: None  # type: ignore[method-assign]
+                handler.end_headers = lambda: None  # type: ignore[method-assign]
+                handler.log_message = lambda *_a, **_kw: None  # type: ignore[method-assign]
+                handler.do_POST()
+                body_bytes = handler.wfile.getvalue()
+                return status_holder["code"], json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+
+            # 1) 教员台拒绝 /api/trainee/receive-state
+            status_recv, _ = invoke_post("/api/trainee/receive-state", {"step_count": 1})
+            self.assertIn(status_recv, (403, 404))
+
+            # 2) 运行态切换仿真模式触发 ValueError，/api/curves 返回 400 而非 500
+            sim.clock.state = "running"
+            status_curve, _ = invoke_post("/api/curves", {"mode": "hour"})
+            self.assertEqual(status_curve, 400)
+            sim.clock.state = "stopped"
+
+            # 3) 成功写操作递增 _post_mutation_epoch 并使缓存键更新
+            epoch_before = int(getattr(ctx, "_post_mutation_epoch", 0))
+            status_ok, _ = invoke_post("/api/settings", {"measurement_statuses": {}})
+            self.assertEqual(status_ok, 200)
+            self.assertGreater(int(getattr(ctx, "_post_mutation_epoch", 0)), epoch_before)
+
+
 if __name__ == "__main__":
     unittest.main()

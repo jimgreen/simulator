@@ -3115,12 +3115,28 @@ def _apply_optimization_targets(
                     _converter_direction(row),
                     "P_DC",
                 )
+                # 当变流器工作在 DC 侧有功控制（p_dc_set）且模型有损时，将 AC 侧优化变量折算为 DC 端功率。
+                if str(row.get("set_type", "")).strip().lower() == "p_dc_set":
+                    raw_conv = row.get("raw") if isinstance(row.get("raw"), Mapping) else {}
+                    row_eff = _number(row.get("efficiency", raw_conv.get("efficiency")))
+                    if row_eff is not None and 0.5 <= float(row_eff) < 1.0 - EPSILON:
+                        eff_val = float(row_eff)
+                        target = (
+                            float(target) / eff_val
+                            if float(optimization_target) >= 0.0
+                            else float(target) * eff_val
+                        )
         elif optimization_lower is not None and optimization_upper is not None:
             row["optimizationLowerKw"] = optimization_lower
             row["optimizationUpperKw"] = optimization_upper
-        row["optimizationIslandId"] = island_by_device.get(key, "")
+        island_id_for_row = island_by_device.get(key, "")
+        island_status_for_row = next(
+            (isl.status for isl in result.islands if isl.island_id == island_id_for_row),
+            "optimal",
+        )
+        row["optimizationIslandId"] = island_id_for_row
         row["optimizationStatus"] = (
-            "optimal"
+            island_status_for_row
             if target is not None
             else "failed"
             if key in failed_devices

@@ -578,9 +578,20 @@ def _merge_remote_measurements_with_local_definitions(
             if definition is None and positional_fallback:
                 definition = normalized_rows[position]
             if definition is not None:
-                for field_name in ("weight", "valid"):
-                    if field_name in definition:
-                        row[field_name] = definition[field_name]
+                if "weight" in definition:
+                    row["weight"] = definition["weight"]
+                if "valid" in definition:
+                    dev_type_lower = str(row.get("dev_type") or definition.get("dev_type") or "").strip().casefold()
+                    if dev_type_lower != "weather":
+                        try:
+                            row_valid = int(float(row.get("valid", 1) or 0))
+                        except (TypeError, ValueError):
+                            row_valid = 0
+                        try:
+                            def_valid = int(float(definition.get("valid", 1) or 0))
+                        except (TypeError, ValueError):
+                            def_valid = 0
+                        row["valid"] = 0 if (row_valid == 0 or def_valid == 0) else 1
             updated_rows.append(row)
         merged[channel] = updated_rows
     return merged
@@ -594,7 +605,17 @@ def _merge_remote_runtime_devices(local_devices: Any, remote_devices: Any) -> An
         for device in remote_devices or []
         if (type(device) is dict or isinstance(device, Mapping))
     }
-    runtime_fields = ("run_stat", "status", "mode", "set_values", "soc_curr")
+    runtime_fields = (
+        "run_stat",
+        "status",
+        "closed_status",
+        "run_stat_valid",
+        "status_valid",
+        "closed_status_valid",
+        "mode",
+        "set_values",
+        "soc_curr",
+    )
     merged_devices = []
     for raw_local in local_devices:
         if not (type(raw_local) is dict or isinstance(raw_local, Mapping)):
@@ -648,7 +669,17 @@ def _merge_remote_runtime_devices_read_only(local_devices: Any, remote_devices: 
         for device in remote_devices or []
         if (type(device) is dict or isinstance(device, Mapping))
     }
-    runtime_fields = ("run_stat", "status", "mode", "set_values", "soc_curr")
+    runtime_fields = (
+        "run_stat",
+        "status",
+        "closed_status",
+        "run_stat_valid",
+        "status_valid",
+        "closed_status_valid",
+        "mode",
+        "set_values",
+        "soc_curr",
+    )
     merged_devices = []
     for raw_local in local_devices:
         if not (type(raw_local) is dict or isinstance(raw_local, Mapping)):
@@ -703,15 +734,24 @@ def _hydrate_measurement_backed_device_runtime(
         if key not in measurement_keys:
             return
         measurement = scada_by_key.get(key)
+        status_token = (
+            str(measurement.get("status", "") or "").strip().casefold()
+            if (type(measurement) is dict or isinstance(measurement, Mapping))
+            else ""
+        )
         valid = (
             (type(measurement) is dict or isinstance(measurement, Mapping))
             and int(float(measurement.get("valid", 0) or 0)) == 1
+            and status_token not in {"invalid", "undefined", "disabled", "off", "0", "false"}
             and measurement.get("value") is not None
         )
         if valid:
             row[field_name] = measurement.get("value")
-        elif measurement_type in {"RUN_STAT", "STATUS"}:
-            row[field_name] = 0
+            if measurement_type in {"RUN_STAT", "STATUS", "CLOSED_STATUS"}:
+                row[f"{field_name}_valid"] = True
+        elif measurement_type in {"RUN_STAT", "STATUS", "CLOSED_STATUS"}:
+            # 遥信测点坏点或空帧严禁覆写为 0（停机/分闸），应显式标记质量未知供 fail-closed 识别。
+            row[f"{field_name}_valid"] = False
         else:
             row.pop(field_name, None)
 
@@ -722,6 +762,7 @@ def _hydrate_measurement_backed_device_runtime(
             for measurement_type, field_name in (
                 ("RUN_STAT", "run_stat"),
                 ("STATUS", "status"),
+                ("CLOSED_STATUS", "closed_status"),
                 ("SOC", "soc_curr"),
             ):
                 hydrate_row(row, measurement_type, field_name)
@@ -729,6 +770,8 @@ def _hydrate_measurement_backed_device_runtime(
         for row in device_states:
             if isinstance(row, MutableMapping):
                 hydrate_row(row, "RUN_STAT", "run_stat")
+                hydrate_row(row, "STATUS", "status")
+                hydrate_row(row, "CLOSED_STATUS", "closed_status")
 
 
 def _restore_local_runtime_derivatives(service: Any, snapshot: MutableMapping[str, Any]) -> None:
@@ -794,6 +837,37 @@ def _calculation_snapshot_projection(
         for key, value in runtime_snapshot.items()
         if key not in {"commands", "runtime_logs"}
     }
+    # 轻量透传模拟台侧高优先级人工/教员锁定控制点，避免规划器把已锁定设备当成可调自由度引发功率失衡。
+    raw_commands = runtime_snapshot.get("commands")
+    active_manual_locks: list[Dict[str, Any]] = []
+    if (type(raw_commands) is dict or isinstance(raw_commands, Mapping)):
+        effective_entries = raw_commands.get("effective") or []
+        if isinstance(effective_entries, Sequence) and not isinstance(effective_entries, (str, bytes)):
+            for entry in effective_entries:
+                if not (type(entry) is dict or isinstance(entry, Mapping)):
+                    continue
+                origin = str(
+                    entry.get("command_origin")
+                    or entry.get("origin")
+                    or entry.get("priority")
+                    or ""
+                ).strip().casefold()
+                if origin in {"strategy", "automatic", "auto", ""}:
+                    continue
+                dev_type = str(entry.get("dev_type") or "").strip()
+                dev_name = str(entry.get("dev_name") or "").strip()
+                if not dev_type or not dev_name:
+                    continue
+                active_manual_locks.append(
+                    {
+                        "dev_type": dev_type,
+                        "dev_name": dev_name,
+                        "set_type": str(entry.get("set_type") or "").strip(),
+                        "kind": str(entry.get("kind") or "").strip(),
+                        "command_origin": origin,
+                    }
+                )
+    merged["active_manual_locks"] = active_manual_locks
     for key in CONTROL_STATIC_FIELDS:
         if key in local_snapshot:
             merged[key] = local_snapshot[key]
@@ -867,18 +941,25 @@ def _measurement_delta_items(
         name = str(definition.get("name", "")).strip()
         scada = scada_rows[index]
         scada_value = scada.get("value") if scada is not None else None
+        raw_valid = scada.get("valid") if (scada is not None and "valid" in scada) else definition.get("valid", 0)
         try:
-            valid = int(float(definition.get("valid", 0) or 0))
+            valid = int(float(raw_valid or 0))
         except (TypeError, ValueError):
             valid = 0
+        realtime_status = scada.get("status") if (scada is not None and "status" in scada) else definition.get("status")
+        realtime_fixed = (
+            scada.get("fixed_value")
+            if (scada is not None and "fixed_value" in scada)
+            else definition.get("fixed_value")
+        )
         items[key] = {
             "name": name,
             "value": scada_value,
             "scada_value": scada_value,
             "valid": valid,
             "weight": definition.get("weight", ""),
-            "status": definition.get("status"),
-            "fixed_value": definition.get("fixed_value"),
+            "status": realtime_status,
+            "fixed_value": realtime_fixed,
             "updated_wall_time": wall_time,
             "updated_simu_time": simu_time,
             "updated_absolute_minute": absolute_minute,
@@ -1834,23 +1915,25 @@ class TraineeRealtimeExchange:
         )
         simulation_state = str(runtime_clock.get("state") or "").strip().casefold()
         simulation_paused = bool(ready and simulation_state == "paused")
+        simulation_stopped = bool(ready and simulation_state == "stopped")
+        simulation_frozen = bool(simulation_paused or simulation_stopped)
         age = max(0.0, now - received_at) if received_at else 0.0
         same_frame_duration = max(0.0, now - frame_changed_at) if frame_changed_at else 0.0
         frame_too_old = bool(
             ready
-            and not simulation_paused
+            and not simulation_frozen
             and frame_age_limit > 0.0
             and age > frame_age_limit
         )
         frame_frozen = bool(
             ready
-            and not simulation_paused
+            and not simulation_frozen
             and frame_identity
             and same_frame_limit > 0.0
             and same_frame_duration > same_frame_limit
         )
         can_run = active and ready
-        can_calculate = can_run and not simulation_paused
+        can_calculate = can_run and not simulation_frozen
         can_dispatch = can_calculate and not error and not frame_too_old and not frame_frozen
         if not active:
             message = "请先启动接收。"
@@ -1860,7 +1943,7 @@ class TraineeRealtimeExchange:
             message = ""
         if not can_run:
             dispatch_status = message
-        elif simulation_paused:
+        elif simulation_frozen:
             dispatch_status = ""
         elif error:
             dispatch_status = f"实时数据接收异常，闭环下发已阻断：{error}"
@@ -1878,7 +1961,8 @@ class TraineeRealtimeExchange:
             "canDispatch": can_dispatch,
             "simulationState": simulation_state,
             "simulationPaused": simulation_paused,
-            "controlFrozen": simulation_paused,
+            "simulationStopped": simulation_stopped,
+            "controlFrozen": simulation_frozen,
             "prerequisiteStatus": message,
             "dispatchStatus": dispatch_status,
             "revision": revision,
@@ -3249,17 +3333,17 @@ class TraineeRealtimeExchange:
             and isinstance(runtime_snapshot.get("clock"), Mapping)
             else {}
         )
-        simulation_paused = bool(
-            ready and str(runtime_clock.get("state") or "").strip().casefold() == "paused"
+        simulation_frozen = bool(
+            ready and str(runtime_clock.get("state") or "").strip().casefold() in {"paused", "stopped"}
         )
         age = max(0.0, now - received_at) if received_at else 0.0
         same_frame_duration = max(0.0, now - frame_changed_at) if frame_changed_at else 0.0
         frame_too_old = bool(
-            ready and not simulation_paused and frame_age_limit > 0.0 and age > frame_age_limit
+            ready and not simulation_frozen and frame_age_limit > 0.0 and age > frame_age_limit
         )
         frame_frozen = bool(
             ready
-            and not simulation_paused
+            and not simulation_frozen
             and frame_identity
             and same_frame_limit > 0.0
             and same_frame_duration > same_frame_limit

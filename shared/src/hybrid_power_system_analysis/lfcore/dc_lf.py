@@ -2276,6 +2276,7 @@ class DCPowerFlowCalc:
         """执行牛顿-拉夫逊迭代求解。"""
         self.converged = False
         self.iterations = 0
+        self.failure_reason = ""
         x = self.x.copy()
 
         # 若实例级黑名单上仍有非 scipy 求解器,本次迭代直接走 scipy,
@@ -2295,6 +2296,20 @@ class DCPowerFlowCalc:
                 print(f"Iter {it + 1}: |F| = {self.normF:.2e}")
 
             if self.normF < self.tol:
+                if (
+                    bool(getattr(self, "dcdc_eliminate_pj", False))
+                    and np.any(getattr(self, "last_dcdc_loss_infeasible_mask", ()))
+                ):
+                    self.converged = False
+                    self.failure_reason = (
+                        "DCDCConverter loss equation has no real solution "
+                        "(infeasible operating point)"
+                    )
+                    self.x = x
+                    self._write_back()
+                    if self.verbose:
+                        print(self.failure_reason)
+                    return -1
                 if self.verbose:
                     print(f"收敛于第 {it + 1} 次迭代")
                 self.converged = True

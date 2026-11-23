@@ -2195,5 +2195,415 @@ class AuditRound3StrategyTests(unittest.TestCase):
         )
 
 
+class TraineeStrategyRound4AuditTests(unittest.TestCase):
+    """trainee 控制策略全面合理性审计（全部 P0/P1/P2 修复）的专项回归测试。"""
+
+    def test_signal_bad_quality_not_zeroed_closed_status_and_scada_no_real_fallback(self) -> None:
+        """验证遥信坏点不强置 0、拓扑优先读取 closed_status、静态定义不洗白实时 valid=0 且 SCADA 坏点不穿透 real。"""
+        from simu.trainee_exchange import (
+            _hydrate_measurement_backed_device_runtime,
+            _merge_remote_measurements_with_local_definitions,
+        )
+        from simu.resource_topology import _state_from_model_row, _measurement_values
+        from simu.renewable_control_parts.common import _measurement_index
+
+        # 1) 遥信测点 valid=0 或空帧时，不得覆写 run_stat=0，应标 run_stat_valid=False
+        devices = [{"dev_type": "ACGenerator", "dev_name": "BESS1", "run_stat": 1}]
+        measurements = {
+            "definitions": [{"dev_type": "ACGenerator", "dev_name": "BESS1", "meas_type": "RUN_STAT", "valid": 1}],
+            "scada": [{"dev_type": "ACGenerator", "dev_name": "BESS1", "meas_type": "RUN_STAT", "valid": 0, "value": 0}],
+        }
+        _hydrate_measurement_backed_device_runtime(devices, [], measurements)
+        self.assertEqual(devices[0]["run_stat"], 1)
+        self.assertIs(devices[0]["run_stat_valid"], False)
+
+        # 2) _merge_remote_measurements_with_local_definitions 不得用静态 valid=1 洗白远端实时 valid=0
+        merged = _merge_remote_measurements_with_local_definitions(
+            {"scada": [{"idx": 1, "dev_type": "ACGenerator", "dev_name": "G1", "meas_type": "P", "valid": 0, "value": 10.0}]},
+            {"measurements": {"definitions": [{"idx": 1, "dev_type": "ACGenerator", "dev_name": "G1", "meas_type": "P", "valid": 1}]}},
+        )
+        self.assertEqual(int(merged["scada"][0]["valid"]), 0)
+
+        # 3) _measurement_index 校验 status 且 SCADA 失效禁止穿透 real 真值
+        idx_map = _measurement_index(
+            {
+                "measurements": {
+                    "scada": [
+                        {"dev_type": "ACGenerator", "dev_name": "G1", "meas_type": "P", "valid": 0, "value": 99.0},
+                        {"dev_type": "HydroStorage", "dev_name": "H1", "meas_type": "SOC", "valid": 1, "status": "zero", "value": 0.0},
+                    ],
+                    "real": [
+                        {"dev_type": "ACGenerator", "dev_name": "G1", "meas_type": "P", "valid": 1, "value": 50.0},
+                        {"dev_type": "HydroStorage", "dev_name": "H1", "meas_type": "SOC", "valid": 1, "value": 0.65},
+                    ],
+                }
+            }
+        )
+        self.assertNotIn(("ACGenerator", "G1", "P"), idx_map)
+        self.assertNotIn(("HydroStorage", "H1", "SOC"), idx_map)
+
+        # 4) resource_topology 优先读取权威字段 closed_status 与 CLOSED_STATUS 测点
+        st = _state_from_model_row({"run_stat": 1, "status": 1, "closed_status": 0})
+        self.assertEqual(st.status, 0.0)
+        mv = _measurement_values(
+            {
+                "measurements": {
+                    "scada": [
+                        {"dev_type": "ACBreak", "dev_name": "CB1", "meas_type": "CLOSED_STATUS", "valid": 1, "value": 0.0},
+                    ]
+                }
+            }
+        )
+        self.assertEqual(mv[("ACBreak", "CB1", "CLOSED_STATUS")], 0.0)
+
+    def test_optimizer_per_component_balance_and_zero_load_converter_no_free_energy(self) -> None:
+        """验证混合岛逐 component_id 独立平衡（禁止 DC1/DC2 隔空配平）及空载有损变流器反向充电不凭空造电。"""
+        from simu.renewable_optimization import _Variable, _solve_island, _converter_variable
+
+        # 1) AC1 经 Conv1(已满载锁死) 连 DC1(光伏可增发)，经 Conv2(锁死在 0) 连 DC2(储能可充电)
+        # DC1 与 DC2 电气隔离：优化器绝不允许 DC1 光伏增发与 DC2 储能充电隔空配平！
+        variables = [
+            _Variable(key=("ACGenerator", "D1"), kind="diesel", current_kw=100.0, lower_kw=100.0, upper_kw=100.0, side="AC", component_id="AC1"),
+            _Variable(key=("DCGenerator", "PV_DC1"), kind="renewable", current_kw=20.0, lower_kw=0.0, upper_kw=50.0, side="DC", component_id="DC1", renewable_available_kw=50.0),
+            _Variable(key=("DCGenerator", "BESS_DC2"), kind="storage", current_kw=0.0, lower_kw=-50.0, upper_kw=50.0, side="DC", component_id="DC2", storage_soc=0.5),
+            _Variable(key=("DCACConverter", "C1"), kind="converter", current_kw=20.0, lower_kw=20.0, upper_kw=20.0, ac_component_id="AC1", dc_component_id="DC1", ac_balance_coefficient=1.0, dc_balance_coefficient=-1.0, allocation_capacity_kw=50.0),
+            _Variable(key=("DCACConverter", "C2"), kind="converter", current_kw=0.0, lower_kw=0.0, upper_kw=0.0, ac_component_id="AC1", dc_component_id="DC2", ac_balance_coefficient=1.0, dc_balance_coefficient=-1.0, allocation_capacity_kw=50.0),
+        ]
+        res = _solve_island(
+            ("AC1", "DC1", "DC2"),
+            variables,
+            renewable_curtailment_weight=10.0,
+            diesel_output_weight=1.0,
+            curtailment_square_weight=0.01,
+            adjustment_square_weight=0.01,
+            balance_delta_square_weight=1e4,
+            balance_tolerance_kw=1e-4,
+            bound_tolerance_kw=1e-4,
+            optimization_ftol=1e-9,
+            optimization_max_iterations=200,
+        )
+        self.assertTrue(res.success)
+        # Conv1 锁死在 20 kW、DC1 无其他储能，因此 PV_DC1 必须保持 20 kW，BESS_DC2 保持 0 kW
+        self.assertAlmostEqual(res.target_by_device[("DCGenerator", "PV_DC1")], 20.0, places=3)
+        self.assertAlmostEqual(res.target_by_device[("DCGenerator", "BESS_DC2")], 0.0, places=3)
+
+        # 2) 空载有损变流器（current==0, eff=0.90）向 DC 充电（-100 kW AC->DC）：
+        # DC 侧储能实际仅收到 90 kW（target=-90），绝不能按 1/eff 凭空造电收到 111.11 kW！
+        conv_var = _Variable(
+            key=("DCACConverter", "C_LOSS"),
+            kind="converter",
+            current_kw=0.0,
+            lower_kw=-100.0,
+            upper_kw=100.0,
+            ac_component_id="AC1",
+            dc_component_id="DC1",
+            ac_balance_coefficient=1.0,
+            dc_balance_coefficient=-1.0 / 0.9,
+            allocation_capacity_kw=100.0,
+            converter_efficiency=0.9,
+            converter_base_dc_coefficient=-1.0,
+        )
+        res_loss = _solve_island(
+            ("AC1", "DC1"),
+            [
+                _Variable(key=("ACGenerator", "PV_AC"), kind="renewable", current_kw=0.0, lower_kw=0.0, upper_kw=100.0, side="AC", component_id="AC1", renewable_available_kw=100.0),
+                _Variable(key=("DCGenerator", "BESS_DC"), kind="storage", current_kw=0.0, lower_kw=-200.0, upper_kw=0.0, side="DC", component_id="DC1", storage_soc=0.4),
+                conv_var,
+            ],
+            renewable_curtailment_weight=10.0,
+            diesel_output_weight=1.0,
+            curtailment_square_weight=0.01,
+            adjustment_square_weight=0.01,
+            balance_delta_square_weight=1e4,
+            balance_tolerance_kw=1e-4,
+            bound_tolerance_kw=1e-4,
+            optimization_ftol=1e-9,
+            optimization_max_iterations=200,
+        )
+        self.assertTrue(res_loss.success)
+        ac_send = -res_loss.target_by_device[("DCACConverter", "C_LOSS")]
+        dc_recv = -res_loss.target_by_device[("DCGenerator", "BESS_DC")]
+        self.assertGreater(ac_send, 10.0)
+        self.assertAlmostEqual(dc_recv, ac_send * 0.9, places=2)
+
+        # 3) 无损模型 r1=0, r2=0 且未配置 efficiency 时，变流器效率自动对齐 1.0
+        fake_topo = types.SimpleNamespace(converter_component_ids={("DCACConverter", "C0"): ("AC1", "DC1")})
+        v_lossless = _converter_variable(
+            {
+                "dev_type": "DCACConverter",
+                "dev_name": "C0",
+                "online": True,
+                "commandable": True,
+                "currentKw": 10.0,
+                "signedMinTargetKw": -100.0,
+                "signedMaxTargetKw": 100.0,
+                "transferCapacityKw": 100.0,
+                "raw": {"r1": 0.0, "r2": 0.0},
+            },
+            fake_topo,
+            0.2,
+            0.96,
+        )
+        self.assertIsNotNone(v_lossless)
+        self.assertAlmostEqual(float(v_lossless.converter_efficiency), 1.0, places=6)
+
+    def test_hydrogen_zero_diesel_interlock_no_crash_and_physical_pressure_guard(self) -> None:
+        """验证零柴发同岛氢能互锁不除零崩溃、储氢罐 lowGuard 受满罐物理压约束、且多罐单点坏点不屏蔽正常罐硬安全停机。"""
+        from simu.renewable_control_parts.common import _hydrogen_pressure_states
+        from simu.renewable_control_parts.settings import RenewableControlSettings
+
+        # 1) 满罐物理压 = 1000 / 50 / 10 = 2.0 MPa，而 pressure_min=2.0, pressure_max=45.0 -> pressureLimitsConsistent=False, lowGuard=None
+        snap = {
+            "device_parameters": {
+                "HydroStorage": [
+                    {
+                        "name": "HT1",
+                        "rated_capacity": 1000.0,
+                        "water_volume": 50.0,
+                        "pressure_min": 2.0,
+                        "pressure_max": 45.0,
+                    }
+                ]
+            },
+            "devices": [{"dev_type": "HydroStorage", "dev_name": "HT1", "run_stat": 1}],
+        }
+        meas = {
+            ("HydroStorage", "HT1", "PRESSURE"): types.SimpleNamespace(value=1.556, source="scada", row={}),
+            ("HydroStorage", "HT1", "SOC"): types.SimpleNamespace(value=0.7778, source="scada", row={}),
+        }
+        states = _hydrogen_pressure_states(snap, meas, RenewableControlSettings())
+        self.assertEqual(len(states), 1)
+        self.assertFalse(states[0]["pressureLimitsConsistent"])
+        self.assertIsNone(states[0]["lowGuard"])
+        self.assertAlmostEqual(float(states[0]["fullTankPressure"]), 2.0, places=6)
+
+        # 2) 验证零柴发氢能互锁冲突源码中不再存在未守卫的 diesel_current_kw / diesel_capacity_kw
+        hydrogen_src = (REPO_ROOT / "trainee" / "simu" / "renewable_control_parts" / "hydrogen.py").read_text(encoding="utf-8")
+        self.assertNotIn("else (diesel_current_kw / diesel_capacity_kw)", hydrogen_src)
+        self.assertIn("active_hydrogen_modes_by_hydro_island", hydrogen_src)
+
+    def test_hydrogen_stop_omits_zero_setpoint_and_simulator_exempts_zero_shutdown(self) -> None:
+        """验证停机遥控不附带 0.0 设点，且模拟台对耦合氢能 0.0 停机设点不抬升至 p_min。"""
+        from simu.service import PolarMicrogridSimulator
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings_json = json.loads((APP_ROOT / "startup.json").read_text(encoding="utf-8"))
+            data_dir = (APP_ROOT / settings_json.get("data_dir", "data")).resolve()
+            model_dir = (
+                data_dir / "models" / "秦岭站"
+                if (data_dir / "models" / "秦岭站" / "model.e").is_file()
+                else next((data_dir / "models").glob("*/model.e")).parent
+            )
+            sim = PolarMicrogridSimulator(
+                sim_dir=model_dir,
+                runtime_dir=Path(tmp_dir) / "runtime",
+                model_id=model_dir.name,
+                model_name=model_dir.name,
+                noise_std=0.0,
+                random_seed=7,
+            )
+            # 找到任意电氢耦合电端设备并设正 p_min，验证下发 p_set=0.0 不被抬升到 p_min
+            from simu.model_semantics import energy_coupling_control_bindings
+
+            bindings = energy_coupling_control_bindings(sim.definition_snapshot.model_book)
+            found = False
+            for items in bindings.values():
+                p_item = next((x for x in items if x.get("set_type") == "p_set"), None)
+                if not p_item:
+                    continue
+                t_type = str(p_item["target_dev_type"])
+                t_name = str(p_item["target_dev_name"])
+                block = sim.definition_snapshot.model_book.data.get(t_type)
+                if block is None:
+                    continue
+                row = next((r for r in block.data if str(r.get("name")) == t_name), None)
+                if row is None:
+                    continue
+                row["p_min"] = "5.0"
+                validated = sim._validated_set_command_item(
+                    {"dev_type": t_type, "dev_name": t_name, "set_type": "p_set", "set_value": 0.0},
+                    strict=True,
+                )
+                self.assertAlmostEqual(float(validated["set_value"]), 0.0, places=6)
+                found = True
+                break
+            self.assertTrue(found)
+
+    def test_clamp_final_rows_respects_fail_closed_and_manual_lock_disables_commandable(self) -> None:
+        """验证最终边界钳位绝不复活 fail-closed 闭锁设备，且人工锁定自动置 commandable=False。"""
+        from simu.renewable_control_parts.recovery import _clamp_final_command_rows_to_boundaries
+        from simu.renewable_control_parts.settings import _active_manual_locks, _is_device_manually_locked
+
+        # 1) strategyCommand=False / automaticControlBlocked=True 时绝不可被钳位函数复活为 True
+        rows = [
+            {
+                "dev_type": "ACGenerator",
+                "dev_name": "D1",
+                "online": True,
+                "commandable": True,
+                "strategyCommand": False,
+                "automaticControlBlocked": True,
+                "set_type": "p_set",
+                "minKw": 50.0,
+                "capacityKw": 200.0,
+                "currentKw": 10.0,
+                "commandKw": 10.0,
+            }
+        ]
+        _clamp_final_command_rows_to_boundaries(rows)
+        self.assertIs(rows[0]["strategyCommand"], False)
+        self.assertEqual(rows[0]["commandKw"], 10.0)
+
+        # 2) 人工高优先级锁定键正确解析
+        locks = _active_manual_locks(
+            {
+                "active_manual_locks": [
+                    {"dev_type": "ACGenerator", "dev_name": "BESS1", "set_type": "p_set", "command_origin": "manual"}
+                ]
+            }
+        )
+        self.assertTrue(_is_device_manually_locked(locks, "ACGenerator", "BESS1", "p_set"))
+        self.assertFalse(_is_device_manually_locked(locks, "ACGenerator", "BESS2", "p_set"))
+
+    def test_settings_validation_converter_step_sim_time_parser_and_run_id_reset(self) -> None:
+        """验证参数交叉校验、converter_step_ratio 收口、HH:MM:SS 不误解析为秒及 run_id 切换清记忆。"""
+        from simu.renewable_control_parts.settings import RenewableControlSettings
+        from simu.renewable_control_parts.planner import (
+            _plan_sim_time_seconds,
+            _reset_runtime_memory_if_clock_rewound,
+            _apply_renewable_natural_upper_bounds,
+        )
+
+        # 1) converter_step_ratio 不再被清零为 0.0
+        default_s = RenewableControlSettings().normalized()
+        default_s.validate()
+        self.assertAlmostEqual(default_s.converter_step_ratio, default_s.converter_ramp_step_ratio, places=6)
+        self.assertGreater(default_s.converter_step_ratio, 0.0)
+
+        # 2) 非法交叉区间必须被 validate() 拦截
+        with self.assertRaises(ValueError):
+            RenewableControlSettings(soc_min=0.8, soc_max=0.2).normalized().validate()
+        with self.assertRaises(ValueError):
+            RenewableControlSettings(soc_min=0.2, soc_max=0.8, soc_deadband=0.35).normalized().validate()
+        with self.assertRaises(ValueError):
+            RenewableControlSettings(
+                fuel_cell_power_min_ratio=0.85,
+                fuel_cell_power_max_ratio=0.90,
+                fuel_cell_power_step_ratio=0.10,
+            ).normalized().validate()
+
+        # 3) _plan_sim_time_seconds 不把 "08:30:00" 错提取为 8.0 秒
+        sec = _plan_sim_time_seconds({"compute": {"simu_time": "08:30:00", "absolute_minute": 510.0}})
+        self.assertAlmostEqual(float(sec), 510.0 * 60.0, places=6)
+
+        # 4) 跨日 run_id 变化（即使 sim_time_seconds 单调递增）必须清理 runtime_memory
+        mem = {
+            "lastRunId": 1,
+            "lastStepCount": 100,
+            "lastSimTimeSeconds": 86399.0,
+            "hydrogen_dwell": {"AcE2Hydro:E1": {"state": "running", "lastTransitionSimTime": 86390.0}},
+            "renewable_saturation": {"ACGenerator:PV1": {"saturated": True}},
+        }
+        _reset_runtime_memory_if_clock_rewound(mem, 86401.0, run_id=2, step_count=101)
+        self.assertNotIn("hydrogen_dwell", mem)
+        self.assertNotIn("renewable_saturation", mem)
+
+        # 5) 潮流回溯拍 boundary_backtracked=True 冻结新能源失配计数，防误锁饱和
+        sat_mem = {
+            "renewable_saturation": {
+                "ACGenerator:PV1": {
+                    "lastSimTime": 10.0,
+                    "lastCommandKw": 40.0,
+                    "lastMeasuredKw": 20.0,
+                    "mismatchCount": 1,
+                    "saturated": False,
+                    "saturatedBaselineKw": None,
+                    "saturatedWeatherValue": None,
+                    "probeCounter": 0,
+                }
+            }
+        }
+        pv_rows = [
+            {
+                "dev_type": "ACGenerator",
+                "dev_name": "PV1",
+                "technology": "pv",
+                "online": True,
+                "commandable": True,
+                "capacityKw": 100.0,
+                "currentKw": 20.0,
+                "planningCurrentKw": 20.0,
+                "weatherMeasurementAvailable": False,
+                "controlWeatherAvailableKw": None,
+            }
+        ]
+        _apply_renewable_natural_upper_bounds(
+            pv_rows,
+            {("ACGenerator", "PV1"): 40.0},
+            default_s,
+            runtime_memory=sat_mem,
+            sim_time_seconds=20.0,
+            wind_measurement_status={"available": False, "value": None},
+            solar_measurement_status={"available": False, "value": None},
+            diesel_guard_blocked=False,
+            boundary_backtracked=True,
+        )
+        self.assertFalse(bool(pv_rows[0]["naturalResourceSaturated"]))
+        self.assertEqual(int(sat_mem["renewable_saturation"]["ACGenerator:PV1"]["mismatchCount"]), 1)
+
+    def test_diesel_and_storage_deep_violation_smooth_step_limits(self) -> None:
+        """验证柴发深度低载不单拍突跳全爬坡、储能深度放电越 SOC 下限不单拍跨零数倍步长反转。"""
+        from simu.renewable_optimization import _diesel_variable, _storage_variable
+
+        d_var = _diesel_variable(
+            {
+                "dev_type": "ACGenerator",
+                "dev_name": "D1",
+                "online": True,
+                "commandable": True,
+                "connectionSide": "AC",
+                "gridComponentId": "AC1",
+                "currentKw": 50.0,
+                "minKw": 200.0,
+                "capacityKw": 1000.0,
+            },
+            protection_ratio=0.03,
+            diesel_step_ratio=0.15,
+        )
+        self.assertIsNotNone(d_var)
+        self.assertLessEqual(float(d_var.upper_kw), 230.0 + 1e-6)
+        self.assertGreaterEqual(float(d_var.lower_kw), 200.0 - 1e-6)
+
+        s_var = _storage_variable(
+            {
+                "dev_type": "ACGenerator",
+                "dev_name": "BESS1",
+                "online": True,
+                "commandable": True,
+                "role": "grid_following",
+                "connectionSide": "AC",
+                "gridComponentId": "AC1",
+                "currentKw": 200.0,
+                "soc": 0.05,
+                "socMin": 0.10,
+                "socMax": 0.90,
+                "capacityKwh": 1000.0,
+                "maxChargePowerKw": 500.0,
+                "maxDischargePowerKw": 500.0,
+                "chargePower": 500.0,
+                "dischargePower": 500.0,
+                "signedMinTargetKw": -500.0,
+                "signedMaxTargetKw": 500.0,
+            },
+            grid_forming_protection_ratio=0.03,
+            storage_step_ratio=0.06,
+            storage_soc_correction_step_scale=0.5,
+            soc_deadband=0.01,
+        )
+        self.assertIsNotNone(s_var)
+        # step_kw = 30 kW, current = +200 kW -> 常规阶段不得从 +200 直接跨零到 -30（应从 +200 平滑向 0 回撤）
+        self.assertGreaterEqual(float(s_var.lower_kw), 170.0 - 1e-6)
+
+
 if __name__ == "__main__":
     unittest.main()

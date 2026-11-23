@@ -93,6 +93,8 @@ class _Variable:
     storage_soc: Optional[float] = None
     storage_forced_direction: str = ""
     storage_commandable: bool = True
+    converter_efficiency: float = 1.0
+    converter_base_dc_coefficient: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -269,9 +271,16 @@ def _diesel_variable(
         lower = max(protected_minimum, current - normal_step_kw)
         upper = min(protected_maximum, current + normal_step_kw)
         if lower > upper + EPSILON:
-            # 当前功率已越出保护区时，单拍允许向保护区方向收敛或由安全阶段兜底
-            lower = protected_minimum
-            upper = protected_maximum
+            # 当前功率已深度越出保护区超过 1 步长时，常规阶段按步长向保护区平滑收敛，
+            # 避免单拍直接放开至 [protected_min, protected_max] 发生大幅突跳（安全阶段再做兜底）。
+            if current < protected_minimum:
+                step_toward = min(protected_minimum, current + normal_step_kw)
+                lower = step_toward
+                upper = min(protected_maximum, max(protected_minimum, step_toward))
+            else:
+                step_toward = max(protected_maximum, current - normal_step_kw)
+                lower = max(protected_minimum, min(protected_maximum, step_toward))
+                upper = step_toward
     else:
         normal_step_kw = math.inf
         lower = protected_minimum
@@ -483,12 +492,26 @@ def _storage_variable(
     step_lower = max(safety_lower, current - step_kw)
     step_upper = min(safety_upper, current + step_kw)
     if forced_direct_reversal and forced_direction == "charge":
-        lower = max(safety_lower, -step_kw)
-        upper = min(safety_upper, forced_boundary_kw)
+        if current > step_kw + EPSILON:
+            # 深度放电越下限时，常规阶段先按步长快速向零/充电方向回撤，避免单拍跨零数倍步长硬反转。
+            lower = max(safety_lower, current - step_kw)
+            upper = min(safety_upper, max(0.0, current - forced_charge_kw))
+            if lower > upper + EPSILON:
+                lower = upper
+        else:
+            lower = max(safety_lower, -step_kw)
+            upper = min(safety_upper, forced_boundary_kw)
         normal_step_kw = step_kw
     elif forced_direct_reversal and forced_direction == "discharge":
-        lower = max(safety_lower, forced_boundary_kw)
-        upper = min(safety_upper, step_kw)
+        if current < -step_kw - EPSILON:
+            # 深度充电越上限时，常规阶段先按步长快速向零/放电方向回撤，避免单拍跨零数倍步长硬反转。
+            lower = max(safety_lower, min(0.0, current + forced_discharge_kw))
+            upper = min(safety_upper, current + step_kw)
+            if lower > upper + EPSILON:
+                upper = lower
+        else:
+            lower = max(safety_lower, forced_boundary_kw)
+            upper = min(safety_upper, step_kw)
         normal_step_kw = step_kw
     elif forced_boundary_kw is not None and step_lower > step_upper + EPSILON:
         # The live point is already on the forbidden side of a hard SOC/power
@@ -706,10 +729,20 @@ def _rebalance_storage_targets_by_soc(
         projection_lower[index] = lower[index]
         projection_upper[index] = upper[index]
 
-    storage_total_row = np.zeros(len(variables), dtype=float)
-    storage_total_row[storage_indexes] = 1.0
-    equality_rows = [balance_matrix, storage_total_row.reshape(1, -1)]
-    equality_rhs = [balance_matrix @ original, np.array([storage_total_kw])]
+    # 按电气分量分别保持储能总功率守恒，禁止跨电气隔离分量隔空互挪储能功率。
+    storage_indexes_by_component: Dict[str, list[int]] = {}
+    for idx in storage_indexes:
+        comp_key = str(variables[idx].component_id or variables[idx].side or "")
+        storage_indexes_by_component.setdefault(comp_key, []).append(idx)
+    storage_total_rows = []
+    storage_total_rhs_vals = []
+    for comp_indexes in storage_indexes_by_component.values():
+        comp_row = np.zeros(len(variables), dtype=float)
+        comp_row[comp_indexes] = 1.0
+        storage_total_rows.append(comp_row)
+        storage_total_rhs_vals.append(float(np.sum(original[comp_indexes])))
+    equality_rows = [balance_matrix, np.vstack(storage_total_rows)]
+    equality_rhs = [balance_matrix @ original, np.array(storage_total_rhs_vals, dtype=float)]
     if parallel_matrix.shape[0]:
         equality_rows.append(parallel_matrix)
         equality_rhs.append(np.zeros(parallel_matrix.shape[0], dtype=float))
@@ -829,18 +862,34 @@ def _converter_variable(
         or abs(ac_balance_coefficient + dc_balance_coefficient) > EPSILON
     ):
         return None
-    # 引入变流器效率损耗建模（优先读取设备自身效率，缺失时采用配置默认值）
+    # 变流器效率损耗建模：优先读取设备自身效率；无显式效率且模型 r1=r2=0（无损）时对齐模拟台取 1.0，
+    # 避免对无损变流器凭空引入 4% 虚假平衡偏差。
     row_eff = _number(row.get("efficiency"))
-    if row_eff is None and isinstance(row.get("raw"), Mapping):
-        row_eff = _number(row["raw"].get("efficiency"))
-    eff = float(row_eff) if (row_eff is not None and 0.5 <= float(row_eff) <= 1.0) else float(converter_efficiency)
+    raw_row = row.get("raw") if isinstance(row.get("raw"), Mapping) else {}
+    if row_eff is None:
+        row_eff = _number(raw_row.get("efficiency"))
+    if row_eff is not None and 0.5 <= float(row_eff) <= 1.0:
+        eff = float(row_eff)
+    else:
+        r1_val = _number(row.get("r1", raw_row.get("r1")))
+        r2_val = _number(row.get("r2", raw_row.get("r2")))
+        if (
+            r1_val is not None
+            and r2_val is not None
+            and abs(r1_val) <= EPSILON
+            and abs(r2_val) <= EPSILON
+        ):
+            eff = 1.0
+        else:
+            eff = float(converter_efficiency)
     eff = min(1.0, max(0.5, eff))
+    base_dc_balance_coefficient = dc_balance_coefficient
     if eff < 1.0 - EPSILON:
         # 约定 current >= 0 表示 DC->AC（DC 侧须多供 1/eff），current < 0 表示 AC->DC（DC 侧仅获得 eff）
         if current >= -EPSILON:
-            dc_balance_coefficient = dc_balance_coefficient / eff
+            dc_balance_coefficient = base_dc_balance_coefficient / eff
         else:
-            dc_balance_coefficient = dc_balance_coefficient * eff
+            dc_balance_coefficient = base_dc_balance_coefficient * eff
 
     allocation_capacity_kw = _number(row.get("transferCapacityKw"))
     if allocation_capacity_kw is None or allocation_capacity_kw <= EPSILON:
@@ -890,6 +939,8 @@ def _converter_variable(
         safety_upper_kw=safety_maximum,
         requires_safety_correction=requires_safety,
         normal_step_kw=normal_step_kw,
+        converter_efficiency=eff,
+        converter_base_dc_coefficient=base_dc_balance_coefficient,
     )
 
 
@@ -1063,6 +1114,8 @@ def _solve_island(
     optimization_max_iterations: int,
     storage_soc_rebalance_deadband: float = 0.02,
     external_injection_delta_by_side: Optional[Mapping[str, float]] = None,
+    external_injection_delta_by_component: Optional[Mapping[Tuple[str, str], float]] = None,
+    balance_delta_warning_kw: float = 0.0,
 ) -> IslandOptimizationResult:
     started = time.perf_counter()
     island_id = _island_id(component_ids)
@@ -1110,35 +1163,58 @@ def _solve_island(
             solve_seconds=total_seconds,
         )
 
-    balance_sides = tuple(
-        side
-        for side in ("AC", "DC")
-        if any(
-            item.kind == "converter" or item.side == side
-            for item in ordered
-        )
-    )
-    index_by_side = {
-        side: index for index, side in enumerate(balance_sides)
+    # 按独立电气分量（component_id）逐行建立功率平衡方程，杜绝将电气隔离的多直流/多交流分量折叠为单行隔空配平。
+    balance_component_entries: list[Tuple[str, str]] = []
+    seen_components: set[str] = set()
+    for item in ordered:
+        if item.kind == "converter":
+            for comp_id, side_label in (
+                (item.ac_component_id or "AC", "AC"),
+                (item.dc_component_id or "DC", "DC"),
+            ):
+                if comp_id not in seen_components:
+                    seen_components.add(comp_id)
+                    balance_component_entries.append((comp_id, side_label))
+        else:
+            comp_id = item.component_id or item.side
+            if comp_id not in seen_components:
+                seen_components.add(comp_id)
+                balance_component_entries.append((comp_id, item.side))
+    balance_components = tuple(balance_component_entries)
+    index_by_component = {
+        comp_id: index for index, (comp_id, _side) in enumerate(balance_components)
     }
-    matrix = np.zeros((len(balance_sides), count), dtype=float)
+    dc_row_indexes = [
+        index for index, (_comp_id, side) in enumerate(balance_components) if side == "DC"
+    ]
+    ac_row_indexes = [
+        index for index, (_comp_id, side) in enumerate(balance_components) if side == "AC"
+    ]
+    matrix = np.zeros((len(balance_components), count), dtype=float)
     current = np.array([item.current_kw for item in ordered], dtype=float)
     normal_lower = np.array([item.lower_kw for item in ordered], dtype=float)
     normal_upper = np.array([item.upper_kw for item in ordered], dtype=float)
     for column, item in enumerate(ordered):
         if item.kind == "converter":
-            matrix[index_by_side["AC"], column] += item.ac_balance_coefficient
-            matrix[index_by_side["DC"], column] += item.dc_balance_coefficient
+            matrix[index_by_component[item.ac_component_id or "AC"], column] += item.ac_balance_coefficient
+            matrix[index_by_component[item.dc_component_id or "DC"], column] += item.dc_balance_coefficient
         else:
-            matrix[index_by_side[item.side], column] += 1.0
+            matrix[index_by_component[item.component_id or item.side], column] += 1.0
 
-    external_delta_vector = np.array(
-        [
-            float((external_injection_delta_by_side or {}).get(side, 0.0))
-            for side in balance_sides
-        ],
-        dtype=float,
-    )
+    external_delta_list: list[float] = []
+    if external_injection_delta_by_component:
+        for comp_id, side in balance_components:
+            external_delta_list.append(
+                float(external_injection_delta_by_component.get((comp_id, side), 0.0))
+            )
+    else:
+        side_counts: Dict[str, int] = {}
+        for _comp_id, side in balance_components:
+            side_counts[side] = side_counts.get(side, 0) + 1
+        for _comp_id, side in balance_components:
+            raw_ext = float((external_injection_delta_by_side or {}).get(side, 0.0))
+            external_delta_list.append(raw_ext / max(1, side_counts.get(side, 1)))
+    external_delta_vector = np.array(external_delta_list, dtype=float)
     # 外部已知注入增量（如氢能单拍协同：制氢增耗电为负注入、燃料电池增发电为正注入）
     rhs = matrix @ current - external_delta_vector
     parallel_rows: list[np.ndarray] = []
@@ -1166,7 +1242,7 @@ def _solve_island(
         else np.zeros((0, count), dtype=float)
     )
     parallel_rhs = np.zeros(parallel_matrix.shape[0], dtype=float)
-    equality_constraint_count = len(balance_sides) + int(parallel_matrix.shape[0])
+    equality_constraint_count = len(balance_components) + int(parallel_matrix.shape[0])
     inequality_constraint_count = 0
     bound_count = count
     build_seconds = time.perf_counter() - started
@@ -1245,7 +1321,9 @@ def _solve_island(
         return False
 
     warm_cache_key = (str(island_id), tuple(item.key for item in ordered))
-    warm_cached = _ISLAND_WARM_START_CACHE.get(warm_cache_key)
+    with _ISLAND_WARM_START_LOCK:
+        raw_warm = _ISLAND_WARM_START_CACHE.get(warm_cache_key)
+        warm_cached = raw_warm.copy() if raw_warm is not None else None
 
     feasibility_values: Optional[np.ndarray] = None
     feasibility_success = already_feasible(current, normal_lower, normal_upper)
@@ -1378,8 +1456,6 @@ def _solve_island(
         not enter the normal dispatch objective, so AC and DC renewables still
         compete for feasible headroom under the same curtailment objective.
         """
-        dc_index = index_by_side["DC"]
-        ac_index = index_by_side["AC"]
         device_bounds = list(zip(active_lower.tolist(), active_upper.tolist()))
         extended_bounds = device_bounds + [(0.0, None)]
         extended_parallel_matrix = (
@@ -1393,14 +1469,15 @@ def _solve_island(
             else None
         )
 
-        dc_row = matrix[dc_index]
-        stage_one_inequalities = np.vstack(
-            (
-                np.append(-dc_row, -1.0),
-                np.append(dc_row, -1.0),
-            )
-        )
-        stage_one_rhs = np.array((-rhs[dc_index], rhs[dc_index]), dtype=float)
+        stage_one_rows = []
+        stage_one_rhs_vals = []
+        for dc_index in dc_row_indexes:
+            dc_row = matrix[dc_index]
+            stage_one_rows.append(np.append(-dc_row, -1.0))
+            stage_one_rows.append(np.append(dc_row, -1.0))
+            stage_one_rhs_vals.extend((-rhs[dc_index], rhs[dc_index]))
+        stage_one_inequalities = np.vstack(stage_one_rows)
+        stage_one_rhs = np.array(stage_one_rhs_vals, dtype=float)
         stage_one_objective = np.zeros(count + 1, dtype=float)
         stage_one_objective[-1] = 1.0
         stage_one = linprog(
@@ -1418,24 +1495,20 @@ def _solve_island(
         minimum_dc_delta = max(0.0, float(stage_one.x[-1]))
         priority_tolerance = max(EPSILON, min(1e-6, optimization_ftol))
         dc_delta_limit = minimum_dc_delta + priority_tolerance
-        ac_row = matrix[ac_index]
-        stage_two_inequalities = np.vstack(
-            (
-                np.append(-ac_row, -1.0),
-                np.append(ac_row, -1.0),
-                np.append(-dc_row, 0.0),
-                np.append(dc_row, 0.0),
-            )
-        )
-        stage_two_rhs = np.array(
-            (
-                -rhs[ac_index],
-                rhs[ac_index],
-                dc_delta_limit - rhs[dc_index],
-                dc_delta_limit + rhs[dc_index],
-            ),
-            dtype=float,
-        )
+        stage_two_rows = []
+        stage_two_rhs_vals = []
+        for ac_index in ac_row_indexes:
+            ac_row = matrix[ac_index]
+            stage_two_rows.append(np.append(-ac_row, -1.0))
+            stage_two_rows.append(np.append(ac_row, -1.0))
+            stage_two_rhs_vals.extend((-rhs[ac_index], rhs[ac_index]))
+        for dc_index in dc_row_indexes:
+            dc_row = matrix[dc_index]
+            stage_two_rows.append(np.append(-dc_row, 0.0))
+            stage_two_rows.append(np.append(dc_row, 0.0))
+            stage_two_rhs_vals.extend((dc_delta_limit - rhs[dc_index], dc_delta_limit + rhs[dc_index]))
+        stage_two_inequalities = np.vstack(stage_two_rows)
+        stage_two_rhs = np.array(stage_two_rhs_vals, dtype=float)
         stage_two_objective = np.zeros(count + 1, dtype=float)
         stage_two_objective[-1] = 1.0
         stage_two = linprog(
@@ -1470,8 +1543,8 @@ def _solve_island(
                 active_upper,
             )
         elif (
-            "AC" in index_by_side
-            and "DC" in index_by_side
+            ac_row_indexes
+            and dc_row_indexes
             and any(item.kind == "converter" for item in ordered)
         ):
             minimum_delta_values, primary_converged = dc_priority_minimum_delta(
@@ -1643,7 +1716,8 @@ def _solve_island(
             <= bound_tolerance_kw
         )
         valid = bool(
-            np.all(np.isfinite(solved_device_values))
+            primary_converged
+            and np.all(np.isfinite(solved_device_values))
             and np.all(np.isfinite(solved_balance_delta))
             and bounds_valid
             and parallel_valid
@@ -1661,6 +1735,33 @@ def _solve_island(
         active_upper,
         feasibility_values if feasibility_success else None,
     )
+    # 修正有损变流器空载（current==0）反向充电时的分段线性化系数：
+    # 初始按 DC->AC (1/eff) 求解，若解出 AC->DC 充电方向（values < 0），切换为 AC->DC 系数 (eff) 并锁上界 0 重解，
+    # 杜绝 >100% 效率凭空造电。
+    if success:
+        zero_reversed_cols = [
+            col
+            for col, item in enumerate(ordered)
+            if item.kind == "converter"
+            and item.converter_efficiency < 1.0 - EPSILON
+            and abs(item.current_kw) <= EPSILON
+            and float(values[col]) < -EPSILON
+        ]
+        if zero_reversed_cols:
+            for col in zero_reversed_cols:
+                item = ordered[col]
+                dc_row_idx = index_by_component[item.dc_component_id or "DC"]
+                matrix[dc_row_idx, col] = (
+                    item.converter_base_dc_coefficient * item.converter_efficiency
+                )
+                active_upper = active_upper.copy()
+                active_upper[col] = min(float(active_upper[col]), 0.0)
+            rhs = matrix @ current - external_delta_vector
+            solved, values, solved_balance_delta, success, solver_converged = solve_with_bounds(
+                active_lower,
+                active_upper,
+                None,
+            )
     solver_seconds = time.perf_counter() - solver_started
     if not success:
         total_seconds = time.perf_counter() - started
@@ -1737,17 +1838,71 @@ def _solve_island(
     targets = {item.key: float(values[index]) for index, item in enumerate(ordered)}
     physical_residual_vector = matrix @ values - rhs
     residuals = {
-        side: float(physical_residual_vector[index])
-        for index, side in enumerate(balance_sides)
+        comp_id: float(physical_residual_vector[index])
+        for index, (comp_id, _side) in enumerate(balance_components)
     }
-    balance_delta_by_side = {
-        side: float(solved_balance_delta[index])
-        for index, side in enumerate(balance_sides)
-    }
+    balance_delta_by_side: Dict[str, float] = {}
+    for index, (_comp_id, side) in enumerate(balance_components):
+        delta_val = float(solved_balance_delta[index])
+        prev_val = balance_delta_by_side.get(side)
+        if prev_val is None or abs(delta_val) > abs(prev_val):
+            balance_delta_by_side[side] = delta_val
     max_balance_delta_kw = max(
-        (abs(value) for value in balance_delta_by_side.values()),
+        (abs(float(val)) for val in solved_balance_delta.tolist()),
         default=0.0,
     )
+    if (
+        not solver_converged
+        and not has_safety_correction
+        and balance_delta_warning_kw > EPSILON
+        and max_balance_delta_kw > balance_delta_warning_kw + balance_tolerance_kw
+    ):
+        total_seconds = time.perf_counter() - started
+        return IslandOptimizationResult(
+            island_id=island_id,
+            component_ids=component_ids,
+            device_keys=tuple(item.key for item in ordered),
+            success=False,
+            status="failed",
+            message=(
+                f"optimizer did not converge and residual {max_balance_delta_kw:.3f} kW "
+                f"exceeds warning limit {balance_delta_warning_kw:.3f} kW"
+            ),
+            target_by_device={},
+            active_lower_by_device={
+                item.key: float(active_lower[index])
+                for index, item in enumerate(ordered)
+            },
+            active_upper_by_device={
+                item.key: float(active_upper[index])
+                for index, item in enumerate(ordered)
+            },
+            balance_residual_by_component=residuals,
+            objective_value=None,
+            renewable_curtailment_kw=0.0,
+            diesel_target_kw=0.0,
+            curtailment_square_weight=curtailment_square_weight,
+            adjustment_square_weight=adjustment_square_weight,
+            balance_delta_square_weight=balance_delta_square_weight,
+            balance_delta_by_side=balance_delta_by_side,
+            max_balance_delta_kw=max_balance_delta_kw,
+            step_override_applied=False,
+            step_override_devices=(),
+            iterations=int(getattr(solved, "nit", 0) or 0) if solved is not None else 0,
+            variable_count=count,
+            constraint_count=equality_constraint_count + inequality_constraint_count,
+            equality_constraint_count=equality_constraint_count,
+            inequality_constraint_count=inequality_constraint_count,
+            bound_count=bound_count,
+            build_seconds=build_seconds,
+            solver_seconds=solver_seconds,
+            storage_balance_seconds=storage_balance_seconds,
+            postprocess_seconds=max(
+                0.0,
+                total_seconds - build_seconds - solver_seconds - storage_balance_seconds,
+            ),
+            solve_seconds=total_seconds,
+        )
     balance_delta_active = max_balance_delta_kw > balance_tolerance_kw
     renewable_curtailment = sum(
         max(0.0, (item.renewable_available_kw or 0.0) - targets[item.key])
@@ -2006,11 +2161,16 @@ def optimize_topology_islands(
                 )
             )
             continue
+        island_ext_delta_by_component: Dict[Tuple[str, str], float] = {}
         island_ext_delta_by_side: Dict[str, float] = {}
         if external_injection_delta_by_component:
             comp_set = set(component_ids)
             for (ext_comp, ext_side), ext_kw in external_injection_delta_by_component.items():
                 if ext_comp in comp_set and ext_side in {"AC", "DC"}:
+                    island_ext_delta_by_component[(ext_comp, ext_side)] = (
+                        island_ext_delta_by_component.get((ext_comp, ext_side), 0.0)
+                        + float(ext_kw)
+                    )
                     island_ext_delta_by_side[ext_side] = (
                         island_ext_delta_by_side.get(ext_side, 0.0) + float(ext_kw)
                     )
@@ -2029,6 +2189,8 @@ def optimize_topology_islands(
                 optimization_max_iterations=optimization_max_iterations,
                 storage_soc_rebalance_deadband=storage_soc_rebalance_deadband,
                 external_injection_delta_by_side=island_ext_delta_by_side or None,
+                external_injection_delta_by_component=island_ext_delta_by_component or None,
+                balance_delta_warning_kw=balance_delta_warning_kw,
             )
         )
     island_results = tuple(island_results_list)

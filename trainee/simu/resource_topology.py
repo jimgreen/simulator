@@ -209,6 +209,7 @@ class _OperatingState:
     run_stat: float
     status: float
     dead_island: bool
+    mode: str = ""
 
 
 @dataclass(frozen=True)
@@ -395,10 +396,16 @@ def _boolean(value: object, default: bool = False) -> bool:
 
 
 def _state_from_model_row(row: Mapping[str, object]) -> _OperatingState:
+    raw_status = (
+        row.get("closed_status")
+        if ("closed_status" in row and row.get("closed_status") not in (None, ""))
+        else row.get("status")
+    )
     return _OperatingState(
         run_stat=_finite_number(row.get("run_stat"), 1.0) or 0.0,
-        status=_finite_number(row.get("status"), 1.0) or 0.0,
+        status=_finite_number(raw_status, 1.0) or 0.0,
         dead_island=_boolean(row.get("dead_island"), False),
+        mode=str(row.get("mode", row.get("control_type", "")) or "").strip().upper(),
     )
 
 
@@ -444,17 +451,29 @@ def _overlay_runtime_rows(
         run_stat = current.run_stat
         status = current.status
         dead_island = current.dead_island
-        if "run_stat" in row:
+        mode = current.mode
+        if "run_stat" in row and row.get("run_stat_valid") is not False:
             run_stat = _finite_number(row.get("run_stat"), run_stat) or 0.0
-        if include_status and "status" in row:
-            status = _finite_number(row.get("status"), status) or 0.0
+        if include_status:
+            if "closed_status" in row and row.get("closed_status") not in (None, "") and row.get("closed_status_valid") is not False:
+                status = _finite_number(row.get("closed_status"), status) or 0.0
+            elif "status" in row and row.get("status_valid") is not False:
+                status = _finite_number(row.get("status"), status) or 0.0
         if "dead_island" in row:
             dead_island = _boolean(row.get("dead_island"), dead_island)
-        if run_stat != current.run_stat or status != current.status or dead_island != current.dead_island:
+        if "mode" in row and row.get("mode") not in (None, ""):
+            mode = str(row.get("mode") or "").strip().upper()
+        if (
+            run_stat != current.run_stat
+            or status != current.status
+            or dead_island != current.dead_island
+            or mode != current.mode
+        ):
             states[device_key] = _OperatingState(
                 run_stat=run_stat,
                 status=status,
                 dead_island=dead_island,
+                mode=mode,
             )
 
     for device_key, row in grouped_single.items():
@@ -471,38 +490,49 @@ def _measurement_values(
     if not (type(measurements) is dict or isinstance(measurements, Mapping)):
         return {}
     values: Dict[Tuple[str, str, str], float] = {}
+    scada_invalid_keys: set[Tuple[str, str, str]] = set()
+    invalid_status_tokens = {"invalid", "undefined", "disabled", "off", "0", "false", "dead"}
     for source in ("scada", "real"):
         rows = measurements.get(source)
         if not isinstance(rows, (list, tuple)):
             continue
+        is_scada = source == "scada"
         for row in rows:
             if not (type(row) is dict or isinstance(row, Mapping)):
                 continue
             raw_meas_type = row.get("meas_type", "")
-            if raw_meas_type in ("RUN_STAT", "STATUS"):
+            if raw_meas_type in ("RUN_STAT", "STATUS", "CLOSED_STATUS"):
                 meas_type = raw_meas_type
             else:
                 if not raw_meas_type:
                     continue
                 meas_type = str(raw_meas_type).upper()
-                if meas_type not in ("RUN_STAT", "STATUS"):
+                if meas_type not in ("RUN_STAT", "STATUS", "CLOSED_STATUS"):
                     continue
-            raw_valid = row.get("valid")
-            if raw_valid != 1 and raw_valid != 1.0 and raw_valid != "1":
-                if _finite_number(raw_valid) != 1.0:
-                    continue
-            value = _finite_number(row.get("value"))
             dev_type = row.get("dev_type")
             dev_name = row.get("dev_name")
             if (
-                value is None
-                or not isinstance(dev_type, str)
+                not isinstance(dev_type, str)
                 or not dev_type
                 or not isinstance(dev_name, str)
                 or not dev_name
             ):
                 continue
-            values.setdefault((dev_type, dev_name, meas_type), value)
+            key = (dev_type, dev_name, meas_type)
+            if not is_scada and key in scada_invalid_keys:
+                continue
+            raw_valid = row.get("valid")
+            status_token = str(row.get("status", "") or "").strip().casefold()
+            is_valid = (
+                (raw_valid == 1 or raw_valid == 1.0 or raw_valid == "1" or _finite_number(raw_valid) == 1.0)
+                and status_token not in invalid_status_tokens
+            )
+            value = _finite_number(row.get("value")) if is_valid else None
+            if value is None:
+                if is_scada:
+                    scada_invalid_keys.add(key)
+                continue
+            values.setdefault(key, value)
     return MappingProxyType(values)
 
 
@@ -523,21 +553,43 @@ def _operating_states(
         _runtime_rows(snapshot, "devices"),
         include_status=True,
     )
-    for (dev_type, dev_name, meas_type), value in _measurement_values(
-        snapshot
-    ).items():
-        device_key = (dev_type, dev_name)
-        current = states.get(device_key)
-        if current is None:
-            continue
-        states[device_key] = replace(
-            current,
-            **(
-                {"run_stat": value}
-                if meas_type == "RUN_STAT"
-                else {"status": value}
-            ),
-        )
+    # 叠加运行态 settings.modes 覆盖（如氢网阀门在线切 CLOSED）
+    settings_block = snapshot.get("settings")
+    raw_modes = (
+        settings_block.get("modes")
+        if (type(settings_block) is dict or isinstance(settings_block, Mapping))
+        else None
+    )
+    if isinstance(raw_modes, (list, tuple)):
+        for mode_item in raw_modes:
+            if not (type(mode_item) is dict or isinstance(mode_item, Mapping)):
+                continue
+            dev_type = str(mode_item.get("dev_type") or "").strip()
+            dev_name = str(mode_item.get("dev_name") or mode_item.get("name") or "").strip()
+            mode_val = str(mode_item.get("mode") or mode_item.get("control_type") or "").strip().upper()
+            if not dev_type or not dev_name or not mode_val:
+                continue
+            current = states.get((dev_type, dev_name))
+            if current is not None and current.mode != mode_val:
+                states[(dev_type, dev_name)] = replace(current, mode=mode_val)
+    meas_vals = _measurement_values(snapshot)
+    # 先写 STATUS，再写权威字段 CLOSED_STATUS，确保 CLOSED_STATUS 优先级更高
+    for target_meas in ("RUN_STAT", "STATUS", "CLOSED_STATUS"):
+        for (dev_type, dev_name, meas_type), value in meas_vals.items():
+            if meas_type != target_meas:
+                continue
+            device_key = (dev_type, dev_name)
+            current = states.get(device_key)
+            if current is None:
+                continue
+            states[device_key] = replace(
+                current,
+                **(
+                    {"run_stat": value}
+                    if meas_type == "RUN_STAT"
+                    else {"status": value}
+                ),
+            )
     return MappingProxyType(states)
 
 
@@ -587,7 +639,7 @@ def _hydrogen_edge_is_active(
         return False
     if state.status == 0.0:
         return False
-    control_type = str(row.get("control_type", "")).strip().upper()
+    control_type = (state.mode or str(row.get("control_type", "")).strip().upper())
     if control_type in {"CLOSE", "CLOSED", "OFF"}:
         return False
     return True
@@ -1597,17 +1649,20 @@ def _topology_static_cache_key(snapshot: Mapping[str, object]) -> Optional[Tuple
         def_rev = definitions.get("revision")
     if model_id is None and def_rev is None:
         return None
-    blocks = (
-        device_params.get("blocks")
-        if (type(device_params) is dict or isinstance(device_params, Mapping))
-        else None
-    )
-    if type(blocks) is dict:
-        block_sig = tuple(
-            (name, len(rows), id(rows))
-            for name, rows in sorted(blocks.items())
-            if isinstance(rows, (list, tuple))
-        )
+    blocks = None
+    if (type(definitions) is dict or isinstance(definitions, Mapping)):
+        model_def = definitions.get("model")
+        if (type(model_def) is dict or isinstance(model_def, Mapping)):
+            blocks = model_def
+    if blocks is None and (type(device_params) is dict or isinstance(device_params, Mapping)):
+        blocks = device_params.get("blocks") if isinstance(device_params.get("blocks"), Mapping) else device_params
+    if isinstance(blocks, Mapping):
+        sig_items = []
+        for name, block in sorted(blocks.items()):
+            rows = block.get("rows") if isinstance(block, Mapping) else block
+            if isinstance(rows, (list, tuple)):
+                sig_items.append((name, len(rows), id(rows)))
+        block_sig = tuple(sig_items)
     else:
         block_sig = ()
     return (str(model_id or ""), def_rev, block_sig)
@@ -1668,7 +1723,7 @@ def resolve_resource_topology(
     resources_tuple = tuple(resources)
     # 开关与设备运行状态未变化时直接复用不可变 ResourceTopology，避免每帧重算整张拓扑图与锚点索引
     state_sig = tuple(
-        (key, st.run_stat, st.status, st.dead_island)
+        (key, st.run_stat, st.status, st.dead_island, st.mode)
         for key, st in states.items()
     )
     resolved_cache_key = (id(context), state_sig, resources_tuple)

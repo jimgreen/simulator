@@ -587,10 +587,14 @@ class _ControlsMixin:
         absolute_minute: int | float,
         run_id: Optional[int] = None,
     ) -> bool:
+        if _manual_command_holds_across_clock_lifecycle(item):
+            return self._command_entry_has_accepted_controls(item)
+        # 策略换代/撤销后被锁存继续生效的自动指令，必须仍允许教员通过 delete_active_commands 删除，
+        # 防止产生“既生效控制设备、又无法被人工删除”的幽灵指令。
+        if _command_origin(item) == "automatic":
+            return self._command_entry_is_active(item, absolute_minute, run_id)
         if not self._command_entry_has_accepted_controls(item):
             return False
-        if _manual_command_holds_across_clock_lifecycle(item):
-            return True
         return self._command_entry_is_active(item, absolute_minute, run_id)
 
     def _active_control_command_entries(self, absolute_minute: int | float) -> List[Mapping[str, Any]]:
@@ -927,7 +931,7 @@ class _ControlsMixin:
             row: Dict[str, Any] = {"dev_type": dev_type, "dev_name": dev_name}
             if item.get("run_stat", "") != "" and "run_stat" in fields:
                 row["run_stat"] = _number_text(item.get("run_stat"))
-            if "status" in item and "status" in fields:
+            if item.get("status", "") != "" and "status" in fields:
                 row["status"] = _number_text(item.get("status"))
             if len(row) > 2:
                 filtered.append(row)
@@ -1095,6 +1099,7 @@ class _ControlsMixin:
                             cb_block.data.append(cb_row)
                         cb_row["closed_status_set"] = _number_text(item.get("status"))
                         applied_run += 1
+            inactive_coupling_keys = self._inactive_coupling_default_curve_keys()
             for item in set_items:
                     dev_type = str(item.get("dev_type", ""))
                     dev_name = str(item.get("dev_name", ""))
@@ -1102,6 +1107,9 @@ class _ControlsMixin:
                     if not dev_type or not dev_name or not set_type:
                         continue
                     if (dev_type, dev_name, set_type) not in allowed_set_keys:
+                        continue
+                    if (dev_type, dev_name, set_type) in inactive_coupling_keys:
+                        # 耦合模式切换后非激活端点的历史控制指令不得继续穿透注入潮流边界。
                         continue
                     if (
                         "remote_adjustment", dev_type, dev_name, set_type
@@ -1485,31 +1493,56 @@ class _ControlsMixin:
             requested_number = _to_float(value, None)
             if requested_number is None or not math.isfinite(requested_number):
                 raise ValueError(f"{set_type}={value} 不是有限数值")
-            number, bounds, device_clamped = clamp_setpoint_safety_bounds(
-                target,
-                target_set_type,
-                requested_number,
-            )
-            hydrogen_safety = validate_hydrogen_power_setpoint_safety(
-                self.definition_snapshot.model_book,
-                dev_type,
-                dev_name,
-                target_set_type,
-                number,
-                clamp_to_bounds=True,
-            )
-            hydrogen_clamped = bool(
-                hydrogen_safety and hydrogen_safety.get("clamped")
-            )
-            if hydrogen_clamped:
-                number = float(hydrogen_safety["p_set"])
-            number, _final_bounds, electrical_reclamped = (
-                clamp_setpoint_safety_bounds(
+            hydrogen_zero_shutdown = False
+            if abs(float(requested_number)) <= 1e-12 and target_set_type in {"p_set", "flow_set"}:
+                probe_h2 = validate_hydrogen_power_setpoint_safety(
+                    self.definition_snapshot.model_book,
+                    dev_type,
+                    dev_name,
+                    target_set_type,
+                    0.0,
+                    clamp_to_bounds=True,
+                )
+                if probe_h2 is not None and not probe_h2.get("clamped"):
+                    hydrogen_zero_shutdown = True
+            if hydrogen_zero_shutdown:
+                number = 0.0
+                bounds = None
+                device_clamped = False
+                hydrogen_safety = None
+                hydrogen_clamped = False
+                electrical_reclamped = False
+            else:
+                number, bounds, device_clamped = clamp_setpoint_safety_bounds(
                     target,
                     target_set_type,
-                    number,
+                    requested_number,
                 )
-            )
+                hydrogen_safety = validate_hydrogen_power_setpoint_safety(
+                    self.definition_snapshot.model_book,
+                    dev_type,
+                    dev_name,
+                    target_set_type,
+                    number,
+                    clamp_to_bounds=True,
+                )
+                hydrogen_clamped = bool(
+                    hydrogen_safety and hydrogen_safety.get("clamped")
+                )
+                if hydrogen_clamped:
+                    number = float(
+                        hydrogen_safety.get(
+                            target_set_type,
+                            hydrogen_safety.get("p_set", number),
+                        )
+                    )
+                number, _final_bounds, electrical_reclamped = (
+                    clamp_setpoint_safety_bounds(
+                        target,
+                        target_set_type,
+                        number,
+                    )
+                )
         except ValueError as exc:
             raise ValueError(
                 f"遥调数值或模型校验失败：{dev_type}/{dev_name} 的 "
@@ -2226,9 +2259,12 @@ class _ControlsMixin:
                 remaining_slots -= 1
                 if remaining_slots == 0:
                     break
+        old_response_index = int(getattr(self, "_last_command_response_index", 0) or 0)
+        kept_before_response = sum(1 for idx in keep_indices if idx < old_response_index)
         self.command_history = [
             entry for idx, entry in enumerate(self.command_history) if idx in keep_indices
         ]
+        self._last_command_response_index = min(len(self.command_history), kept_before_response)
         self._rebuild_strategy_generation_index()
 
     def _append_command_history_entry(self, entry: Dict[str, Any]) -> None:
@@ -3187,10 +3223,11 @@ class _ControlsMixin:
         if weather_count >= point_count:
             target_index = self._curve_point_index(target_absolute_minute, period_minutes) - 1
         else:
-            target_index = int((target_absolute_minute % period_minutes) // step_minutes)
+            # 加上 1e-9 容差，防止 hour 模式 step_minutes=1/60 时 IEEE-754 误差导致 40% 整秒点下偏 1 格。
+            target_index = int(((target_absolute_minute % period_minutes) + 1e-9) // step_minutes)
         target_index = max(0, min(point_count - 1, target_index))
         point_minute = target_index * step_minutes
-        if weather_count > target_index and isinstance(weather[target_index], Mapping):
+        if weather_count >= point_count and weather_count > target_index and isinstance(weather[target_index], Mapping):
             point_minute = float(_to_float(weather[target_index].get("minute"), point_minute) or point_minute)
         return {
             "mode": mode,
@@ -3841,18 +3878,54 @@ class _ControlsMixin:
                 current_target = self._external_realtime_target_locked()
                 point_count = int(current_target["point_count"])
                 step_minutes = float(current_target["time_step_minutes"])
-                weather_points = self.curves.get("weather")
+                period_minutes = float(current_target["period_minutes"])
+
+                # 在局部深拷贝上完成全部修改与写盘后再原子切换内存，防止写盘异常留脏状态或缓存失步。
+                next_curves = copy.deepcopy(self.curves)
+                weather_points = next_curves.get("weather")
                 if not isinstance(weather_points, list):
                     weather_points = []
-                    self.curves["weather"] = weather_points
-                while len(weather_points) < point_count:
-                    index = len(weather_points)
-                    weather_points.append({"minute": index * step_minutes, **DEFAULT_WEATHER})
+                    next_curves["weather"] = weather_points
+
+                def _is_sparse_series(series: List[Any]) -> bool:
+                    if not series or len(series) >= point_count:
+                        return False
+                    for idx, item in enumerate(series):
+                        if not isinstance(item, Mapping):
+                            continue
+                        pm = _to_float(item.get("minute"), None)
+                        if pm is not None and abs(float(pm) - idx * step_minutes) > max(1e-6, step_minutes * 1e-4):
+                            return True
+                    return False
+
+                def _upsert_sparse_point(
+                    series: List[Dict[str, Any]],
+                    point_minute: float,
+                    updates: Mapping[str, Any],
+                    defaults: Mapping[str, Any],
+                ) -> None:
+                    tol = max(1e-6, step_minutes * 1e-4)
+                    for item in series:
+                        if not isinstance(item, dict):
+                            continue
+                        pm = _to_float(item.get("minute"), None)
+                        if pm is not None and abs((float(pm) % period_minutes) - (point_minute % period_minutes)) <= tol:
+                            item.update(updates)
+                            return
+                    new_point = {"minute": float(point_minute % period_minutes), **defaults, **updates}
+                    series.append(new_point)
+                    series.sort(key=lambda p: float(_to_float(p.get("minute"), 0.0) or 0.0) if isinstance(p, Mapping) else 0.0)
+
+                weather_is_sparse = _is_sparse_series(weather_points)
+                if not weather_is_sparse:
+                    while len(weather_points) < point_count:
+                        index = len(weather_points)
+                        weather_points.append({"minute": index * step_minutes, **DEFAULT_WEATHER})
 
                 catalog_by_name: Dict[str, List[str]] = {}
                 for item in catalog:
                     catalog_by_name.setdefault(item["dev_name"], []).append(item["key"])
-                configured_loads = self.curves.get("loads", {})
+                configured_loads = next_curves.get("loads", {})
                 curve_key_by_load: Dict[str, str] = {}
                 for canonical_key in normalized["updated_loads"]:
                     _dev_type, dev_name = canonical_key.split(":", 1)
@@ -3865,23 +3938,27 @@ class _ControlsMixin:
                     curve_key_by_load[canonical_key] = curve_key
 
                 load_points_by_key: Dict[str, List[Dict[str, Any]]] = {}
-                loads = self.curves.get("loads")
+                load_sparse_flags: Dict[str, bool] = {}
+                loads = next_curves.get("loads")
                 if not isinstance(loads, dict):
                     loads = {}
-                    self.curves["loads"] = loads
+                    next_curves["loads"] = loads
                 for canonical_key, curve_key in curve_key_by_load.items():
                     points = loads.get(curve_key)
                     if not isinstance(points, list):
                         points = []
                         loads[curve_key] = points
-                    while len(points) < point_count:
-                        index = len(points)
-                        points.append(
-                            {
-                                "minute": index * step_minutes,
-                                "p_kw": DEFAULT_WEATHER["load_kw"],
-                            }
-                        )
+                    is_sparse = _is_sparse_series(points)
+                    load_sparse_flags[canonical_key] = is_sparse
+                    if not is_sparse:
+                        while len(points) < point_count:
+                            index = len(points)
+                            points.append(
+                                {
+                                    "minute": index * step_minutes,
+                                    "p_kw": DEFAULT_WEATHER["load_kw"],
+                                }
+                            )
                     load_points_by_key[canonical_key] = points
 
                 point_results: List[Dict[str, Any]] = []
@@ -3889,30 +3966,48 @@ class _ControlsMixin:
                 for operation in operations:
                     target = operation["target"]
                     target_index = int(target["index"])
+                    point_minute = float(target["point_minute"])
                     updated_indices.add(target_index)
-                    if not isinstance(weather_points[target_index], dict):
-                        weather_points[target_index] = {
-                            "minute": target_index * step_minutes,
-                            **DEFAULT_WEATHER,
-                        }
-                    weather_points[target_index].setdefault(
-                        "minute",
-                        target_index * step_minutes,
-                    )
-                    for key, value in operation["weather"].items():
-                        weather_points[target_index][key] = value
+                    if operation["weather"]:
+                        if weather_is_sparse:
+                            _upsert_sparse_point(
+                                weather_points,
+                                point_minute,
+                                operation["weather"],
+                                DEFAULT_WEATHER,
+                            )
+                        else:
+                            if not isinstance(weather_points[target_index], dict):
+                                weather_points[target_index] = {
+                                    "minute": target_index * step_minutes,
+                                    **DEFAULT_WEATHER,
+                                }
+                            weather_points[target_index].setdefault(
+                                "minute",
+                                target_index * step_minutes,
+                            )
+                            for key, value in operation["weather"].items():
+                                weather_points[target_index][key] = value
                     for canonical_key, value in operation["loads"].items():
                         points = load_points_by_key[canonical_key]
-                        if not isinstance(points[target_index], dict):
-                            points[target_index] = {
-                                "minute": target_index * step_minutes,
-                                "p_kw": points[target_index],
-                            }
-                        points[target_index].setdefault(
-                            "minute",
-                            target_index * step_minutes,
-                        )
-                        points[target_index]["p_kw"] = value
+                        if load_sparse_flags.get(canonical_key):
+                            _upsert_sparse_point(
+                                points,
+                                point_minute,
+                                {"p_kw": value},
+                                {},
+                            )
+                        else:
+                            if not isinstance(points[target_index], dict):
+                                points[target_index] = {
+                                    "minute": target_index * step_minutes,
+                                    "p_kw": points[target_index],
+                                }
+                            points[target_index].setdefault(
+                                "minute",
+                                target_index * step_minutes,
+                            )
+                            points[target_index]["p_kw"] = value
                     if normalized["update_mode"] != "series":
                         point_results.append(
                             {
@@ -3925,7 +4020,8 @@ class _ControlsMixin:
                             }
                         )
 
-                _write_json(self.curves_file, self.curves)
+                _write_json(self.curves_file, next_curves)
+                self.curves = next_curves
                 self._curve_revision += 1
                 sorted_indices = sorted(updated_indices)
                 start_target = normalized["start_target"]
@@ -4250,42 +4346,51 @@ class _ControlsMixin:
         )
 
     def _external_telemetry_catalog_items(self) -> List[Dict[str, Any]]:
-        current_items = self._latest_telemetry_items()
-        current_by_name = {
-            str(item.get("name", "")): item
-            for item in current_items
-            if str(item.get("name", ""))
-        }
-        catalog: List[Dict[str, Any]] = []
-        seen: set[str] = set()
-        for raw_row in self.definition_snapshot.measurement_rows:
-            row = dict(zip(MEAS_HEADER, raw_row))
-            name = str(row.get("name", "")).strip()
-            if not name or name in seen:
-                continue
-            seen.add(name)
-            current = current_by_name.get(name, {})
-            is_signal = self._is_signal_measurement_row(row)
-            catalog.append(
-                {
-                    "name": name,
-                    "point_type": "YX" if is_signal else "YC",
-                    "category": "遥信" if is_signal else "遥测",
-                    "dev_type": str(row.get("dev_type", "")),
-                    "dev_name": str(row.get("dev_name", "")),
-                    "meas_type": str(row.get("meas_type", "")),
-                    "value": _json_scalar(current.get("value", row.get("value"))),
-                    "valid": int(_to_float(current.get("valid", row.get("valid")), 0) or 0),
-                    "weight": _json_scalar(current.get("weight", row.get("weight", ""))),
-                }
-            )
-        for item in current_items:
-            name = str(item.get("name", "")).strip()
-            if not name or name in seen:
-                continue
-            seen.add(name)
-            catalog.append(dict(item))
-        return catalog
+        with self.lock:
+            current_items = self._latest_telemetry_items()
+            invalidated = bool(getattr(self, "_automatic_runtime_state_invalidated", False))
+            current_by_name = {
+                str(item.get("name", "")): item
+                for item in current_items
+                if str(item.get("name", ""))
+            }
+            catalog: List[Dict[str, Any]] = []
+            seen: set[str] = set()
+            for raw_row in self.definition_snapshot.measurement_rows:
+                row = dict(zip(MEAS_HEADER, raw_row))
+                name = str(row.get("name", "")).strip()
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                current = current_by_name.get(name, {})
+                is_signal = self._is_signal_measurement_row(row)
+                if invalidated and not current:
+                    # 停机重置尚未产出有效潮流帧时，不得回退返回 meas.e 静态行伪装有效遥测。
+                    val: Any = None
+                    valid_flag = 0
+                else:
+                    val = _json_scalar(current.get("value", row.get("value")))
+                    valid_flag = int(_to_float(current.get("valid", row.get("valid")), 0) or 0)
+                catalog.append(
+                    {
+                        "name": name,
+                        "point_type": "YX" if is_signal else "YC",
+                        "category": "遥信" if is_signal else "遥测",
+                        "dev_type": str(row.get("dev_type", "")),
+                        "dev_name": str(row.get("dev_name", "")),
+                        "meas_type": str(row.get("meas_type", "")),
+                        "value": val,
+                        "valid": valid_flag,
+                        "weight": _json_scalar(current.get("weight", row.get("weight", ""))),
+                    }
+                )
+            for item in current_items:
+                name = str(item.get("name", "")).strip()
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                catalog.append(dict(item))
+            return catalog
 
     @staticmethod
     def _external_topology_fields(parameters: Mapping[str, Any]) -> Dict[str, Any]:

@@ -325,10 +325,12 @@ def normalize_model_named_units(model) -> float:
         v_node = j_node if j_ctrl == "V" and i_ctrl == "NONE" else i_node
         _scale_voltage_attr(conv, "v_set", v_node, settings)
         i_scale_base = dc_current_scales.get(conv.i_node)
-        if i_scale_base is not None:
-            _scale_attr_in_dict(conv, "i_set", i_scale_base)
-            _scale_attr_in_dict(conv, "i_c", i_scale_base)
         j_scale_base = dc_current_scales.get(conv.j_node)
+        i_set_scale_base = j_scale_base if (j_ctrl == "I" and i_ctrl != "I") else i_scale_base
+        if i_set_scale_base is not None:
+            _scale_attr_in_dict(conv, "i_set", i_set_scale_base)
+        if i_scale_base is not None:
+            _scale_attr_in_dict(conv, "i_c", i_scale_base)
         if j_scale_base is not None:
             _scale_attr_in_dict(conv, "j_c", j_scale_base)
 

@@ -312,6 +312,9 @@ class RenewableControlSettings:
             fuel_cell_hydrogen_storage_soc_lower_limit,
             1.0,
         )
+        converter_ramp_step_ratio = _clamp(
+            float(self.converter_ramp_step_ratio), 0.0, 1.0
+        )
         return replace(
             self,
             interval_seconds=max(
@@ -323,7 +326,7 @@ class RenewableControlSettings:
             large_step_threshold_kw=max(0.0, float(self.large_step_threshold_kw)),
             step_coefficient=max(0.0, float(self.step_coefficient)),
             diesel_step_ratio=_clamp(float(self.diesel_step_ratio), 0.0, 1.0),
-            converter_ramp_step_ratio=_clamp(float(self.converter_ramp_step_ratio), 0.0, 1.0),
+            converter_ramp_step_ratio=converter_ramp_step_ratio,
             converter_efficiency=_clamp(float(self.converter_efficiency), 0.5, 1.0),
             storage_step_ratio=storage_step_ratio,
             storage_soc_rebalance_deadband=_clamp(
@@ -351,7 +354,7 @@ class RenewableControlSettings:
             hydrogen_pressure_deadband_ratio=_clamp(
                 float(self.hydrogen_pressure_deadband_ratio),
                 0.0,
-                0.5,
+                0.24,
             ),
             hydrogen_min_dwell_seconds=max(
                 0.0,
@@ -419,7 +422,7 @@ class RenewableControlSettings:
             ),
             fuel_cell_hydrogen_storage_soc_upper_limit=fuel_cell_hydrogen_storage_soc_upper_limit,
             fuel_cell_hydrogen_storage_soc_lower_limit=fuel_cell_hydrogen_storage_soc_lower_limit,
-            converter_step_ratio=0.0,
+            converter_step_ratio=converter_ramp_step_ratio,
             storage_charge_derating_curve=_normalized_derating_curve(
                 self.storage_charge_derating_curve,
                 DEFAULT_STORAGE_CHARGE_DERATING_CURVE,
@@ -467,6 +470,48 @@ class RenewableControlSettings:
             electrolyzer_storage_soc_upper_limit=None,
             electrolyzer_hydrogen_storage_soc_upper_limit=None,
         )
+
+    def validate(self) -> None:
+        """校验跨字段阈值单调性与可行性，阻断死锁或退化区间进入运行态。"""
+        if self.soc_min >= self.soc_max - EPSILON:
+            raise ValueError("储能 SOC 下限必须严格小于上限。")
+        if 2.0 * self.soc_deadband >= (self.soc_max - self.soc_min) - EPSILON:
+            raise ValueError("储能 SOC 死区过宽（2*soc_deadband 必须小于 soc_max - soc_min）。")
+        if self.electrolyzer_power_min_ratio >= self.electrolyzer_power_max_ratio - EPSILON:
+            raise ValueError("电制氢功率下限比例必须小于上限比例。")
+        if self.fuel_cell_power_min_ratio >= self.fuel_cell_power_max_ratio - EPSILON:
+            raise ValueError("燃料电池功率下限比例必须小于上限比例。")
+        if (
+            self.fuel_cell_power_min_ratio + self.fuel_cell_power_step_ratio
+            > self.fuel_cell_power_max_ratio + EPSILON
+        ):
+            raise ValueError("燃料电池最小运行功率与步长之和不得超过功率上限比例。")
+        if (
+            self.electrolyzer_storage_soc_start_minimum
+            <= self.electrolyzer_storage_soc_stop_maximum + EPSILON
+        ):
+            raise ValueError("电制氢启机SOC最小值必须大于停机SOC最大值。")
+        if (
+            self.electrolyzer_diesel_power_limit_ratio
+            >= self.electrolyzer_diesel_power_stop_maximum_ratio - EPSILON
+        ):
+            raise ValueError("电制氢启机柴发门槛必须小于停机柴发门槛。")
+        if (
+            self.fuel_cell_diesel_power_limit_ratio
+            <= self.fuel_cell_diesel_power_stop_minimum_ratio + EPSILON
+        ):
+            raise ValueError("燃料电池启机柴发门槛必须大于停机柴发门槛。")
+        if (
+            self.fuel_cell_hydrogen_storage_soc_upper_limit
+            <= self.fuel_cell_hydrogen_storage_soc_lower_limit + EPSILON
+        ):
+            raise ValueError("燃料电池氢储罐SOC上限必须大于下限。")
+        if (
+            self.electrolyzer_hydrogen_storage_soc_stop_minimum > EPSILON
+            and self.electrolyzer_hydrogen_storage_soc_stop_minimum
+            <= self.hydrogen_pressure_deadband_ratio + EPSILON
+        ):
+            raise ValueError("电制氢氢储罐停机SOC门槛必须大于氢压死区比例。")
 
     def updated(self, payload: Mapping[str, Any]) -> "RenewableControlSettings":
         aliases = {
@@ -925,7 +970,7 @@ def _curve_boundary_value(snapshot: Mapping[str, Any], key: str) -> Optional[flo
 def _measurement_row_enabled(row: Mapping[str, Any]) -> bool:
     """检查单条测点配置行或实时量测行自身是否处于启用/有效状态。"""
     raw_status = str(row.get("status", "") or "").strip().lower()
-    if raw_status in {"invalid", "disabled", "off", "0", "false"}:
+    if raw_status in {"invalid", "undefined", "disabled", "off", "0", "false"}:
         return False
     if "enabled" in row and not _boolean(row.get("enabled"), True):
         return False
@@ -934,6 +979,58 @@ def _measurement_row_enabled(row: Mapping[str, Any]) -> bool:
         return True
     parsed_valid = _number(raw_valid)
     return parsed_valid is not None and int(parsed_valid) == 1
+
+
+def _active_manual_locks(
+    snapshot: Mapping[str, Any],
+) -> Tuple[set[Tuple[str, str, str]], set[Tuple[str, str]]]:
+    """提取模拟台侧高优先级人工/教员锁定控制点，返回 (按设点锁, 整机锁)。"""
+    entries = snapshot.get("active_manual_locks")
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        raw_commands = snapshot.get("commands")
+        if (type(raw_commands) is dict or isinstance(raw_commands, Mapping)):
+            entries = raw_commands.get("effective") or []
+        else:
+            entries = ()
+    by_set_type: set[Tuple[str, str, str]] = set()
+    by_device: set[Tuple[str, str]] = set()
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        return by_set_type, by_device
+    for entry in entries:
+        if not (type(entry) is dict or isinstance(entry, Mapping)):
+            continue
+        origin = str(
+            entry.get("command_origin")
+            or entry.get("origin")
+            or entry.get("priority")
+            or ""
+        ).strip().casefold()
+        if origin in {"strategy", "automatic", "auto", ""}:
+            continue
+        dev_type = str(entry.get("dev_type") or "").strip()
+        dev_name = str(entry.get("dev_name") or "").strip()
+        if not dev_type or not dev_name:
+            continue
+        set_type = str(entry.get("set_type") or "").strip().lower()
+        if set_type:
+            by_set_type.add((dev_type, dev_name, set_type))
+        else:
+            by_device.add((dev_type, dev_name))
+    return by_set_type, by_device
+
+
+def _is_device_manually_locked(
+    locks: Tuple[set[Tuple[str, str, str]], set[Tuple[str, str]]],
+    dev_type: str,
+    dev_name: str,
+    set_type: str = "",
+) -> bool:
+    by_set_type, by_device = locks
+    if (dev_type, dev_name) in by_device:
+        return True
+    if set_type and (dev_type, dev_name, str(set_type).strip().lower()) in by_set_type:
+        return True
+    return False
 
 
 def _environment_measurement_status(
@@ -1293,12 +1390,22 @@ def _renewable_rows(
         )
         identity_valid = not spec.identity_diagnostic
         topology_valid = connection_side in {"AC", "DC"}
+        manual_locks = _active_manual_locks(snapshot)
+        manual_locked = _is_device_manually_locked(
+            manual_locks,
+            dev_type,
+            name,
+            set_type,
+        )
+        run_stat_valid = bool(device.get("run_stat_valid", True)) if device else True
         commandable = bool(
             online
+            and run_stat_valid
             and topology_valid
             and identity_valid
             and set_type
             and recovery_ready
+            and not manual_locked
         )
 
         if not topology_valid:
@@ -1344,6 +1451,8 @@ def _renewable_rows(
                 "source_name": name,
                 "deviceOnline": device_online,
                 "online": online,
+                "runStatValid": run_stat_valid,
+                "manualLocked": manual_locked,
                 "environmentKnown": weather_measurement_available and control_weather_available_kw is not None,
                 "weatherMeasurementAvailable": weather_measurement_available,
                 "controlWeatherAvailableKw": control_weather_available_kw,
@@ -1436,12 +1545,20 @@ def _diesel_rows(
         current = measured.value if measured else None
         set_type = _preferred_set_type(snapshot, device, ("p_set", "p_ac_set"))
         limits_valid = bool(capacity > EPSILON and minimum <= capacity + EPSILON)
+        manual_locks = _active_manual_locks(snapshot)
+        manual_locked = _is_device_manually_locked(
+            manual_locks,
+            dev_type,
+            name,
+            set_type,
+        )
         commandable = bool(
             online
             and current is not None
             and math.isfinite(current)
             and limits_valid
             and set_type
+            and not manual_locked
         )
         state_eligible = bool(
             online
@@ -1533,6 +1650,7 @@ def _annotate_diesel_topology(
             }
         )
         if not topology_valid:
+            row["online"] = False
             row["commandable"] = False
             row["stateEligible"] = False
             row["set_type"] = ""
@@ -1779,21 +1897,32 @@ def _storage_rows(
                 }
             ]
 
+        manual_locks = _active_manual_locks(snapshot)
+        manual_locked = _is_device_manually_locked(
+            manual_locks,
+            dev_type,
+            name,
+            set_type,
+        )
+        run_stat_valid = bool(device.get("run_stat_valid", True)) if device else True
         commandable = bool(
             role in {"grid_following", "balance"}
             and topology_valid
             and identity_valid
             and online
+            and run_stat_valid
             and soc_known
             and power is not None
             and limits_valid
             and set_type == "p_set"
+            and not manual_locked
         )
         state_eligible = bool(
             role == "balance"
             and topology_valid
             and identity_valid
             and online
+            and run_stat_valid
             and soc_known
             and power is not None
             and limits_valid
@@ -1838,6 +1967,8 @@ def _storage_rows(
                 "source_name": name,
                 "deviceOnline": device_online,
                 "online": online,
+                "runStatValid": run_stat_valid,
+                "manualLocked": manual_locked,
                 "resourceIdentityValid": identity_valid,
                 "resourceIdentityDiagnostic": spec.identity_diagnostic,
                 "commandable": commandable,
@@ -2010,6 +2141,13 @@ def _converter_rows(
         transfer_capacity = (
             max(abs(signed_min), abs(signed_max)) if limits_valid else 0.0
         )
+        manual_locks = _active_manual_locks(snapshot)
+        manual_locked = _is_device_manually_locked(
+            manual_locks,
+            _device_type(device),
+            _device_name(device),
+            set_type,
+        )
         commandable = bool(
             not identity_diagnostic
             and online
@@ -2018,6 +2156,7 @@ def _converter_rows(
             and measured is not None
             and limits_valid
             and group_id
+            and not manual_locked
         )
         diagnostic = ""
         if identity_diagnostic:
@@ -2089,9 +2228,10 @@ def _apply_grid_forming_fail_closed_scopes(
     blocked_ac_components: set[str] = set()
     blocked_dc_groups: set[str] = set()
     for row in storage_rows:
+        run_stat_unknown = row.get("runStatValid") is False
         if (
             row.get("role") != "balance"
-            or not row.get("deviceOnline")
+            or (not row.get("deviceOnline") and not run_stat_unknown)
             or not row.get("activelyConnected")
             or row.get("stateEligible")
         ):
@@ -2105,6 +2245,8 @@ def _apply_grid_forming_fail_closed_scopes(
         if not scope_id:
             continue
         missing = []
+        if run_stat_unknown:
+            missing.append("运行状态遥信")
         if not row.get("socKnown"):
             missing.append("SOC")
         if _number(row.get("currentKw")) is None:

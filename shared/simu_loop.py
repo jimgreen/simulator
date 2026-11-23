@@ -1493,13 +1493,19 @@ def apply_hydrogen_storage_state_book(model_book: EBook, stat_book: Optional[EBo
         for field in ("pressure", "flow", "gas_quantity", "soc"):
             if field in values:
                 changed += _set_row_value(row, field, format_number(values[field]))
-        if (
-            "pressure" in values
-            and str(row.get("control_type", "")).strip().upper() == "PRESSURE"
-        ):
+        if "pressure" in values:
+            # fluid_model.py 对所有 HydroStorage 均按定压边界求解（不论 control_type 为 PRESSURE/P/V/SLACK/空），
+            # 动态罐压必须统一回写至 pressure_set（或兼容列 p_set）以形成闭环压力反馈。
+            target_pressure_field = "pressure_set" if "pressure_set" in row else ("p_set" if "p_set" in row else "pressure_set")
+            if target_pressure_field not in row:
+                block = model_book.data.get("HydroStorage")
+                if block is not None:
+                    if target_pressure_field not in block.header_list:
+                        block.header_list.append(target_pressure_field)
+                    row[target_pressure_field] = ""
             changed += _set_row_value(
                 row,
-                "pressure_set",
+                target_pressure_field,
                 format_number(values["pressure"]),
             )
     return changed
@@ -2381,9 +2387,19 @@ def apply_dev_stat_book(model_book: EBook, stat_book: EBook) -> int:
                 changed += _set_row_value(target, "run_stat", row.get("run_stat", ""))
             if "pv0" in target or "qv0" in target:
                 if row.get("p_set", "") != "":
-                    changed += _set_row_value(target, "pv0", row.get("p_set", ""))
+                    p_val = _safe_float(row.get("p_set"), None)
+                    if p_val is not None:
+                        if "p_set" in target:
+                            changed += _set_row_value(target, "p_set", _format_power(p_val))
+                        pbase, base_changed = _load_write_base(target, "pbase")
+                        changed += base_changed + _set_row_value(target, "pv0", _format_power(p_val / pbase))
                 if row.get("q_set", "") != "":
-                    changed += _set_row_value(target, "qv0", row.get("q_set", ""))
+                    q_val = _safe_float(row.get("q_set"), None)
+                    if q_val is not None:
+                        if "q_set" in target:
+                            changed += _set_row_value(target, "q_set", _format_power(q_val))
+                        qbase, base_changed = _load_write_base(target, "qbase")
+                        changed += base_changed + _set_row_value(target, "qv0", _format_power(q_val / qbase))
             else:
                 if row.get("p_set", "") != "":
                     changed += _set_row_value(target, "p_set", row.get("p_set", ""))
@@ -2610,12 +2626,18 @@ def apply_load_model(model_book: EBook, dev_define: EBook, weather: Dict[str, fl
     scale = target_total / total_p
     changed = 0
     for row, p, q, pbase, qbase in weighted:
+        new_p_val = p * scale
+        new_q_val = q * scale
         pbase, base_changed = _load_write_base(row, "pbase")
         changed += base_changed
         qbase, base_changed = _load_write_base(row, "qbase")
         changed += base_changed
-        changed += _set_row_value(row, "pv0", _format_power(p * scale / pbase))
-        changed += _set_row_value(row, "qv0", _format_power(q * scale / qbase))
+        if "p_set" in row:
+            changed += _set_row_value(row, "p_set", _format_power(new_p_val))
+        if "q_set" in row:
+            changed += _set_row_value(row, "q_set", _format_power(new_q_val))
+        changed += _set_row_value(row, "pv0", _format_power(new_p_val / pbase))
+        changed += _set_row_value(row, "qv0", _format_power(new_q_val / qbase))
     return changed
 
 
@@ -3915,6 +3937,11 @@ def _link_snapshot_terminal_objects(snapshot: Snapshot) -> None:
             dev.ac_node_obj = snapshot.ac_nodes_by_idx.get(getattr(dev, "ac_node", None))
         if getattr(dev, "dc_node_obj", None) is None:
             dev.dc_node_obj = snapshot.dc_nodes_by_idx.get(getattr(dev, "dc_node", None))
+    for dev in getattr(snapshot, "acac_by_name", {}).values():
+        if getattr(dev, "i_node_obj", None) is None:
+            dev.i_node_obj = snapshot.ac_nodes_by_idx.get(getattr(dev, "i_node", None))
+        if getattr(dev, "j_node_obj", None) is None:
+            dev.j_node_obj = snapshot.ac_nodes_by_idx.get(getattr(dev, "j_node", None))
 
 
 def _storage_soc_values(

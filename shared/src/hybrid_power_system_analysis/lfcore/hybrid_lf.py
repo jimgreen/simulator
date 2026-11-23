@@ -1420,12 +1420,42 @@ class HybridPowerFlowCalc:
 
     def _energy_endpoint_setpoint(self, endpoint) -> float:
         if endpoint.domain in {"ac", "dc"}:
-            column = "pbase" if endpoint.kind == "load" else "p_set"
-            return float(endpoint.table[endpoint.row, endpoint.columns[column]])
+            cols = endpoint.columns
+            if endpoint.kind == "load":
+                pbase = float(endpoint.table[endpoint.row, cols["pbase"]])
+                if "pv0" in cols:
+                    zip_sum = float(endpoint.table[endpoint.row, cols["pv0"]])
+                    if "pv1" in cols:
+                        zip_sum += float(endpoint.table[endpoint.row, cols["pv1"]])
+                    if "pv2" in cols:
+                        zip_sum += float(endpoint.table[endpoint.row, cols["pv2"]])
+                    return pbase * zip_sum
+                return pbase
+            return float(endpoint.table[endpoint.row, cols["p_set"]])
         network = self.fluid_calcs[endpoint.domain].network
         if endpoint.kind == "load":
             return float(network.load_flow_set[endpoint.device_pos])
         return float(network.source_flow_set[endpoint.device_pos])
+
+    def _zero_electric_endpoint_setpoint(self, endpoint) -> None:
+        """将因对端进入死岛而失耦的电侧端点功率设点清零，防止无流体支撑凭空发电或耗电。"""
+        if endpoint.domain not in {"ac", "dc"}:
+            return
+        cols = endpoint.columns
+        if endpoint.kind == "load":
+            if "pbase" in cols:
+                endpoint.table[endpoint.row, cols["pbase"]] = 0.0
+            if "qbase" in cols:
+                endpoint.table[endpoint.row, cols["qbase"]] = 0.0
+            if "pv0" in cols:
+                endpoint.table[endpoint.row, cols["pv0"]] = 0.0
+            if "qv0" in cols:
+                endpoint.table[endpoint.row, cols["qv0"]] = 0.0
+        else:
+            if "p_set" in cols:
+                endpoint.table[endpoint.row, cols["p_set"]] = 0.0
+            if "q_set" in cols:
+                endpoint.table[endpoint.row, cols["q_set"]] = 0.0
 
     def _set_fixed_fluid_endpoint_value(self, endpoint, value: float) -> None:
         network = self.fluid_calcs[endpoint.domain].network
@@ -1463,7 +1493,7 @@ class HybridPowerFlowCalc:
                     continue
                 electric, reason = self._resolve_energy_endpoint(
                     electric_terminal,
-                    adjustable=False,
+                    adjustable=(coupling.control_type == "T_OUT"),
                 )
                 if electric is None:
                     self._add_multi_energy_warning(f"{coupling.table_name}:{coupling.name}: {reason}")
@@ -1729,25 +1759,31 @@ class HybridPowerFlowCalc:
                     )
                     continue
                 t1_is_dependent = coupling.t1 == dependent_terminal
-                t1, reason = self._resolve_energy_endpoint(
+                t1, reason1 = self._resolve_energy_endpoint(
                     coupling.t1,
                     adjustable=t1_is_dependent,
                     allow_missing_fluid_balance=(
                         t1_is_dependent and coupling.t1.domain not in {"ac", "dc"}
                     ),
                 )
-                if t1 is None:
-                    self._add_multi_energy_warning(f"{coupling.table_name}:{coupling.name}: {reason}")
-                    continue
-                t2, reason = self._resolve_energy_endpoint(
+                t2, reason2 = self._resolve_energy_endpoint(
                     coupling.t2,
                     adjustable=not t1_is_dependent,
                     allow_missing_fluid_balance=(
                         not t1_is_dependent and coupling.t2.domain not in {"ac", "dc"}
                     ),
                 )
-                if t2 is None:
+                if t1 is None or t2 is None:
+                    # 任一端点进入电力/流体死岛不可解时，必须联锁清零在线对端设备的功率或流量设点，
+                    # 杜绝“断路器断开后零耗电凭空产氢/零发电抽空氢罐”等破坏质量与能量守恒的现象。
+                    reason = reason1 if t1 is None else reason2
                     self._add_multi_energy_warning(f"{coupling.table_name}:{coupling.name}: {reason}")
+                    alive_endpoint = t2 if t1 is None else t1
+                    if alive_endpoint is not None:
+                        if alive_endpoint.domain not in {"ac", "dc"}:
+                            self._set_fixed_fluid_endpoint_value(alive_endpoint, 0.0)
+                        else:
+                            self._zero_electric_endpoint_setpoint(alive_endpoint)
                     continue
                 dependent = t1 if t1_is_dependent else t2
                 controlled = t2 if t1_is_dependent else t1
@@ -2305,10 +2341,32 @@ class HybridPowerFlowCalc:
     def _apply_final_energy_endpoint_value(self, endpoint, value, ac_result, dc_result) -> None:
         value = float(value)
         if endpoint.domain in {"ac", "dc"}:
-            endpoint.table[endpoint.row, endpoint.columns["p"]] = value
+            cols = endpoint.columns
+            endpoint.table[endpoint.row, cols["p"]] = value
             result = ac_result if endpoint.domain == "ac" else dc_result
             if isinstance(result, dict) and endpoint.table_key in result:
-                result[endpoint.table_key][endpoint.row, endpoint.columns["p"]] = value
+                res_table = result[endpoint.table_key]
+                res_table[endpoint.row, cols["p"]] = value
+                if "current" in cols:
+                    # 同步重算耦合电端电流，避免 FLOW/T_OUT 耦合解下 P 已更新但 I 仍停留在耦合前旧值。
+                    bus_table = result.get("bus")
+                    v_mag = 1.0
+                    if isinstance(bus_table, np.ndarray) and bus_table.ndim == 2 and bus_table.size:
+                        node_id = int(res_table[endpoint.row, cols["node"]])
+                        bus_matches = np.flatnonzero(bus_table[:, 0].astype(np.int64, copy=False) == node_id)
+                        if bus_matches.size:
+                            v_col = 2
+                            if v_col < bus_table.shape[1]:
+                                cand_v = abs(float(bus_table[int(bus_matches[0]), v_col]))
+                                if cand_v > 1e-6:
+                                    v_mag = cand_v
+                    if endpoint.domain == "ac" and "q" in cols:
+                        q_val = float(res_table[endpoint.row, cols["q"]])
+                        cur_val = float(np.hypot(value, q_val)) / v_mag
+                    else:
+                        cur_val = value / v_mag
+                    endpoint.table[endpoint.row, cols["current"]] = cur_val
+                    res_table[endpoint.row, cols["current"]] = cur_val
             return
 
         calc = self.fluid_calcs[endpoint.domain]
@@ -2391,16 +2449,26 @@ class HybridPowerFlowCalc:
                     ac_result,
                     dc_result,
                 )
-                heat_result = self.fluid_calcs["heat"].lf_result
+                heat_calc = self.fluid_calcs["heat"]
+                heat_result = heat_calc.lf_result
                 source_pos = int(plan.heat.device_pos)
-                heat_result.arrays.setdefault(
-                    "source_t_out",
-                    np.full(
-                        len(self.fluid_calcs["heat"].network.sources),
-                        np.nan,
-                        dtype=np.float64,
-                    ),
-                )[source_pos] = t_out
+                if heat_result is not None:
+                    heat_result.arrays.setdefault(
+                        "source_t_out",
+                        np.full(
+                            len(heat_calc.network.sources),
+                            np.nan,
+                            dtype=np.float64,
+                        ),
+                    )[source_pos] = t_out
+                    source_name = str(heat_calc.network.source_name[source_pos])
+                    collection = (
+                        heat_result.storages
+                        if plan.heat.kind == "storage"
+                        else heat_result.sources
+                    )
+                    if source_name in collection:
+                        collection[source_name].t_out = t_out
                 continue
             if plan.hydrogen_electric or plan.gas_electric or plan.steam_electric:
                 self._apply_final_energy_endpoint_value(
@@ -3874,6 +3942,14 @@ class HybridPowerFlowCalc:
         self.iterations = 0
         self.normF = 0.0
         self.failure_reason = ""
+        for calc in self.fluid_calcs.values():
+            if calc.total_vars == 0 and calc.total_eq == 0:
+                calc.commit_state(
+                    np.empty(0, dtype=np.float64),
+                    converged=True,
+                    iterations=0,
+                    normF=0.0,
+                )
         self._write_skipped_results_to_network()
         if self.result_mode == "none":
             self.result = {}
@@ -4350,6 +4426,21 @@ class HybridPowerFlowCalc:
                 )
 
             if self.normF < self.tol:
+                if (
+                    self.dc_calc is not None
+                    and bool(getattr(self.dc_calc, "dcdc_eliminate_pj", False))
+                    and np.any(getattr(self.dc_calc, "last_dcdc_loss_infeasible_mask", ()))
+                ):
+                    self.converged = False
+                    self.failure_reason = (
+                        "DCDCConverter loss equation has no real solution "
+                        "(infeasible operating point)"
+                    )
+                    self.x = x
+                    self._write_back()
+                    if self.verbose:
+                        print(self.failure_reason)
+                    return -1
                 if self.verbose:
                     print(f"收敛于第 {it + 1} 次迭代")
                 self.converged = True
