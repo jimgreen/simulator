@@ -327,6 +327,14 @@ class ClusterAndProxyTests(unittest.TestCase):
                     calls.append(("channel_def_update", channel_id, values.get("remote_port")))
                     return {"channel": {"channel_id": channel_id, "remote_port": values.get("remote_port")}, "restarted": apply_restart}
 
+                def export_channel_efile(self, rtu):
+                    calls.append(("export_efile", rtu))
+                    return {
+                        "filename": f"scdfe_s_rtu{rtu}_ch1_iec104_M1.e",
+                        "content": "<! System=SCADA Version=1.0 Source=scdfe_s !>\n<fes_rtu_define::scada rtu_id = 1>\n@rtu_id\n#1\n</fes_rtu_define>\n",
+                        "summary": {"rtu_id": rtu, "channel_id": 1, "channel_type": "iec104", "total_points": 4},
+                    }
+
                 def close(self):
                     self.closed = True
 
@@ -396,6 +404,12 @@ class ClusterAndProxyTests(unittest.TestCase):
                 self.assertEqual(s_pdef, 200)
                 self.assertEqual(json.loads(b_pdef.decode("utf-8"))["items"][0]["io_address"], 16385)
 
+                s_exp, _, b_exp = _req(b"GET /api/simulator104/export-efile?rtu_id=1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                self.assertEqual(s_exp, 200)
+                exp_payload = json.loads(b_exp.decode("utf-8"))
+                self.assertEqual(exp_payload["filename"], "scdfe_s_rtu1_ch1_iec104_M1.e")
+                self.assertIn("<! System=SCADA Version=1.0 Source=scdfe_s", exp_payload["content"])
+
                 def _post_json(route: str, obj: dict):
                     raw = json.dumps(obj).encode("utf-8")
                     return _req(
@@ -416,6 +430,7 @@ class ClusterAndProxyTests(unittest.TestCase):
             self.assertIn(("service_config", 1, 2406, True), calls)
             self.assertIn(("rtu_update", 1, "StationA"), calls)
             self.assertIn(("channel_def_update", 1, 2406), calls)
+            self.assertIn(("export_efile", 1), calls)
 
 
 if __name__ == "__main__":

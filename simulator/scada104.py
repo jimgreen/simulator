@@ -1357,6 +1357,9 @@ class _UnavailableScada104Host:
     def update_channel_definition(self, channel_id: int, values: dict, *, apply_restart: bool = True) -> dict:
         raise RuntimeError(self.reason)
 
+    def export_channel_efile(self, rtu: int) -> dict:
+        raise RuntimeError(self.reason)
+
     def remove_model(self, model_name: str) -> bool:
         return False
 
@@ -2031,6 +2034,26 @@ class EmbeddedScada104Host:
                             self.bridge.models[rid]["endpoint"] = st.get("endpoint")
 
         return {"channel": dict(ch_row) if ch_row else {"channel_id": cid, **updates}, "restarted": restarted}
+
+    def export_channel_efile(self, rtu: int) -> dict:
+        """按 scdfe_s 同构格式导出指定 RTU/通道及其四遥点表为标准 E 文件（可直接导入 scdfe_c）。"""
+        rid = int(rtu)
+        from core.channel_efile import export_channel_efile as _export_channel_efile
+
+        services_map: dict[str, Any] = {}
+        with self.bridge.lock:
+            channels = self.channel_services(rtu_id=rid)
+            channel = channels.get(f"iec104-rtu-{rid}")
+            if channel is not None:
+                services_map["iec104"] = channel
+                services_map["iec104-server"] = channel
+        try:
+            return _export_channel_efile(self.store, rid, services=services_map)
+        except Exception as exc:
+            status_code = getattr(exc, "status", None)
+            if status_code == 404:
+                raise KeyError(str(exc)) from exc
+            raise ValueError(str(exc)) from exc
 
     def close(self) -> None:
         if self._closed:

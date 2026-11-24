@@ -44,7 +44,7 @@
         }
       } catch (_e) {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20261124-104-tabs-v3" />
+    <link rel="stylesheet" href="/styles.css?v=20261124-104-tabs-v5" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -1317,7 +1317,6 @@
                 <button type="button" class="is-active" data-scada104-tab="service" role="tab" aria-selected="true">服务与进程</button>
                 <button type="button" data-scada104-tab="config" role="tab" aria-selected="false">站与通道配置</button>
                 <button type="button" data-scada104-tab="points" role="tab" aria-selected="false">四遥点表</button>
-                <button type="button" data-scada104-tab="commands" role="tab" aria-selected="false">指令下发</button>
                 <button type="button" data-scada104-tab="logs" role="tab" aria-selected="false">通信日志</button>
               </div>
               <div class="scada104-page-meta">
@@ -1401,6 +1400,7 @@
                 <div class="panel-head">
                   <h2>RTU 定义</h2>
                   <div class="panel-actions">
+                    <button id="scada104ExportEfileBtn" type="button">导出 E 文件</button>
                     <button id="scada104ReloadConfigBtn" type="button">刷新配置</button>
                   </div>
                 </div>
@@ -1541,18 +1541,18 @@
                   <h2>四遥点表</h2>
                   <div class="panel-actions">
                     <select id="scada104PointsRtuSelect" aria-label="点表模型"></select>
-                    <select id="scada104PointsKindSelect" aria-label="四遥类型">
-                      <option value="yc">遥测 YC</option>
-                      <option value="yx">遥信 YX</option>
-                      <option value="yk">遥控 YK</option>
-                      <option value="yt">遥调 YT</option>
-                    </select>
                     <input id="scada104PointsSearch" class="scada104-search" type="search" placeholder="筛选名称、点号或 IOA…" aria-label="筛选四遥点表" autocomplete="off" />
                     <label class="inline-check-filter"><input id="scada104PausePointsRefresh" type="checkbox" /><span>暂停自动刷新</span></label>
                     <button id="scada104ReloadPointsBtn" type="button">刷新</button>
                   </div>
                 </div>
                 <div class="scada104-def-toolbar">
+                  <div class="sub-tabs scada104-kind-tabs" role="tablist" aria-label="四遥类型">
+                    <button type="button" class="sub-tab is-active" role="tab" aria-selected="true" data-scada104-kind-tab="yc"><span>遥测 YC</span><span class="scada104-kind-count" data-scada104-kind-count="yc"></span></button>
+                    <button type="button" class="sub-tab" role="tab" aria-selected="false" data-scada104-kind-tab="yx"><span>遥信 YX</span><span class="scada104-kind-count" data-scada104-kind-count="yx"></span></button>
+                    <button type="button" class="sub-tab" role="tab" aria-selected="false" data-scada104-kind-tab="yk"><span>遥控 YK</span><span class="scada104-kind-count" data-scada104-kind-count="yk"></span></button>
+                    <button type="button" class="sub-tab" role="tab" aria-selected="false" data-scada104-kind-tab="yt"><span>遥调 YT</span><span class="scada104-kind-count" data-scada104-kind-count="yt"></span></button>
+                  </div>
                   <div class="scada104-pager">
                     <button id="scada104PointsPrevBtn" type="button">上一页</button>
                     <span id="scada104PointsPageInfo" class="mono-cell">0 / 0</span>
@@ -1579,43 +1579,6 @@
                     </tbody>
                   </table>
                 </div>
-              </section>
-            </div>
-
-            <div class="scada104-view-pane" data-scada104-pane="commands" hidden>
-              <section class="panel scada104-panel" aria-labelledby="scada104CommandTitle">
-                <div class="panel-head">
-                  <h2 id="scada104CommandTitle">下发仿真指令</h2>
-                  <div class="panel-actions">
-                    <input id="scada104PointSearch" class="scada104-search" type="search" placeholder="筛选控制点名称或点号…" aria-label="筛选控制点" autocomplete="off" />
-                    <button id="scada104RefreshPointsBtn" type="button" title="重新读取当前模型控制点列表">刷新点表</button>
-                  </div>
-                </div>
-                <form id="scada104CommandForm" class="scada104-command-form">
-                  <label class="scada104-field">模型
-                    <select id="scada104Rtu" required><option value="">选择模型</option></select>
-                  </label>
-                  <label class="scada104-field">类型
-                    <select id="scada104Kind">
-                      <option value="yk">遥控 YK</option>
-                      <option value="yt">遥调 YT</option>
-                    </select>
-                  </label>
-                  <label class="scada104-field scada104-field-wide">控制点
-                    <select id="scada104Point" required><option value="">请先选择模型</option></select>
-                  </label>
-                  <label class="scada104-field">指令值
-                    <select id="scada104ValueSelect" required>
-                      <option value="1">1 · 合 / 投入</option>
-                      <option value="0">0 · 分 / 退出</option>
-                    </select>
-                    <input id="scada104ValueInput" type="number" step="any" placeholder="输入设定值" hidden />
-                  </label>
-                  <button id="scada104SendBtn" class="primary" type="submit">核对并下发</button>
-                </form>
-                <p id="scada104PointMeta" class="scada104-point-meta"></p>
-                <p id="scada104Receipt" class="scada104-banner" role="status"></p>
-                <ul id="scada104RecentReceipts" class="scada104-receipt-history" aria-label="最近指令记录"></ul>
               </section>
             </div>
 
@@ -1981,6 +1944,56 @@
           </div>
         </form>
       </div>
+      <div id="scada104CommandDialog" class="modal-backdrop" hidden>
+        <form id="scada104CommandForm" class="modal-card scada104-command-modal" aria-modal="true" role="dialog" aria-labelledby="scada104CommandTitle">
+          <div class="modal-head">
+            <h2 id="scada104CommandTitle">下发仿真指令</h2>
+            <button id="closeScada104CommandDialog" class="icon-button" type="button" title="关闭">
+              <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z" /></svg>
+            </button>
+          </div>
+          <dl class="import-file-summary scada104-cmd-summary">
+            <div><dt>模型</dt><dd id="scada104CmdModel">--</dd></div>
+            <div><dt>类型</dt><dd id="scada104CmdKind">--</dd></div>
+            <div><dt>点号</dt><dd id="scada104CmdPointNo" class="mono-cell">--</dd></div>
+            <div><dt>信息体地址 (IOA)</dt><dd id="scada104CmdIoa" class="mono-cell">--</dd></div>
+            <div><dt>测点名称</dt><dd id="scada104CmdPointName" class="mono-cell">--</dd></div>
+            <div><dt>当前值</dt><dd id="scada104CmdCurrentValue" class="mono-cell">--</dd></div>
+          </dl>
+          <label class="modal-field">指令值
+            <select id="scada104ValueSelect" required>
+              <option value="1">1 · 合 / 投入</option>
+              <option value="0">0 · 分 / 退出</option>
+            </select>
+            <input id="scada104ValueInput" type="number" step="any" placeholder="输入设定值" hidden />
+          </label>
+          <p id="scada104CommandMessage" class="modal-message" aria-live="polite"></p>
+          <div class="modal-actions">
+            <button id="cancelScada104CommandDialog" type="button">取消</button>
+            <button id="scada104SendBtn" class="primary" type="submit">确认下发</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="scada104ExportEfileDialog" class="modal-backdrop" hidden>
+        <form id="scada104ExportEfileForm" class="modal-card scada104-command-modal" aria-modal="true" role="dialog" aria-labelledby="scada104ExportEfileTitle">
+          <div class="modal-head">
+            <h2 id="scada104ExportEfileTitle">导出 E 文件</h2>
+            <button id="closeScada104ExportEfileDialog" class="icon-button" type="button" title="关闭">
+              <svg viewBox="0 0 24 24"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z" /></svg>
+            </button>
+          </div>
+          <p id="scada104ExportEfileSummary" class="modal-hint"></p>
+          <label class="modal-field">文件名
+            <input id="scada104ExportEfileName" type="text" autocomplete="off" required />
+          </label>
+          <p id="scada104ExportEfileMessage" class="modal-message" aria-live="polite"></p>
+          <div class="modal-actions">
+            <button id="cancelScada104ExportEfileDialog" type="button">取消</button>
+            <button id="confirmScada104ExportEfileBtn" class="primary" type="submit">确认导出</button>
+          </div>
+        </form>
+      </div>
     </div>
 
     <dialog id="dangerConfirmDialog" class="danger-confirm-dialog" aria-labelledby="dangerConfirmTitle" aria-describedby="dangerConfirmMessage">
@@ -1998,7 +2011,7 @@
       </div>
     </dialog>
     <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
-    <script defer src="/js/00-i18n.js?v=20261124-104-tabs-v3"></script>
+    <script defer src="/js/00-i18n.js?v=20261124-104-tabs-v5"></script>
     <script defer src="/js/01-state-core.js?v=20261123-audit-v4"></script>
     <script defer src="/js/02-api-models.js?v=20261123-audit-v4"></script>
     <script defer src="/js/03-diagram-core.js?v=20261123-audit-v4"></script>
@@ -2007,6 +2020,6 @@
     <script defer src="/js/06-overview-runtime.js?v=20261123-audit-v4"></script>
     <script defer src="/js/07-measurements-faults.js?v=20261123-audit-v4"></script>
     <script defer src="/js/08-ux-enhancements.js?v=20261123-audit-v4"></script>
-    <script defer src="/js/09-scada104.js?v=20261124-104-tabs-v3"></script>
+    <script defer src="/js/09-scada104.js?v=20261124-104-tabs-v5"></script>
   </body>
 </html>

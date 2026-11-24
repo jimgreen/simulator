@@ -200,6 +200,13 @@ def make_simulator_proxy_server(
                         raise ValueError("请指定有效的 rtu_id")
                     items = host.list_point_definitions(int(raw_rtu), raw_kind)
                     self._send_json({"rtu_id": int(raw_rtu), "kind": raw_kind, "items": items})
+                elif path == "/api/simulator104/export-efile":
+                    host = _require_iec104_host()
+                    query = parse_qs(urlparse(self.path).query)
+                    raw_rtu = str((query.get("rtu_id") or [""])[0]).strip()
+                    if not raw_rtu.isdigit():
+                        raise ValueError("请指定有效的 rtu_id")
+                    self._send_json(host.export_channel_efile(int(raw_rtu)))
                 elif path in {"/simulator104", "/simulator104/"}:
                     served = static_cache.serve(
                         self,

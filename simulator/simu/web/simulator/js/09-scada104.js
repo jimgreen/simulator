@@ -7,7 +7,6 @@
   if (typeof document === "undefined" || typeof window === "undefined") return;
 
   const REFRESH_INTERVAL_MS = 1800;
-  const MAX_RECENT_RECEIPTS = 5;
 
   const get = (id) => document.getElementById(id);
   const tr = (phrase) => (typeof translatePhrase === "function" ? translatePhrase(phrase) : phrase);
@@ -27,11 +26,7 @@
   let isActive = false;
   let boundSection = null;
   let activeViewTab = "service";
-  let loadedPointScope = "";
-  let allLoadedPoints = [];
-  let pointItemsByNo = new Map();
-  let pointLoadSeq = 0;
-  let pointAbortController = null;
+  let activePointsKind = "yc";
   let statusAbortController = null;
   let pointsTableAbortController = null;
   let logsAbortController = null;
@@ -42,7 +37,6 @@
   let refreshTimerId = null;
   let refreshInFlight = false;
   let pendingManualRefresh = false;
-  let lastRtuOptionsKey = "";
   let lastAllRtuOptionsKey = "";
   let lastServiceRowsKey = "";
   let lastRtuDefRowsKey = "";
@@ -55,7 +49,8 @@
   let pointsSortState = { col: "pnt_no", dir: "none" };
   let preferredModelName = "";
   let latestModelsList = [];
-  const recentReceipts = [];
+  let pendingCommandTarget = null;
+  let pendingExportPayload = null;
 
   async function api(path, body, { signal } = {}) {
     const url = `${apiBase()}${path}`;
@@ -115,8 +110,8 @@
   }
 
   function setActiveViewTab(tab) {
-    const normalized = tab === "channels" ? "service" : tab;
-    if (!["service", "config", "points", "commands", "logs"].includes(normalized)) return;
+    const normalized = tab === "channels" ? "service" : (tab === "commands" ? "points" : tab);
+    if (!["service", "config", "points", "logs"].includes(normalized)) return;
     activeViewTab = normalized;
     const root = document.querySelector('section[data-page="scada104"]');
     if (!root) return;
@@ -133,124 +128,221 @@
         loadServiceOverview(normalized === "config");
       } else if (normalized === "points") {
         loadPointsTable();
-      } else if (normalized === "commands") {
-        loadControlPoints(true);
       } else if (normalized === "logs") {
         loadChannelLogs();
       }
     }
   }
 
-  function syncValueInputMode() {
-    const kindEl = get("scada104Kind");
+  function resolveModelDisplayName(rtuId) {
+    const rid = String(rtuId ?? "");
+    const model = latestModelsList.find((m) => String(m.rtu_id) === rid)
+      || (latestServiceOverview?.services || []).find((s) => String(s.rtu_id) === rid)
+      || (latestServiceOverview?.rtus || []).find((r) => String(r.rtu_id) === rid);
+    const name = model?.model || model?.name || "";
+    return name ? `${name} · RTU ${rid}` : `RTU ${rid}`;
+  }
+
+  function closeCommandModal() {
+    pendingCommandTarget = null;
+    const dialog = get("scada104CommandDialog");
+    if (dialog) dialog.hidden = true;
+    const msg = get("scada104CommandMessage");
+    if (msg) {
+      msg.textContent = "";
+      msg.classList.remove("is-error");
+    }
+    ["scada104ValueInput", "scada104ValueSelect"].forEach((id) => {
+      get(id)?.removeAttribute("aria-invalid");
+    });
+  }
+
+  function openCommandModal({ rtu, kind, item }) {
+    const dialog = get("scada104CommandDialog");
     const select = get("scada104ValueSelect");
     const input = get("scada104ValueInput");
-    if (!kindEl || !select || !input) return;
-    const isYk = kindEl.value === "yk";
+    if (!dialog || !select || !input || !item) return;
+    const normalizedKind = kind === "yt" ? "yt" : "yk";
+    pendingCommandTarget = { rtu: Number(rtu), kind: normalizedKind, item };
+
+    const setText = (id, text) => {
+      const el = get(id);
+      if (el) el.textContent = text;
+    };
+    setText("scada104CmdModel", resolveModelDisplayName(rtu));
+    setText("scada104CmdKind", normalizedKind === "yk" ? tr("遥控 YK") : tr("遥调 YT"));
+    setText("scada104CmdPointNo", `#${item.pnt_no}`);
+    const ioaText = item.io_address !== undefined && item.io_address !== null
+      ? `${item.io_address} (${item.io_address_hex || ""})`
+      : "—";
+    setText("scada104CmdIoa", ioaText);
+    setText("scada104CmdPointName", item.name || item.source_name || `${normalizedKind.toUpperCase()}/${item.pnt_no}`);
+    setText("scada104CmdCurrentValue", formatTelemetryValue(item.value, normalizedKind));
+
+    const isYk = normalizedKind === "yk";
     select.hidden = !isYk;
     select.required = isYk;
     select.disabled = !isYk;
     input.hidden = isYk;
     input.required = !isYk;
     input.disabled = isYk;
-    updateSelectedPointMeta(false);
+    select.removeAttribute("aria-invalid");
+    input.removeAttribute("aria-invalid");
+
+    if (isYk) {
+      const cur = Number(item.value);
+      select.value = cur === 1 ? "0" : "1";
+    } else {
+      const hasVal = item.value !== null && item.value !== undefined && item.value !== "" && Number.isFinite(Number(item.value));
+      input.value = hasVal ? String(item.value) : "";
+    }
+
+    const msg = get("scada104CommandMessage");
+    if (msg) {
+      msg.textContent = "";
+      msg.classList.remove("is-error");
+    }
+    const sendBtn = get("scada104SendBtn");
+    if (sendBtn) sendBtn.disabled = false;
+
+    dialog.hidden = false;
+    if (isYk) {
+      select.focus();
+    } else {
+      input.focus();
+      input.select();
+    }
   }
 
-  function updateSelectedPointMeta(prefillYtValue = false) {
-    const metaNode = get("scada104PointMeta");
-    const pointVal = get("scada104Point")?.value || "";
-    const kind = get("scada104Kind")?.value || "yk";
-    if (!metaNode) return;
-    const item = pointItemsByNo.get(String(pointVal));
-    if (!item) {
-      metaNode.textContent = "";
-      return;
+  function normalizeEfileName(raw, fallback) {
+    let name = String(raw || "").trim().replace(/[\\/:*?"<>|]+/g, "_");
+    if (!name) name = fallback || "channel.e";
+    if (!/\.e$/i.test(name)) name += ".e";
+    return name;
+  }
+
+  function triggerEfileDownload(filename, content) {
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function closeExportEfileModal() {
+    pendingExportPayload = null;
+    const dialog = get("scada104ExportEfileDialog");
+    if (dialog) dialog.hidden = true;
+    const msg = get("scada104ExportEfileMessage");
+    if (msg) {
+      msg.textContent = "";
+      msg.classList.remove("is-error");
     }
-    const hasValue = item.value !== null && item.value !== undefined && item.value !== "";
-    const valueText = hasValue ? String(item.value) : "—";
-    const statusText = item.disabled ? tr("已禁操") : tr("可操作");
-    metaNode.textContent = `#${item.pnt_no} ${item.source_name || item.name} · ${tr("当前值")} ${valueText} · ${statusText}`;
-    if (prefillYtValue && kind === "yt" && hasValue) {
-      const input = get("scada104ValueInput");
-      if (input && Number.isFinite(Number(item.value))) {
-        input.value = String(item.value);
+  }
+
+  function resolveSelectedExportRtuId() {
+    const chId = String(get("scada104ChDefSelect")?.value || "");
+    if (chId) {
+      const ch = (latestServiceOverview?.channels || []).find((c) => String(c.channel_id) === chId);
+      if (ch && ch.rtu_id !== undefined && ch.rtu_id !== null && String(ch.rtu_id) !== "") {
+        return Number(ch.rtu_id);
       }
+      const rtuByCh = (latestServiceOverview?.rtus || []).find((r) => String(r.channel_id) === chId);
+      if (rtuByCh && rtuByCh.rtu_id !== undefined) return Number(rtuByCh.rtu_id);
     }
+    const firstRtu = latestServiceOverview?.rtus?.[0]?.rtu_id
+      ?? latestServiceOverview?.services?.[0]?.rtu_id
+      ?? latestModelsList?.[0]?.rtu_id;
+    return firstRtu !== undefined && firstRtu !== null ? Number(firstRtu) : 0;
   }
 
-  function renderPointOptions() {
-    const pointSelect = get("scada104Point");
-    if (!pointSelect) return;
-    const keyword = String(get("scada104PointSearch")?.value || "").trim().toLowerCase();
-    const prevValue = pointSelect.value;
-    const filtered = keyword
-      ? allLoadedPoints.filter((item) => (
-        `${item.pnt_no} ${item.name || ""} ${item.source_name || ""}`.toLowerCase().includes(keyword)
-      ))
-      : allLoadedPoints;
-
-    const placeholderText = !allLoadedPoints.length
-      ? tr("暂无可用控制点")
-      : (filtered.length ? `${tr("控制点")} (${filtered.length}/${allLoadedPoints.length})` : tr("无匹配控制点"));
-    const options = [new Option(placeholderText, "")];
-    for (const item of filtered) {
-      const valHint = item.value !== null && item.value !== undefined && item.value !== "" ? ` [${item.value}]` : "";
-      const label = `${item.pnt_no} · ${item.name || item.source_name}${valHint}${item.disabled ? ` (${tr("已禁操")})` : ""}`;
-      const option = new Option(label, String(item.pnt_no));
-      if (item.disabled) option.disabled = true;
-      options.push(option);
-    }
-    pointSelect.replaceChildren(...options);
-    pointSelect.disabled = filtered.length === 0;
-    if (options.some((opt) => opt.value === prevValue && !opt.disabled)) {
-      pointSelect.value = prevValue;
-    }
-    updateSelectedPointMeta(false);
-  }
-
-  async function loadControlPoints(force = false) {
-    const rtu = get("scada104Rtu")?.value || "";
-    const kind = get("scada104Kind")?.value || "yk";
-    const pointSelect = get("scada104Point");
-    if (!pointSelect) return;
-    const scope = `${rtu}:${kind}`;
-    if (!rtu) {
-      if (pointAbortController) pointAbortController.abort();
-      loadedPointScope = "";
-      allLoadedPoints = [];
-      pointItemsByNo = new Map();
-      pointSelect.replaceChildren(new Option(tr("请先选择模型"), ""));
-      pointSelect.disabled = true;
-      updateSelectedPointMeta(false);
+  async function exportChannelEfile(explicitRtuId = null) {
+    const rtuId = explicitRtuId ? Number(explicitRtuId) : resolveSelectedExportRtuId();
+    if (!rtuId) {
+      showServiceNotice(tr("请先选择目标通道"), true);
       return;
     }
-    if (!force && scope === loadedPointScope) return;
-    if (pointAbortController) pointAbortController.abort();
-    pointAbortController = new AbortController();
-    const requestSeq = ++pointLoadSeq;
+    const btn = get("scada104ExportEfileBtn");
+    if (btn) btn.disabled = true;
+    showServiceNotice(tr("正在生成 E 文件…"), false);
     try {
-      const data = await api(
-        `/api/simulator104/points?rtu_id=${encodeURIComponent(rtu)}&kind=${encodeURIComponent(kind)}`,
-        undefined,
-        { signal: pointAbortController.signal },
-      );
-      if (requestSeq !== pointLoadSeq || !isActive) return;
-      loadedPointScope = scope;
-      const items = Array.isArray(data.items) ? data.items : [];
-      allLoadedPoints = items;
-      pointItemsByNo = new Map(items.map((item) => [String(item.pnt_no), item]));
-      renderPointOptions();
-    } catch (error) {
-      if (error?.name === "AbortError" || requestSeq !== pointLoadSeq) {
-        if (loadedPointScope === scope) loadedPointScope = "";
+      const payload = await api(`/api/simulator104/export-efile?rtu_id=${encodeURIComponent(rtuId)}`);
+      const suggested = normalizeEfileName(payload.filename, `scdfe_s_rtu${rtuId}.e`);
+      const s = payload.summary || {};
+      const summaryText = `RTU ${s.rtu_id ?? rtuId} · CH ${s.channel_id ?? ""} · ${s.channel_type || "iec104"} · ${s.total_points ?? 0}`;
+      if (typeof window.showSaveFilePicker === "function") {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: suggested,
+            types: [{ description: tr("SCADA E 文件"), accept: { "text/plain": [".e", ".E"] } }],
+          });
+          const writable = await handle.createWritable();
+          await writable.write(new Blob([payload.content], { type: "text/plain;charset=utf-8" }));
+          await writable.close();
+          const doneMsg = `${tr("已导出 E 文件")}：${handle.name} (${summaryText})`;
+          showServiceNotice(doneMsg, false);
+          toast(doneMsg, "ok", 2600);
+          return;
+        } catch (err) {
+          if (err && err.name === "AbortError") {
+            showServiceNotice(tr("已取消导出"), false);
+            return;
+          }
+          // 浏览器环境或非安全上下文受限时平滑降级到自定义文件名保存弹窗。
+        }
+      }
+      const dialog = get("scada104ExportEfileDialog");
+      const nameInput = get("scada104ExportEfileName");
+      const summaryNode = get("scada104ExportEfileSummary");
+      if (dialog && nameInput) {
+        pendingExportPayload = { ...payload, suggested, summaryText };
+        nameInput.value = suggested;
+        if (summaryNode) summaryNode.textContent = summaryText;
+        dialog.hidden = false;
+        nameInput.focus();
+        nameInput.select();
         return;
       }
-      loadedPointScope = "";
-      allLoadedPoints = [];
-      pointItemsByNo = new Map();
-      pointSelect.replaceChildren(new Option(`${tr("失败")}: ${error.message}`, ""));
-      pointSelect.disabled = true;
-      updateSelectedPointMeta(false);
+      triggerEfileDownload(suggested, payload.content);
+      const fallbackMsg = `${tr("已导出 E 文件")}：${suggested} (${summaryText})`;
+      showServiceNotice(fallbackMsg, false);
+      toast(fallbackMsg, "ok", 2600);
+    } catch (err) {
+      showServiceNotice(err.message, true);
+      toast(err.message, "error", 2800);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function syncPointsKindCounts() {
+    const rtu = String(get("scada104PointsRtuSelect")?.value || "");
+    const model = latestModelsList.find((m) => String(m.rtu_id) === rtu)
+      || (latestServiceOverview?.services || []).find((s) => String(s.rtu_id) === rtu)
+      || null;
+    const pts = model?.points || null;
+    document.querySelectorAll("[data-scada104-kind-count]").forEach((badge) => {
+      const k = badge.dataset.scada104KindCount;
+      const count = pts && pts[k] !== undefined && pts[k] !== null ? Number(pts[k]) : null;
+      badge.textContent = count !== null && Number.isFinite(count) ? String(count) : "";
+    });
+  }
+
+  function setActivePointsKind(kind, { reload = true } = {}) {
+    const next = ["yc", "yx", "yk", "yt"].includes(kind) ? kind : "yc";
+    activePointsKind = next;
+    document.querySelectorAll("[data-scada104-kind-tab]").forEach((btn) => {
+      const selected = btn.dataset.scada104KindTab === next;
+      btn.classList.toggle("is-active", selected);
+      btn.setAttribute("aria-selected", selected ? "true" : "false");
+    });
+    if (reload) {
+      pointsTablePage = 0;
+      loadPointsTable();
     }
   }
 
@@ -260,7 +352,7 @@
     const prevBtn = get("scada104PointsPrevBtn");
     const nextBtn = get("scada104PointsNextBtn");
     if (!tbody) return;
-    const kind = get("scada104PointsKindSelect")?.value || "yc";
+    const kind = activePointsKind || "yc";
     const rtu = Number(get("scada104PointsRtuSelect")?.value || 0);
     const keyword = String(get("scada104PointsSearch")?.value || "").trim().toLowerCase();
     const filtered = keyword
@@ -350,20 +442,11 @@
       if (kind === "yk" || kind === "yt") {
         const wrap = document.createElement("div");
         wrap.className = "scada104-row-actions";
-        const sendBtn = textNode("button", tr("去下发"), "compact-action-btn");
+        const sendBtn = textNode("button", tr("下发"), "compact-action-btn");
         sendBtn.type = "button";
         sendBtn.disabled = Boolean(item.disabled);
-        sendBtn.addEventListener("click", async () => {
-          if (get("scada104Rtu")) get("scada104Rtu").value = String(rtu);
-          if (get("scada104Kind")) get("scada104Kind").value = kind;
-          syncValueInputMode();
-          setActiveViewTab("commands");
-          await loadControlPoints(true);
-          if (get("scada104Point")) {
-            get("scada104Point").value = String(item.pnt_no);
-            updateSelectedPointMeta(true);
-            get("scada104Point").focus();
-          }
+        sendBtn.addEventListener("click", () => {
+          openCommandModal({ rtu, kind, item });
         });
 
         const disableBtn = textNode(
@@ -382,7 +465,6 @@
               disabled: !item.disabled,
             });
             await loadPointsTable();
-            await loadControlPoints(true);
           } catch (err) {
             const errEl = get("scada104BridgeError");
             if (errEl) errEl.textContent = err.message;
@@ -403,7 +485,8 @@
 
   async function loadPointsTable() {
     const rtu = get("scada104PointsRtuSelect")?.value || "";
-    const kind = get("scada104PointsKindSelect")?.value || "yc";
+    const kind = activePointsKind || "yc";
+    syncPointsKindCounts();
     const tbody = get("scada104PointsTableBody");
     if (!tbody) return;
     if (!rtu) {
@@ -900,31 +983,12 @@
     }
   }
 
-  function pushReceiptHistory(message, isError = false) {
-    const now = new Date();
-    const stamp = [now.getHours(), now.getMinutes(), now.getSeconds()]
-      .map((n) => String(n).padStart(2, "0"))
-      .join(":");
-    recentReceipts.unshift({ stamp, message, isError });
-    if (recentReceipts.length > MAX_RECENT_RECEIPTS) recentReceipts.length = MAX_RECENT_RECEIPTS;
-    const list = get("scada104RecentReceipts");
-    if (!list) return;
-    const nodes = recentReceipts.map((entry) => {
-      const li = document.createElement("li");
-      if (entry.isError) li.className = "is-error";
-      li.append(textNode("span", entry.message), textNode("span", entry.stamp, "mono-cell"));
-      return li;
-    });
-    list.replaceChildren(...nodes);
-  }
-
   function clearPolling() {
     if (refreshTimerId !== null) {
       clearTimeout(refreshTimerId);
       refreshTimerId = null;
     }
     if (statusAbortController) statusAbortController.abort();
-    if (pointAbortController) pointAbortController.abort();
     if (pointsTableAbortController) pointsTableAbortController.abort();
     if (logsAbortController) logsAbortController.abort();
     if (serviceAbortController) serviceAbortController.abort();
@@ -993,26 +1057,9 @@
       }
 
       syncAuxiliaryRtuSelects(models);
-
-      const rtuSel = get("scada104Rtu");
-      const selectedRtu = rtuSel?.value || "";
-      const onlineModels = models.filter((m) => m?.online && m?.running);
-      const rtuOptionsKey = onlineModels.map((m) => `${m.rtu_id}:${m.model}`).join("|");
-      if (rtuSel && rtuOptionsKey !== lastRtuOptionsKey) {
-        lastRtuOptionsKey = rtuOptionsKey;
-        const options = [new Option(tr("选择模型"), "")];
-        for (const m of onlineModels) {
-          options.push(new Option(`${m.model} · RTU ${m.rtu_id}`, String(m.rtu_id)));
-        }
-        rtuSel.replaceChildren(...options);
-        const nextRtu = options.some((opt) => opt.value === selectedRtu)
-          ? selectedRtu
-          : (options.length === 2 ? options[1].value : "");
-        rtuSel.value = nextRtu;
-      }
       applyPreferredModelSelection(models);
+      syncPointsKindCounts();
 
-      await loadControlPoints(false);
       const pausedPoints = Boolean(get("scada104PausePointsRefresh")?.checked);
       if (activeViewTab === "service" || activeViewTab === "config") {
         await loadServiceOverview(false);
@@ -1068,6 +1115,7 @@
     get("scada104RestartAllBtn")?.addEventListener("click", () => controlServiceProcess("restart", { scope: "all", label: "全部 IEC104 服务" }));
     get("scada104StopAllBtn")?.addEventListener("click", () => controlServiceProcess("stop", { scope: "all", label: "全部 IEC104 服务" }));
     get("scada104ReloadServiceBtn")?.addEventListener("click", () => loadServiceOverview(true));
+    get("scada104ExportEfileBtn")?.addEventListener("click", () => exportChannelEfile());
     get("scada104ReloadConfigBtn")?.addEventListener("click", () => {
       lastRtuDefRowsKey = "";
       lastChDefLoaded = "";
@@ -1159,23 +1207,13 @@
       renderPointsTableRows();
     });
 
-    get("scada104Rtu")?.addEventListener("change", () => {
-      loadControlPoints(true);
-    });
-    get("scada104Kind")?.addEventListener("change", () => {
-      syncValueInputMode();
-      loadControlPoints(true);
-    });
-    get("scada104Point")?.addEventListener("change", () => updateSelectedPointMeta(true));
-    bindDebouncedSearch(get("scada104PointSearch"), () => renderPointOptions(), 150);
-    get("scada104RefreshPointsBtn")?.addEventListener("click", () => loadControlPoints(true));
     get("scada104PointsRtuSelect")?.addEventListener("change", () => {
       pointsTablePage = 0;
+      syncPointsKindCounts();
       loadPointsTable();
     });
-    get("scada104PointsKindSelect")?.addEventListener("change", () => {
-      pointsTablePage = 0;
-      loadPointsTable();
+    section.querySelectorAll("[data-scada104-kind-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => setActivePointsKind(btn.dataset.scada104KindTab, { reload: true }));
     });
     bindDebouncedSearch(get("scada104PointsSearch"), () => {
       pointsTablePage = 0;
@@ -1213,30 +1251,68 @@
       }
     });
 
+    get("closeScada104CommandDialog")?.addEventListener("click", closeCommandModal);
+    get("cancelScada104CommandDialog")?.addEventListener("click", closeCommandModal);
+    get("scada104CommandDialog")?.addEventListener("click", (event) => {
+      if (event.target === get("scada104CommandDialog")) closeCommandModal();
+    });
+
+    get("closeScada104ExportEfileDialog")?.addEventListener("click", closeExportEfileModal);
+    get("cancelScada104ExportEfileDialog")?.addEventListener("click", closeExportEfileModal);
+    get("scada104ExportEfileDialog")?.addEventListener("click", (event) => {
+      if (event.target === get("scada104ExportEfileDialog")) closeExportEfileModal();
+    });
+    get("scada104ExportEfileForm")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!pendingExportPayload) {
+        closeExportEfileModal();
+        return;
+      }
+      const filename = normalizeEfileName(get("scada104ExportEfileName")?.value, pendingExportPayload.suggested);
+      triggerEfileDownload(filename, pendingExportPayload.content);
+      const doneMsg = `${tr("已导出 E 文件")}：${filename} (${pendingExportPayload.summaryText})`;
+      showServiceNotice(doneMsg, false);
+      toast(doneMsg, "ok", 2600);
+      closeExportEfileModal();
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      const cmdDialog = get("scada104CommandDialog");
+      if (cmdDialog && !cmdDialog.hidden) {
+        closeCommandModal();
+        return;
+      }
+      const expDialog = get("scada104ExportEfileDialog");
+      if (expDialog && !expDialog.hidden) {
+        closeExportEfileModal();
+      }
+    });
+
     get("scada104CommandForm")?.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const rtu = Number(get("scada104Rtu")?.value || 0);
-      const kind = get("scada104Kind")?.value || "yk";
-      const point = Number(get("scada104Point")?.value || 0);
+      if (!pendingCommandTarget) {
+        closeCommandModal();
+        return;
+      }
+      const { rtu, kind, item } = pendingCommandTarget;
+      const point = Number(item.pnt_no);
       const rawValueText = kind === "yk"
         ? String(get("scada104ValueSelect")?.value ?? "").trim()
         : String(get("scada104ValueInput")?.value ?? "").trim();
-      const receipt = get("scada104Receipt");
+      const msgNode = get("scada104CommandMessage");
       const sendBtn = get("scada104SendBtn");
       if (sendBtn) sendBtn.disabled = true;
+      if (msgNode) {
+        msgNode.textContent = "";
+        msgNode.classList.remove("is-error");
+      }
       try {
-        ["scada104Rtu", "scada104Point", "scada104ValueInput", "scada104ValueSelect"].forEach((id) => {
+        ["scada104ValueInput", "scada104ValueSelect"].forEach((id) => {
           get(id)?.removeAttribute("aria-invalid");
         });
-        if (!rtu) {
-          get("scada104Rtu")?.setAttribute("aria-invalid", "true");
-          get("scada104Rtu")?.focus();
-          throw new Error("请选择有效模型。");
-        }
-        if (!Number.isSafeInteger(point) || point <= 0) {
-          get("scada104Point")?.setAttribute("aria-invalid", "true");
-          get("scada104Point")?.focus();
-          throw new Error("请选择有效控制点。");
+        if (!rtu || !Number.isSafeInteger(point) || point <= 0) {
+          throw new Error("目标控制点无效。");
         }
         if (!rawValueText) {
           const el = kind === "yk" ? get("scada104ValueSelect") : get("scada104ValueInput");
@@ -1255,18 +1331,8 @@
           get("scada104ValueSelect")?.focus();
           throw new Error("遥控指令值只能为 0 或 1。");
         }
-        const cached = pointItemsByNo.get(String(point));
-        const displayName = cached?.name || `${kind.toUpperCase()}/${point}`;
+        const displayName = item.name || item.source_name || `${kind.toUpperCase()}/${point}`;
         const valueLabel = kind === "yk" ? (value === 1 ? "1（合/投入）" : "0（分/退出）") : String(value);
-        const confirmed = await confirmAction(
-          `RTU ${rtu} · ${displayName} → ${valueLabel}`,
-          {
-            title: "确认下发仿真指令？",
-            message: "确认后将立即通过 IEC104 联动通道下发至目标模型。",
-            confirmLabel: "确认下发",
-          },
-        );
-        if (!confirmed) return;
         const result = await api("/api/simulator104/commands", {
           rtu_id: rtu,
           kind,
@@ -1275,27 +1341,21 @@
         });
         if (result.item?.applied_to_simulator !== true) throw new Error("尚未收到模型接受回执。");
         const msg = `${tr("已发送")}: ${displayName} = ${valueLabel}`;
-        if (receipt) {
-          receipt.textContent = msg;
-          receipt.classList.remove("is-error");
-        }
-        pushReceiptHistory(`RTU ${rtu} · ${displayName} → ${valueLabel}`, false);
-        toast(msg, "ok", 2200);
+        closeCommandModal();
+        showServiceNotice(msg, false);
+        toast(msg, "ok", 2400);
         if (!isActive) return;
-        await loadControlPoints(true);
+        await loadPointsTable();
         refresh(true);
       } catch (error) {
-        if (receipt) {
-          receipt.textContent = error.message;
-          receipt.classList.add("is-error");
+        if (msgNode) {
+          msgNode.textContent = error.message;
+          msgNode.classList.add("is-error");
         }
-        pushReceiptHistory(`${tr("失败")}: ${error.message}`, true);
       } finally {
         if (sendBtn) sendBtn.disabled = false;
       }
     });
-
-    syncValueInputMode();
   }
 
   function applyPreferredModelSelection(models = latestModelsList) {
@@ -1303,13 +1363,6 @@
     const matched = models.find((m) => String(m?.model || "") === preferredModelName);
     if (!matched) return;
     const targetRtu = String(matched.rtu_id);
-    const rtuSel = get("scada104Rtu");
-    if (rtuSel && matched.online && matched.running && Array.from(rtuSel.options).some((o) => o.value === targetRtu)) {
-      if (rtuSel.value !== targetRtu) {
-        rtuSel.value = targetRtu;
-        loadControlPoints(true);
-      }
-    }
     for (const id of ["scada104PointsRtuSelect", "scada104LogsRtuSelect"]) {
       const sel = get(id);
       if (sel && Array.from(sel.options).some((o) => o.value === targetRtu)) {
@@ -1330,12 +1383,10 @@
   }
 
   function onLanguageChange() {
-    lastRtuOptionsKey = "";
     lastAllRtuOptionsKey = "";
     lastServiceRowsKey = "";
     lastRtuDefRowsKey = "";
     if (!isActive) return;
-    renderPointOptions();
     renderPointsTableRows();
     renderChannelLogRows();
     if (latestServiceOverview) renderServiceOverview(latestServiceOverview, false);
