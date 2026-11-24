@@ -38,14 +38,18 @@ LOCAL_HTTP = build_opener(ProxyHandler({}), NoRedirect())
 
 
 def default_scada_root(settings=None):
-    """按环境变量 SCADA_ROOT > startup.json(scada_root) > 同级目录探测默认 SCADA 路径。"""
-    env_root = str(os.environ.get("SCADA_ROOT") or "").strip()
+    """按环境变量 FES_ROOT/SCADA_ROOT > startup.json(fes_root/scada_root) > 同级 fes/scada 目录探测默认 FES 路径。"""
+    env_root = str(os.environ.get("FES_ROOT") or os.environ.get("SCADA_ROOT") or "").strip()
     if env_root:
         return Path(env_root)
-    if isinstance(settings, dict) and str(settings.get("scada_root") or "").strip():
-        return (APP_ROOT / str(settings["scada_root"]).strip()).resolve()
-    sibling = (APP_ROOT / "../../scada").resolve()
-    return sibling
+    if isinstance(settings, dict):
+        for key in ("fes_root", "scada_root"):
+            if str(settings.get(key) or "").strip():
+                return (APP_ROOT / str(settings[key]).strip()).resolve()
+    fes_sibling = (APP_ROOT / "../../fes").resolve()
+    if (fes_sibling / "scdfe_s").is_dir():
+        return fes_sibling
+    return (APP_ROOT / "../../scada").resolve()
 
 
 def loopback_url(url):

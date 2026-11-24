@@ -19,7 +19,7 @@ from urllib.request import Request, urlopen
 
 
 APP = Path(__file__).resolve().parents[1]
-SCADA = Path(os.environ.get("SCADA_ROOT", r"D:\codex\scada")).resolve()
+SCADA = Path(os.environ.get("FES_ROOT") or os.environ.get("SCADA_ROOT") or r"D:\codex\fes").resolve()
 HOST = "127.0.0.1"
 POWER = "ACLoad.test.p"
 SWITCH = "DCBreak.test.status"
