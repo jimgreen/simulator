@@ -625,6 +625,11 @@ function renderOverviewEvents(snapshot) {
   const container = $("commandInbox");
   if (!container) return;
   const logs = (state.runtimeLogs.length ? state.runtimeLogs : [...(snapshot.runtime_logs || [])].reverse()).slice(0, 8);
+  const renderKey = logs.length
+    ? logs.map((item) => `${item.seq ?? ""}:${item.simu_time || item.sim_time || ""}:${item.type || ""}:${item.result || ""}`).join("|")
+    : "__empty__";
+  if (container.dataset.eventsKey === renderKey) return;
+  container.dataset.eventsKey = renderKey;
   if (logs.length) {
     container.innerHTML = logs.map((item) => `
       <div class="overview-event-item">
@@ -683,6 +688,19 @@ function renderOverviewActiveCommands(snapshot) {
   if (!container) return [];
   const rows = overviewActiveRuntimeCommandRows(snapshot);
   if (summary) summary.textContent = `${rows.length} 条有效/排队指令`;
+  const renderKey = rows.length
+    ? rows.map((row) => [
+      runtimeCommandTraceKey(row),
+      row.receive_time?.wall_time || "",
+      row.receive_time?.simu_time || "",
+      runtimeCommandTableValueText(row, "control"),
+      runtimeCommandTableValueText(row, "real"),
+      runtimeCommandTableValueText(row, "scada"),
+      row.process_status || "",
+    ].join(":")).join("|")
+    : "__empty__";
+  if (container.dataset.activeCmdKey === renderKey) return rows;
+  container.dataset.activeCmdKey = renderKey;
   if (!rows.length) {
     container.innerHTML = '<div class="empty-state">当前无有效或排队的遥控/遥调指令</div>';
     return rows;
@@ -2976,8 +2994,13 @@ function drawRuntimeTraceChart() {
     ctx.textAlign = "left";
     return;
   }
-  let minValue = Math.min(...values);
-  let maxValue = Math.max(...values);
+  let minValue = Infinity;
+  let maxValue = -Infinity;
+  for (let i = 0; i < values.length; i += 1) {
+    const v = values[i];
+    if (v < minValue) minValue = v;
+    if (v > maxValue) maxValue = v;
+  }
   if (Math.abs(maxValue - minValue) < 1e-9) {
     minValue -= 1;
     maxValue += 1;
@@ -3031,7 +3054,7 @@ function drawRuntimeTraceChart() {
     timeLabel: (point) => runtimeTracePointTimeLabel(point, range),
     valueFormatter: formatMeasurementValue,
   });
-  ctx.fillStyle = "#63717a";
+  ctx.fillStyle = palette.text;
   ctx.textAlign = "left";
   ctx.fillText(formatMeasurementValue(maxValue), 8, top + 4);
   ctx.fillText(formatMeasurementValue(minValue), 8, bottom);

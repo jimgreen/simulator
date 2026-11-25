@@ -746,10 +746,33 @@ class SimulatorClusterManager:
                 and now - self._service_suggestion_cached_at < 2.0
             ):
                 return dict(cached)
-            suggestion = self._validate_service_address_locked(normalized_host, None)
+            services = self._registry.setdefault("services", {})
+            used_ports = {
+                int(entry.get("port", 0) or 0)
+                for entry in services.values()
+                if (
+                    isinstance(entry, Mapping)
+                    and _normalize_service_host(entry.get("host"), self.service_host) == normalized_host
+                )
+            }
+        # 在锁外执行端口 TCP 探测，避免阻塞 /api/models 等并发集群请求
+        candidate = int(self.first_service_port)
+        while candidate <= 65535 and (
+            candidate in used_ports or self.port_checker(normalized_host, candidate)
+        ):
+            candidate += 1
+        if candidate > 65535:
+            raise RuntimeError("没有可用的模型服务端口")
+        suggestion = {
+            "host": normalized_host,
+            "port": candidate,
+            "access_link": f"{normalized_host}:{candidate}",
+            "base_url": f"http://{normalized_host}:{candidate}",
+        }
+        with self.lock:
             self._service_suggestion_cache = dict(suggestion)
-            self._service_suggestion_cached_at = now
-            return suggestion
+            self._service_suggestion_cached_at = time.monotonic()
+        return suggestion
 
     def configure_model_service(self, model_id: Any, host: Any, port: Any) -> dict[str, Any]:
         with self.model_operation_lock(model_id):

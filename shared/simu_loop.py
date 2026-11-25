@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -349,7 +350,9 @@ def write_ebook_aligned(book: EBook, file_path: Path) -> None:
     _atomic_write_text(file_path, "".join(parts))
 
 
-_MODEL_BOOK_CACHE: Dict[Path, Tuple[Tuple[int, int], EBook]] = {}
+_MODEL_BOOK_CACHE_LOCK = threading.Lock()
+_MODEL_BOOK_CACHE_MAX = 16
+_MODEL_BOOK_CACHE: "OrderedDict[Path, Tuple[Tuple[int, int], EBook]]" = OrderedDict()
 
 
 def _file_signature(path: Path) -> Tuple[int, int]:
@@ -359,20 +362,27 @@ def _file_signature(path: Path) -> Tuple[int, int]:
 
 def clear_model_book_cache(model_file: Optional[Path] = None) -> None:
     """Clear cached source model definitions after an explicit definition update."""
-    if model_file is None:
-        _MODEL_BOOK_CACHE.clear()
-        return
-    _MODEL_BOOK_CACHE.pop(Path(model_file).resolve(), None)
+    with _MODEL_BOOK_CACHE_LOCK:
+        if model_file is None:
+            _MODEL_BOOK_CACHE.clear()
+            return
+        _MODEL_BOOK_CACHE.pop(Path(model_file).resolve(), None)
 
 
 def _load_model_book_once(model_file: Path) -> EBook:
     model_file = Path(model_file).resolve()
     signature = _file_signature(model_file)
-    cached = _MODEL_BOOK_CACHE.get(model_file)
-    if cached is not None and cached[0] == signature:
-        return cached[1]
+    with _MODEL_BOOK_CACHE_LOCK:
+        cached = _MODEL_BOOK_CACHE.get(model_file)
+        if cached is not None and cached[0] == signature:
+            _MODEL_BOOK_CACHE.move_to_end(model_file)
+            return cached[1]
     book = EBook(model_file)
-    _MODEL_BOOK_CACHE[model_file] = (signature, book)
+    with _MODEL_BOOK_CACHE_LOCK:
+        _MODEL_BOOK_CACHE[model_file] = (signature, book)
+        _MODEL_BOOK_CACHE.move_to_end(model_file)
+        while len(_MODEL_BOOK_CACHE) > _MODEL_BOOK_CACHE_MAX:
+            _MODEL_BOOK_CACHE.popitem(last=False)
     return book
 
 
@@ -502,6 +512,44 @@ def _find_target_row(rows, overlay_row):
     return None
 
 
+def _build_row_lookup_indexes(rows) -> Tuple[Dict[str, dict], Dict[str, dict]]:
+    """为块行表构建 name 与 idx 哈希索引，保持与线性查找一致的首匹配语义。"""
+    by_name: Dict[str, dict] = {}
+    by_idx: Dict[str, dict] = {}
+    for row in rows:
+        r_name = str(row.get("name", ""))
+        if r_name not in by_name:
+            by_name[r_name] = row
+        r_idx = str(row.get("idx", ""))
+        if r_idx not in by_idx:
+            by_idx[r_idx] = row
+    return by_name, by_idx
+
+
+def _apply_overlay_rows(model_block, overlay_block) -> int:
+    writable_columns = set(model_block.header_list) - {"idx", "name"}
+    if not writable_columns or not overlay_block.data:
+        return 0
+    by_name, by_idx = _build_row_lookup_indexes(model_block.data)
+    active_columns = [col for col in overlay_block.header_list if col in writable_columns]
+    if not active_columns:
+        return 0
+    changed = 0
+    for overlay_row in overlay_block.data:
+        name, idx = _row_key(overlay_row)
+        target_row = by_name.get(name) if name is not None else None
+        if target_row is None and idx is not None:
+            target_row = by_idx.get(idx)
+        if target_row is None:
+            continue
+        for column in active_columns:
+            new_value = overlay_row[column]
+            if str(target_row.get(column, "")) != str(new_value):
+                target_row[column] = new_value
+                changed += 1
+    return changed
+
+
 def apply_overlay_file(model_book: EBook, overlay_file: Path) -> int:
     """Apply matching rows from weather/dev-control E files onto a model book.
 
@@ -515,26 +563,7 @@ def apply_overlay_file(model_book: EBook, overlay_file: Path) -> int:
         return 0
 
     overlay_book = EBook(overlay_file)
-    changed = 0
-    for table_name, overlay_block in overlay_book.data.items():
-        model_block = model_book.data.get(table_name)
-        if model_block is None:
-            continue
-        writable_columns = set(model_block.header_list) - {"idx", "name"}
-        if not writable_columns:
-            continue
-        for overlay_row in overlay_block.data:
-            target_row = _find_target_row(model_block.data, overlay_row)
-            if target_row is None:
-                continue
-            for column in overlay_block.header_list:
-                if column not in writable_columns:
-                    continue
-                new_value = overlay_row[column]
-                if str(target_row.get(column, "")) != str(new_value):
-                    target_row[column] = new_value
-                    changed += 1
-    return changed
+    return apply_overlay_book(model_book, overlay_book)
 
 
 def apply_overlay_book(model_book: EBook, overlay_book: Optional[EBook]) -> int:
@@ -545,20 +574,7 @@ def apply_overlay_book(model_book: EBook, overlay_book: Optional[EBook]) -> int:
         model_block = model_book.data.get(table_name)
         if model_block is None:
             continue
-        writable_columns = set(model_block.header_list) - {"idx", "name"}
-        if not writable_columns:
-            continue
-        for overlay_row in overlay_block.data:
-            target_row = _find_target_row(model_block.data, overlay_row)
-            if target_row is None:
-                continue
-            for column in overlay_block.header_list:
-                if column not in writable_columns:
-                    continue
-                new_value = overlay_row[column]
-                if str(target_row.get(column, "")) != str(new_value):
-                    target_row[column] = new_value
-                    changed += 1
+        changed += _apply_overlay_rows(model_block, overlay_block)
     return changed
 
 
@@ -1873,7 +1889,7 @@ def _model_row(model_book: EBook, dev_type: str, name: str) -> Optional[dict]:
     block = model_book.data.get(dev_type)
     if block is None:
         return None
-    rows = getattr(block, "rows", None)
+    rows = getattr(block, "data", None)
     if isinstance(rows, list):
         n = len(rows)
         sig = (n, id(rows[0]) if n else 0, id(rows[-1]) if n else 0)

@@ -648,117 +648,131 @@ def _rebalance_storage_targets_by_soc(
     ]
     if len(storage_indexes) < 2:
         return original
-    forced_indexes = [
-        index
-        for index in storage_indexes
-        if variables[index].storage_forced_direction
-    ]
-    flexible_indexes = [
-        index
-        for index in storage_indexes
-        if not variables[index].storage_forced_direction
-    ]
-    if not flexible_indexes:
-        return original
+    # 按电气分量分组，仅对同分量内包含 >= 2 台可调灵活储能的分量执行再平衡；
+    # 避免“AC 1 台 + DC 1 台”跨分量隔离场景白跑 SLSQP 迭代。
+    storage_indexes_by_component: Dict[str, list[int]] = {}
+    for idx in storage_indexes:
+        comp_key = str(variables[idx].component_id or variables[idx].side or "")
+        storage_indexes_by_component.setdefault(comp_key, []).append(idx)
 
-    storage_total_kw = float(np.sum(original[storage_indexes]))
-    forced_total_kw = float(np.sum(original[forced_indexes]))
-    flexible_total_kw = storage_total_kw - forced_total_kw
-    desired = original.copy()
-    candidate = {
-        index: min(max(0.0, float(lower[index])), float(upper[index]))
-        for index in flexible_indexes
-    }
-    remaining_kw = flexible_total_kw - sum(candidate.values())
-
-    known_socs = [
-        float(variables[idx].storage_soc)
-        for idx in flexible_indexes
-        if variables[idx].storage_soc is not None
-        and math.isfinite(float(variables[idx].storage_soc))
-    ]
-    soc_min = min(known_socs) if known_socs else 0.0
-    soc_max = max(known_socs) if known_socs else 0.0
-    soc_span = soc_max - soc_min
-    deadband = max(0.0, float(soc_rebalance_deadband))
-
-    def _smooth_distribute(request_kw: float, *, charging: bool) -> float:
-        rem = float(request_kw)
-        if rem <= tolerance:
-            return 0.0
-        headrooms: Dict[int, float] = {}
-        weights: Dict[int, float] = {}
-        for idx in flexible_indexes:
-            hr = (
-                max(0.0, candidate[idx] - float(lower[idx]))
-                if charging
-                else max(0.0, float(upper[idx]) - candidate[idx])
-            )
-            headrooms[idx] = hr
-            if hr <= EPSILON:
-                weights[idx] = 0.0
-                continue
-            soc_val = variables[idx].storage_soc
-            if (
-                soc_span <= deadband + EPSILON
-                or soc_val is None
-                or not math.isfinite(float(soc_val))
-            ):
-                # SOC 差异在死区内：按可用调节裕度比例均分，彻底杜绝相近 SOC 机台乒乓倒手
-                weights[idx] = hr
-            else:
-                norm_bias = (
-                    (soc_max - float(soc_val)) / max(soc_span, EPSILON)
-                    if charging
-                    else (float(soc_val) - soc_min) / max(soc_span, EPSILON)
-                )
-                weights[idx] = (0.15 + max(0.0, norm_bias)) * hr
-
-        active = [
-            idx
-            for idx in flexible_indexes
-            if headrooms[idx] > EPSILON and weights[idx] > EPSILON
+    rebalance_components: list[tuple[list[int], list[int], list[int]]] = []
+    for comp_storage_indexes in storage_indexes_by_component.values():
+        comp_forced = [
+            idx for idx in comp_storage_indexes if variables[idx].storage_forced_direction
         ]
-        for _ in range(len(flexible_indexes) + 2):
-            if rem <= tolerance or not active:
-                break
-            total_w = sum(weights[idx] for idx in active)
-            if total_w <= EPSILON:
-                break
-            next_active: list[int] = []
-            allocated_this_round = 0.0
-            for idx in active:
-                share = rem * (weights[idx] / total_w)
-                take = min(headrooms[idx], share)
-                if charging:
-                    candidate[idx] -= take
-                else:
-                    candidate[idx] += take
-                headrooms[idx] -= take
-                allocated_this_round += take
-                if headrooms[idx] > tolerance:
-                    next_active.append(idx)
-            rem -= allocated_this_round
-            if allocated_this_round <= EPSILON:
-                break
-            active = next_active
-        return rem
-
-    if remaining_kw > tolerance:
-        remaining_kw = _smooth_distribute(remaining_kw, charging=False)
-    elif remaining_kw < -tolerance:
-        remaining_kw = -_smooth_distribute(-remaining_kw, charging=True)
-
-    if abs(remaining_kw) > tolerance:
+        comp_flexible = [
+            idx for idx in comp_storage_indexes if not variables[idx].storage_forced_direction
+        ]
+        if len(comp_flexible) >= 2:
+            rebalance_components.append((comp_storage_indexes, comp_forced, comp_flexible))
+    if not rebalance_components:
         return original
-    for index, target_kw in candidate.items():
-        desired[index] = target_kw
+
+    desired = original.copy()
+    deadband = max(0.0, float(soc_rebalance_deadband))
+    active_flexible_indexes: list[int] = []
+
+    for comp_storage_indexes, comp_forced, comp_flexible in rebalance_components:
+        storage_total_kw = float(np.sum(original[comp_storage_indexes]))
+        forced_total_kw = float(np.sum(original[comp_forced]))
+        flexible_total_kw = storage_total_kw - forced_total_kw
+        candidate = {
+            index: min(max(0.0, float(lower[index])), float(upper[index]))
+            for index in comp_flexible
+        }
+        remaining_kw = flexible_total_kw - sum(candidate.values())
+
+        known_socs = [
+            float(variables[idx].storage_soc)
+            for idx in comp_flexible
+            if variables[idx].storage_soc is not None
+            and math.isfinite(float(variables[idx].storage_soc))
+        ]
+        soc_min = min(known_socs) if known_socs else 0.0
+        soc_max = max(known_socs) if known_socs else 0.0
+        soc_span = soc_max - soc_min
+
+        def _smooth_distribute(request_kw: float, *, charging: bool) -> float:
+            rem = float(request_kw)
+            if rem <= tolerance:
+                return 0.0
+            headrooms: Dict[int, float] = {}
+            weights: Dict[int, float] = {}
+            for idx in comp_flexible:
+                hr = (
+                    max(0.0, candidate[idx] - float(lower[idx]))
+                    if charging
+                    else max(0.0, float(upper[idx]) - candidate[idx])
+                )
+                headrooms[idx] = hr
+                if hr <= EPSILON:
+                    weights[idx] = 0.0
+                    continue
+                soc_val = variables[idx].storage_soc
+                if (
+                    soc_span <= deadband + EPSILON
+                    or soc_val is None
+                    or not math.isfinite(float(soc_val))
+                ):
+                    # SOC 差异在死区内：按可用调节裕度比例均分，彻底杜绝相近 SOC 机台乒乓倒手
+                    weights[idx] = hr
+                else:
+                    norm_bias = (
+                        (soc_max - float(soc_val)) / max(soc_span, EPSILON)
+                        if charging
+                        else (float(soc_val) - soc_min) / max(soc_span, EPSILON)
+                    )
+                    weights[idx] = (0.15 + max(0.0, norm_bias)) * hr
+
+            active = [
+                idx
+                for idx in comp_flexible
+                if headrooms[idx] > EPSILON and weights[idx] > EPSILON
+            ]
+            for _ in range(len(comp_flexible) + 2):
+                if rem <= tolerance or not active:
+                    break
+                total_w = sum(weights[idx] for idx in active)
+                if total_w <= EPSILON:
+                    break
+                next_active: list[int] = []
+                allocated_this_round = 0.0
+                for idx in active:
+                    share = rem * (weights[idx] / total_w)
+                    take = min(headrooms[idx], share)
+                    if charging:
+                        candidate[idx] -= take
+                    else:
+                        candidate[idx] += take
+                    headrooms[idx] -= take
+                    allocated_this_round += take
+                    if headrooms[idx] > tolerance:
+                        next_active.append(idx)
+                rem -= allocated_this_round
+                if allocated_this_round <= EPSILON:
+                    break
+                active = next_active
+            return rem
+
+        if remaining_kw > tolerance:
+            remaining_kw = _smooth_distribute(remaining_kw, charging=False)
+        elif remaining_kw < -tolerance:
+            remaining_kw = -_smooth_distribute(-remaining_kw, charging=True)
+
+        if abs(remaining_kw) > tolerance:
+            continue
+        for index, target_kw in candidate.items():
+            desired[index] = target_kw
+        active_flexible_indexes.extend(comp_flexible)
+
+    if not active_flexible_indexes:
+        return original
     if np.max(np.abs(desired[storage_indexes] - original[storage_indexes])) <= tolerance:
         return original
 
     projection_lower = original.copy()
     projection_upper = original.copy()
-    adjustable_indexes = set(flexible_indexes)
+    adjustable_indexes = set(active_flexible_indexes)
     adjustable_indexes.update(
         index for index, item in enumerate(variables) if item.kind == "converter"
     )
@@ -767,10 +781,6 @@ def _rebalance_storage_targets_by_soc(
         projection_upper[index] = upper[index]
 
     # 按电气分量分别保持储能总功率守恒，禁止跨电气隔离分量隔空互挪储能功率。
-    storage_indexes_by_component: Dict[str, list[int]] = {}
-    for idx in storage_indexes:
-        comp_key = str(variables[idx].component_id or variables[idx].side or "")
-        storage_indexes_by_component.setdefault(comp_key, []).append(idx)
     storage_total_rows = []
     storage_total_rhs_vals = []
     for comp_indexes in storage_indexes_by_component.values():
@@ -790,7 +800,7 @@ def _rebalance_storage_targets_by_soc(
         full_rhs,
     )
 
-    flexible_array = np.array(flexible_indexes, dtype=int)
+    flexible_array = np.array(active_flexible_indexes, dtype=int)
 
     def objective(projected: np.ndarray) -> float:
         delta = projected[flexible_array] - desired[flexible_array]
@@ -1269,9 +1279,12 @@ def _solve_island(
         reference_index = indexes[0]
         reference_capacity = ordered[reference_index].allocation_capacity_kw
         for index in indexes[1:]:
+            cap_i = ordered[index].allocation_capacity_kw
+            # 按容量归一化均流等式系数至 [-1, 1]，确保矩阵条件数稳定且残差量纲严格为 kW
+            scale = max(EPSILON, abs(reference_capacity), abs(cap_i))
             row = np.zeros(count, dtype=float)
-            row[index] = reference_capacity
-            row[reference_index] = -ordered[index].allocation_capacity_kw
+            row[index] = reference_capacity / scale
+            row[reference_index] = -cap_i / scale
             parallel_rows.append(row)
     parallel_matrix = (
         np.vstack(parallel_rows)

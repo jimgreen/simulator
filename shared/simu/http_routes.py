@@ -614,16 +614,24 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
             host = f"{server_host}:{server_port}"
         return f"{scheme}://{host}".rstrip("/")
 
+    def _parsed_query(self) -> Dict[str, list[str]]:
+        cached = getattr(self, "_parsed_query_cache", None)
+        if cached is not None and cached[0] == self.path:
+            return cached[1]
+        parsed = parse_qs(urlparse(self.path).query)
+        self._parsed_query_cache = (self.path, parsed)
+        return parsed
+
     def _truthy_query(self, name: str) -> bool:
-        value = (parse_qs(urlparse(self.path).query).get(name) or [""])[0]
+        value = (self._parsed_query().get(name) or [""])[0]
         return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
     def _falsey_query(self, name: str) -> bool:
-        value = (parse_qs(urlparse(self.path).query).get(name) or [""])[0]
+        value = (self._parsed_query().get(name) or [""])[0]
         return str(value).strip().lower() in {"0", "false", "no", "off"}
 
     def _static_query(self, default_include_static: bool) -> tuple[bool, Optional[Sequence[str]]]:
-        values = parse_qs(urlparse(self.path).query).get("static")
+        values = self._parsed_query().get("static")
         if not values:
             return default_include_static, None
         raw = ",".join(str(value) for value in values).strip()
@@ -641,7 +649,7 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
         return bool(fields), fields
 
     def _int_query(self, name: str, default: int, minimum: int = 0, maximum: int = 500) -> int:
-        raw = (parse_qs(urlparse(self.path).query).get(name) or [default])[0]
+        raw = (self._parsed_query().get(name) or [default])[0]
         try:
             value = int(raw)
         except (TypeError, ValueError):
@@ -649,7 +657,7 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
         return max(minimum, min(maximum, value))
 
     def _optional_int_query(self, name: str) -> Optional[int]:
-        values = parse_qs(urlparse(self.path).query).get(name)
+        values = self._parsed_query().get(name)
         if not values or values[0] in (None, ""):
             return None
         try:
@@ -1310,7 +1318,13 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
             )
             if self._try_send_cached_json(rc_cache_key):
                 return
-            self._send_cached_json(rc_cache_key, self._renewable_state_payload(target))
+            rc_payload = self._renewable_state_payload(target)
+            post_rc_key = (
+                None
+                if force_refresh
+                else self._trainee_frame_cache_key(target, "renewable_control")
+            )
+            self._send_cached_json(post_rc_key if post_rc_key == rc_cache_key else None, rc_payload)
         elif path == TRAINEE_UI_FRAME_PATH:
             if self._ctx.role != "trainee":
                 raise JsonApiError(404, f"Unknown API route: {path}")
@@ -1355,7 +1369,14 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 frame["snapshot"] = self._trainee_snapshot_payload(target)
             if str((query.get("view") or [""])[0]).strip() == "renewable":
                 frame["renewable_control"] = self._renewable_state_payload(target)
-            self._send_cached_json(ui_cache_key, frame)
+            post_ui_key = (
+                None
+                if force_refresh
+                else self._trainee_frame_cache_key(
+                    target, "trainee_ui_frame", extra=receive_state_revision
+                )
+            )
+            self._send_cached_json(post_ui_key if post_ui_key == ui_cache_key else None, frame)
         elif path == "/api/models":
             self._send_json(self._model_catalog())
         elif path == MANUAL_DEFINITION_CHANGES_PATH:
@@ -1481,7 +1502,8 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                     snapshot_payload["device_runtime"] = device_runtime_frame
             if periodic_trainee_frame:
                 project_trainee_interstation_snapshot(snapshot_payload)
-            self._send_cached_json(snap_cache_key, snapshot_payload)
+            post_snap_key = self._frame_cache_key(target, "snapshot")
+            self._send_cached_json(post_snap_key if post_snap_key == snap_cache_key else None, snapshot_payload)
         elif path == "/api/runtime-logs":
             self._send_json(
                 target.runtime_logs_delta(
@@ -1500,7 +1522,8 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 measurements_payload = strip_trainee_truth_from_measurements(
                     measurements_payload
                 )
-            self._send_cached_json(meas_cache_key, measurements_payload)
+            post_meas_key = self._frame_cache_key(target, "measurements")
+            self._send_cached_json(post_meas_key if post_meas_key == meas_cache_key else None, measurements_payload)
         elif path == "/api/measurements/delta":
             delta_cache_key = self._frame_cache_key(target, "measurements-delta")
             if self._try_send_cached_json(delta_cache_key):
@@ -1533,13 +1556,27 @@ class PolarMicrogridHandler(BaseHTTPRequestHandler):
                 raise JsonApiError(404, f"Unknown API route: {path}")
             self._send_json(target.external_realtime_input_schema())
         elif path == "/api/external/telemetry/names":
-            self._send_json(target.external_telemetry_names())
+            tnames_key = (
+                "external_telemetry_names",
+                target.model_id,
+                target.definition_snapshot.revision,
+            )
+            if self._try_send_cached_json(tnames_key):
+                return
+            self._send_cached_json(tnames_key, target.external_telemetry_names())
         elif path == "/api/external/telemetry/values":
             self._send_json(target.external_telemetry_frame())
         elif path == "/api/external/controls":
             self._send_json(target.latest_control_values())
         elif path == "/api/external/controls/names":
-            self._send_json(target.external_control_names())
+            cnames_key = (
+                "external_control_names",
+                target.model_id,
+                target.definition_snapshot.revision,
+            )
+            if self._try_send_cached_json(cnames_key):
+                return
+            self._send_cached_json(cnames_key, target.external_control_names())
         elif path == "/api/devices":
             self._send_json({"devices": target.devices()})
         elif path == "/api/device-states":

@@ -506,8 +506,13 @@ function drawMeasurementTraceChart() {
     ctx.textAlign = "left";
     return;
   }
-  let minValue = Math.min(...values);
-  let maxValue = Math.max(...values);
+  let minValue = Infinity;
+  let maxValue = -Infinity;
+  for (let i = 0; i < values.length; i += 1) {
+    const v = values[i];
+    if (v < minValue) minValue = v;
+    if (v > maxValue) maxValue = v;
+  }
   if (Math.abs(maxValue - minValue) < 1e-9) {
     minValue -= 1;
     maxValue += 1;
@@ -1695,15 +1700,21 @@ async function saveCurves() {
 }
 
 async function pushSettings() {
-  await api("/api/settings", {
-    method: "POST",
-    body: JSON.stringify({
-      device_faults: state.deviceFaults,
-      measurement_faults: state.measurementFaults,
-      modes: state.modes,
-    }),
-  });
-  await refresh();
+  try {
+    await api("/api/settings", {
+      method: "POST",
+      body: JSON.stringify({
+        device_faults: state.deviceFaults,
+        measurement_faults: state.measurementFaults,
+        modes: state.modes,
+      }),
+    });
+    await refresh();
+    if (typeof showUiToast === "function") showUiToast("设置已保存", "ok", 1800);
+  } catch (error) {
+    const msg = typeof apiErrorText === "function" ? apiErrorText(error) : String(error?.message || error);
+    if (typeof showUiToast === "function") showUiToast(`保存设置失败：${msg}`, "error", 4200);
+  }
 }
 
 document.querySelectorAll("[data-clock]").forEach((button) => {
@@ -2308,10 +2319,14 @@ document.addEventListener("input", (event) => {
     if (event.key === "Escape") {
       const openModal = [
         ["startSimulationDialog", closeStartSimulationDialog],
+        ["typicalCurveDialog", typeof closeTypicalCurveDialog === "function" ? closeTypicalCurveDialog : null],
+        ["curveModeSwitchDialog", typeof closeCurveModeSwitchDialog === "function" ? closeCurveModeSwitchDialog : null],
+        ["traineeLinkDialog", typeof closeTraineeLinkDialog === "function" ? closeTraineeLinkDialog : null],
         ["newModelDialog", closeNewModelDialog],
         ["updateModelDialog", closeUpdateModelDialog],
         ["cloneModelDialog", closeCloneModelDialog],
         ["importModelDialog", closeImportModelDialog],
+        ["modelManagementDialog", typeof closeModelManagementDialog === "function" ? closeModelManagementDialog : null],
       ].find(([id]) => {
         const el = $(id);
         return el && !el.hidden;
@@ -2319,6 +2334,12 @@ document.addEventListener("input", (event) => {
       if (openModal && typeof openModal[1] === "function") {
         event.preventDefault();
         openModal[1]();
+        return;
+      }
+      const logDetailDialog = $("runtimeLogDetailDialog");
+      if (logDetailDialog && logDetailDialog.open) {
+        event.preventDefault();
+        logDetailDialog.close();
       }
       return;
     }

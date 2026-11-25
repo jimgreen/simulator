@@ -4,7 +4,9 @@ import hashlib
 import heapq
 import json
 import math
+from collections import OrderedDict
 from dataclasses import dataclass, field, replace
+import threading
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, Sequence, Tuple
 
@@ -1627,9 +1629,10 @@ def _apply_active_topology(
     )
 
 
-_STATIC_CONTEXT_CACHE: Dict[Any, ResourceTopologyStaticContext] = {}
+_TOPOLOGY_CACHE_LOCK = threading.Lock()
+_STATIC_CONTEXT_CACHE: "OrderedDict[Any, ResourceTopologyStaticContext]" = OrderedDict()
 _STATIC_CONTEXT_CACHE_MAX = 16
-_RESOLVED_TOPOLOGY_CACHE: Dict[Any, ResourceTopology] = {}
+_RESOLVED_TOPOLOGY_CACHE: "OrderedDict[Any, ResourceTopology]" = OrderedDict()
 _RESOLVED_TOPOLOGY_CACHE_MAX = 32
 
 
@@ -1675,9 +1678,11 @@ def prepare_resource_topology_static_context(
 
     cache_key = _topology_static_cache_key(snapshot)
     if cache_key is not None:
-        cached = _STATIC_CONTEXT_CACHE.get(cache_key)
-        if cached is not None:
-            return cached
+        with _TOPOLOGY_CACHE_LOCK:
+            cached = _STATIC_CONTEXT_CACHE.get(cache_key)
+            if cached is not None:
+                _STATIC_CONTEXT_CACHE.move_to_end(cache_key)
+                return cached
 
     parsed = _parse_model(snapshot)
     graph = _build_structural_graph(parsed)
@@ -1702,9 +1707,11 @@ def prepare_resource_topology_static_context(
         invalid_converter_nodes=invalid_converter_nodes,
     )
     if cache_key is not None:
-        if len(_STATIC_CONTEXT_CACHE) >= _STATIC_CONTEXT_CACHE_MAX and cache_key not in _STATIC_CONTEXT_CACHE:
-            _STATIC_CONTEXT_CACHE.pop(next(iter(_STATIC_CONTEXT_CACHE)))
-        _STATIC_CONTEXT_CACHE[cache_key] = context
+        with _TOPOLOGY_CACHE_LOCK:
+            _STATIC_CONTEXT_CACHE[cache_key] = context
+            _STATIC_CONTEXT_CACHE.move_to_end(cache_key)
+            while len(_STATIC_CONTEXT_CACHE) > _STATIC_CONTEXT_CACHE_MAX:
+                _STATIC_CONTEXT_CACHE.popitem(last=False)
     return context
 
 
@@ -1727,9 +1734,11 @@ def resolve_resource_topology(
         for key, st in states.items()
     )
     resolved_cache_key = (id(context), state_sig, resources_tuple)
-    cached_topology = _RESOLVED_TOPOLOGY_CACHE.get(resolved_cache_key)
-    if cached_topology is not None:
-        return cached_topology
+    with _TOPOLOGY_CACHE_LOCK:
+        cached_topology = _RESOLVED_TOPOLOGY_CACHE.get(resolved_cache_key)
+        if cached_topology is not None:
+            _RESOLVED_TOPOLOGY_CACHE.move_to_end(resolved_cache_key)
+            return cached_topology
 
     active_graph = _build_active_graph(parsed, graph, states)
     active_anchor_indexes = _build_reverse_anchor_indexes(
@@ -1795,10 +1804,9 @@ def resolve_resource_topology(
         hydrogen_device_island_ids=hydrogen_device_island_ids,
         hydrogen_invalid_devices=hydrogen_invalid_devices,
     )
-    if (
-        len(_RESOLVED_TOPOLOGY_CACHE) >= _RESOLVED_TOPOLOGY_CACHE_MAX
-        and resolved_cache_key not in _RESOLVED_TOPOLOGY_CACHE
-    ):
-        _RESOLVED_TOPOLOGY_CACHE.pop(next(iter(_RESOLVED_TOPOLOGY_CACHE)))
-    _RESOLVED_TOPOLOGY_CACHE[resolved_cache_key] = topology_result
+    with _TOPOLOGY_CACHE_LOCK:
+        _RESOLVED_TOPOLOGY_CACHE[resolved_cache_key] = topology_result
+        _RESOLVED_TOPOLOGY_CACHE.move_to_end(resolved_cache_key)
+        while len(_RESOLVED_TOPOLOGY_CACHE) > _RESOLVED_TOPOLOGY_CACHE_MAX:
+            _RESOLVED_TOPOLOGY_CACHE.popitem(last=False)
     return topology_result

@@ -889,6 +889,11 @@ async function setActiveModel(modelId, shouldRefresh = true) {
   persistActiveModelContext({}, true);
   const nextId = modelId || state.models[0]?.id || "";
   state.modelSwitchEpoch = Number(state.modelSwitchEpoch || 0) + 1;
+  if (state.measurementDeltaAbortController) {
+    try { state.measurementDeltaAbortController.abort(); } catch (_e) {}
+    state.measurementDeltaAbortController = null;
+  }
+  state.measurementDeltaRequestActive = false;
   state.refreshRequestActive = false;
   state.receiveRequestActive = false;
   state.activeModelId = nextId;
@@ -2279,6 +2284,11 @@ function renderTraineeOverviewEvents() {
   if (!container) return;
   const logs = state.runtimeLogs.slice(0, 8);
   setOverviewText("overviewEventCount", `${logs.length} 条`);
+  const renderKey = logs.length
+    ? logs.map((item) => `${item.seq ?? ""}:${item.wall_time || ""}:${item.type || ""}:${item.result || ""}`).join("|")
+    : "__empty__";
+  if (container.dataset.eventsKey === renderKey) return;
+  container.dataset.eventsKey = renderKey;
   if (logs.length) {
     container.innerHTML = logs.map((item) => `
       <div class="overview-event-item">

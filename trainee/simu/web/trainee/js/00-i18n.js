@@ -901,6 +901,13 @@ const PHRASE_TRANSLATIONS = {
   "拖动调整仿真运行参数与WEB运行参数高度": ["Drag to resize Simulation & Web runtime parameter tables", "Потяните для изменения высоты таблиц параметров"],
   "拖动调整上下高度，双击恢复默认": ["Drag to resize height, double-click to reset", "Потяните для высоты, двойной клик — сброс"],
   "当前模型模拟服务尚未启动，请先在顶部启动服务": ["Model simulator service is stopped. Start it from the top bar first.", "Служба симуляции модели остановлена. Сначала запустите её на верхней панели."],
+  "初始化后自动启动接收": ["Auto-start receiving after initialization", "Автозапуск приёма после инициализации"],
+  "时刻": ["Time", "Время"],
+  "未选择曲线": ["No curves selected", "Кривые не выбраны"],
+  "图例已隐藏全部曲线": ["All curves hidden in legend", "Все кривые скрыты"],
+  "暂无综合趋势数据": ["No trend data yet", "Нет данных тренда"],
+  "系统参数已保存": ["System parameters saved", "Системные параметры сохранены"],
+  "设置已保存": ["Settings saved", "Настройки сохранены"],
 };
 
 /**
@@ -908,7 +915,10 @@ const PHRASE_TRANSLATIONS = {
  */
 const DYNAMIC_PATTERNS = [
   [/^第(\d+)天$/, (m) => [ `Day ${m[1]}`, `День ${m[1]}` ]],
+  [/^第(\d+)天\s+(.+)$/, (m) => [ `Day ${m[1]} ${m[2]}`, `День ${m[1]} ${m[2]}` ]],
   [/^另有\s*(\d+)\s*条曲线$/, (m) => [ `+${m[1]} more curves`, `ещё ${m[1]} крив.` ]],
+  [/^(\d+)\s*台平均$/, (m) => [ `Avg of ${m[1]}`, `Сред. по ${m[1]}` ]],
+  [/^(\d+)\s*活动\s*\/\s*(\d+)\s*打开$/, (m) => [ `${m[1]} active / ${m[2]} open`, `${m[1]} акт. / ${m[2]} откр.` ]],
   [/^(\d+)\s*台设备$/, (m) => [ `${m[1]} devices`, `${m[1]} устр.` ]],
   [/^(\d+)\s*可用$/, (m) => [ `${m[1]} valid`, `${m[1]} дост.` ]],
   [/^(\d+)\s*待发$/, (m) => [ `${m[1]} queued`, `${m[1]} в оч.` ]],
@@ -1054,8 +1064,8 @@ function translateElementNode(el, lang) {
     }
   }
 
-  // 4. 英文/俄文防截断：为无 title 的导航按钮、表头与普通按钮补充悬浮完整文案
-  if (lang !== "zh-CN" && (tag === "BUTTON" || tag === "TH" || tag === "A")) {
+  // 4. 英文/俄文防截断：为无 title 的导航按钮、表头、指标标签与普通按钮补充悬浮完整文案
+  if (lang !== "zh-CN" && (tag === "BUTTON" || tag === "TH" || tag === "A" || tag === "DT" || tag === "LABEL")) {
     const label = (el.textContent || "").trim();
     if (label && !el.getAttribute("title") && label.length >= 8) {
       el.setAttribute("title", label);

@@ -612,11 +612,12 @@ function drawCurveYAxis(ctx, canvas, plot, meta) {
   const left = plot.left;
   const top = plot.top;
   const bottom = height - plot.bottom;
+  const palette = chartThemePalette();
   ctx.save();
   ctx.font = "11px Microsoft YaHei, Arial";
   ctx.lineWidth = 1;
-  ctx.strokeStyle = "#aebfc7";
-  ctx.fillStyle = "#63717a";
+  ctx.strokeStyle = palette.axis;
+  ctx.fillStyle = palette.text;
   ctx.textAlign = "right";
   ctx.textBaseline = "middle";
   ctx.beginPath();
@@ -633,7 +634,7 @@ function drawCurveYAxis(ctx, canvas, plot, meta) {
   });
   const unit = String(meta?.unit || "").trim();
   if (unit) {
-    ctx.fillStyle = meta?.color || "#52656d";
+    ctx.fillStyle = meta?.color || palette.text;
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
     ctx.fillText(unit, Math.max(4, left - 42), top - 10);
@@ -765,8 +766,9 @@ function drawCurveDisplayCursor(ctx, canvas, plot, metas, seriesByKey, snapshot 
   const tooltipMetas = metas.slice(0, 6);
   const timeLabel = formatCurveDisplayTableTime(curveDisplayPointMinute(index, snapshot), snapshot);
 
+  const palette = chartThemePalette();
   ctx.save();
-  ctx.strokeStyle = "rgba(29, 57, 66, 0.58)";
+  ctx.strokeStyle = palette.cursorLine || palette.axis;
   ctx.lineWidth = 1;
   ctx.setLineDash([5, 4]);
   ctx.beginPath();
@@ -777,7 +779,6 @@ function drawCurveDisplayCursor(ctx, canvas, plot, metas, seriesByKey, snapshot 
   ctx.stroke();
   ctx.setLineDash([]);
 
-  const palette = chartThemePalette();
   tooltipMetas.forEach((meta) => {
     const values = seriesByKey.get(meta.key) || [];
     if (!values.length) return;
@@ -792,11 +793,12 @@ function drawCurveDisplayCursor(ctx, canvas, plot, metas, seriesByKey, snapshot 
   });
 
   ctx.font = "12px Microsoft YaHei, Arial";
+  const tr = (text) => (typeof translatePhrase === "function" ? translatePhrase(text) : text);
   const lines = [
-    `时刻: ${timeLabel}`,
-    `点号: ${index + 1}`,
+    `${tr("时刻")}: ${timeLabel}`,
+    `${tr("点号")}: ${index + 1}`,
     ...tooltipMetas.map((meta) => `${meta.label}: ${formatNumber(seriesByKey.get(meta.key)?.[index])} ${meta.unit}`),
-    metas.length > tooltipMetas.length ? `另有 ${metas.length - tooltipMetas.length} 条曲线` : "",
+    metas.length > tooltipMetas.length ? tr(`另有 ${metas.length - tooltipMetas.length} 条曲线`) : "",
   ].filter(Boolean);
   const tooltipWidth = Math.max(158, ...lines.map((line) => ctx.measureText(line).width + 24));
   const tooltipHeight = 14 + lines.length * 18;
@@ -808,8 +810,18 @@ function drawCurveDisplayCursor(ctx, canvas, plot, metas, seriesByKey, snapshot 
   tooltipY = clamp(tooltipY, top + 6, bottom - tooltipHeight - 6);
   ctx.fillStyle = palette.tooltipBg;
   ctx.strokeStyle = palette.tooltipBorder;
+  const r = 8;
   ctx.beginPath();
-  ctx.roundRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight, 8);
+  ctx.moveTo(tooltipX + r, tooltipY);
+  ctx.lineTo(tooltipX + tooltipWidth - r, tooltipY);
+  ctx.quadraticCurveTo(tooltipX + tooltipWidth, tooltipY, tooltipX + tooltipWidth, tooltipY + r);
+  ctx.lineTo(tooltipX + tooltipWidth, tooltipY + tooltipHeight - r);
+  ctx.quadraticCurveTo(tooltipX + tooltipWidth, tooltipY + tooltipHeight, tooltipX + tooltipWidth - r, tooltipY + tooltipHeight);
+  ctx.lineTo(tooltipX + r, tooltipY + tooltipHeight);
+  ctx.quadraticCurveTo(tooltipX, tooltipY + tooltipHeight, tooltipX, tooltipY + tooltipHeight - r);
+  ctx.lineTo(tooltipX, tooltipY + r);
+  ctx.quadraticCurveTo(tooltipX, tooltipY, tooltipX + r, tooltipY);
+  ctx.closePath();
   ctx.fill();
   ctx.stroke();
   lines.forEach((line, lineIndex) => {
@@ -1025,6 +1037,16 @@ function curveDisplayKeyAtPointer(event) {
   return bestDistance <= tolerance ? bestKey : "";
 }
 
+let _curveDisplayDrawRafId = 0;
+
+function scheduleCurveDisplayDraw() {
+  if (_curveDisplayDrawRafId) return;
+  _curveDisplayDrawRafId = requestAnimationFrame(() => {
+    _curveDisplayDrawRafId = 0;
+    drawCurveDisplay(state.snapshot || {});
+  });
+}
+
 function setCurveDisplayCursorFromEvent(event, shouldDraw = true) {
   const canvas = $("curveDisplayChart");
   if (!canvas) return;
@@ -1036,16 +1058,29 @@ function setCurveDisplayCursorFromEvent(event, shouldDraw = true) {
   const top = plot.top;
   const bottom = height - plot.bottom;
   if (pos.x < left || pos.x > right || pos.y < top || pos.y > bottom) {
+    const wasVisible = Boolean(state.curveDisplayCursor.visible);
     state.curveDisplayCursor = { visible: false, x: pos.x, y: pos.y, index: state.curveDisplayCursor.index || 0 };
-  } else {
-    state.curveDisplayCursor = {
-      visible: true,
-      x: clamp(pos.x, left, right),
-      y: clamp(pos.y, top, bottom),
-      index: curveDisplayPointIndexFromX(pos.x, canvas, state.snapshot || {}),
-    };
+    if (shouldDraw && wasVisible) scheduleCurveDisplayDraw();
+    return;
   }
-  if (shouldDraw) drawCurveDisplay(state.snapshot || {});
+  const nextX = clamp(pos.x, left, right);
+  const nextY = clamp(pos.y, top, bottom);
+  const nextIndex = curveDisplayPointIndexFromX(pos.x, canvas, state.snapshot || {});
+  if (
+    state.curveDisplayCursor.visible
+    && state.curveDisplayCursor.index === nextIndex
+    && Math.abs(state.curveDisplayCursor.x - nextX) < 0.5
+    && Math.abs(state.curveDisplayCursor.y - nextY) < 0.5
+  ) {
+    return;
+  }
+  state.curveDisplayCursor = {
+    visible: true,
+    x: nextX,
+    y: nextY,
+    index: nextIndex,
+  };
+  if (shouldDraw) scheduleCurveDisplayDraw();
 }
 
 function hideCurveDisplayCursor() {

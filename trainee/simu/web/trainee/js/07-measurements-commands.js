@@ -1602,7 +1602,7 @@ function drawMeasurementTraceChart() {
   if (!points.length || !visibleSeries.length || !values.length) {
     state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: [] };
     syncChartLegendButtons(chartKey);
-    ctx.fillStyle = "#63717a";
+    ctx.fillStyle = palette.text;
     ctx.font = `${13 * ratio}px Microsoft YaHei, Arial`;
     ctx.textAlign = "center";
     const emptyMsg = !visibleSeries.length ? "所有曲线已隐藏" : "暂无测点跟踪数据";
@@ -1611,8 +1611,13 @@ function drawMeasurementTraceChart() {
     $("measurementTraceSummary").textContent = "未选择测点";
     return;
   }
-  const minValue = Math.min(...values);
-  const maxValue = Math.max(...values);
+  let minValue = Infinity;
+  let maxValue = -Infinity;
+  for (let i = 0; i < values.length; i += 1) {
+    const v = values[i];
+    if (v < minValue) minValue = v;
+    if (v > maxValue) maxValue = v;
+  }
   const span = Math.max(1e-6, maxValue - minValue);
   const selectedSeries = selectedChartSeriesKey(chartKey, visibleSeries[0]?.key || "");
   const hitData = [];
@@ -1652,7 +1657,7 @@ function drawMeasurementTraceChart() {
     timeLabel: (point) => measurementTracePointTimeLabel(point, range),
     valueFormatter: formatNumber,
   });
-  ctx.fillStyle = "#63717a";
+  ctx.fillStyle = palette.text;
   ctx.font = `${12 * ratio}px Consolas, Microsoft YaHei, Arial`;
   ctx.fillText(formatNumber(maxValue), 8 * ratio, top + 4 * ratio);
   ctx.fillText(formatNumber(minValue), 8 * ratio, top + plotHeight);
@@ -1830,7 +1835,7 @@ function drawCommandTraceChart() {
   if (!state.selectedCommandTraceKey || !points.length || !visibleSeries.length || !values.length) {
     state.chartSeriesHitData = { ...(state.chartSeriesHitData || {}), [chartKey]: [] };
     syncChartLegendButtons(chartKey);
-    ctx.fillStyle = "#63717a";
+    ctx.fillStyle = palette.text;
     ctx.font = `${13 * ratio}px Microsoft YaHei, Arial`;
     ctx.textAlign = "center";
     const emptyCmdMsg = !visibleSeries.length ? "所有曲线已隐藏" : state.selectedCommandTraceKey ? "暂无指令跟踪数据" : "请选择控制指令";
@@ -1842,8 +1847,13 @@ function drawCommandTraceChart() {
     ctx.textAlign = "left";
     return;
   }
-  let minValue = Math.min(...values);
-  let maxValue = Math.max(...values);
+  let minValue = Infinity;
+  let maxValue = -Infinity;
+  for (let i = 0; i < values.length; i += 1) {
+    const v = values[i];
+    if (v < minValue) minValue = v;
+    if (v > maxValue) maxValue = v;
+  }
   if (Math.abs(maxValue - minValue) < 1e-9) {
     minValue -= 1;
     maxValue += 1;
@@ -1891,7 +1901,7 @@ function drawCommandTraceChart() {
     timeLabel: (point) => measurementTracePointTimeLabel(point, range),
     valueFormatter: formatNumber,
   });
-  ctx.fillStyle = "#63717a";
+  ctx.fillStyle = palette.text;
   ctx.font = `${12 * ratio}px Consolas, Microsoft YaHei, Arial`;
   ctx.fillText(formatNumber(maxValue), 8 * ratio, top + 4 * ratio);
   ctx.fillText(formatNumber(minValue), 8 * ratio, top + plotHeight);

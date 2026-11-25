@@ -191,7 +191,13 @@ def calculate_fuel_cell_power_decision(
         )
 
     if storage_reduce_required or diesel_reduce_required:
-        delta_kw = -min(step_kw, current_power)
+        # 仅因柴发低于门槛触发降载时按柴油机减载裕度限幅，防止单拍降满整步引发柴发-燃电乒乓震荡
+        reduce_step = (
+            min(step_kw, current_power)
+            if storage_reduce_required
+            else min(step_kw, diesel_reduce_margin_kw, current_power)
+        )
+        delta_kw = -reduce_step
         proposed_power = max(0.0, current_power + delta_kw)
         if proposed_power < stop_threshold - EPSILON:
             return FuelCellControlDecision(

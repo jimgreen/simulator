@@ -87,7 +87,7 @@ class SingletonType(type):
 
 class EBlock(object):
     """Represents a block."""
-    __slots__ = ("name", "header_list", "data")
+    __slots__ = ("name", "header_list", "data", "_simu_rows_by_name_cache")
 
     def __init__(self, name):
         """Constructor
@@ -96,6 +96,7 @@ class EBlock(object):
         self.name = name
         self.header_list = []
         self.data = []
+        self._simu_rows_by_name_cache = None
 
     def AddRow(self, attr_list):
         """

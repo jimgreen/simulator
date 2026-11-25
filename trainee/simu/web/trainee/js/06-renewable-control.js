@@ -1708,7 +1708,7 @@ function drawRenewableTrendChart() {
       : !visibleSeries.length
         ? "图例已隐藏全部曲线"
         : "暂无综合趋势数据";
-    ctx.fillText(emptyText, width / 2, height / 2);
+    ctx.fillText(typeof translatePhrase === "function" ? translatePhrase(emptyText) : emptyText, width / 2, height / 2);
     return;
   }
 

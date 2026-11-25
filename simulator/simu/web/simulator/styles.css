@@ -6649,9 +6649,9 @@ table tbody tr:hover {
   border-color: var(--line);
 }
 
-:root[data-color-scheme="dark"] input,
-:root[data-color-scheme="dark"] select,
-:root[data-color-scheme="dark"] textarea {
+:root[data-color-scheme="dark"] input:not(td input),
+:root[data-color-scheme="dark"] select:not(td select),
+:root[data-color-scheme="dark"] textarea:not(td textarea) {
   background: #0f172a;
   color: var(--ink);
   border-color: var(--line-strong);
@@ -6735,9 +6735,9 @@ table tbody tr:hover {
   -webkit-backdrop-filter: blur(16px) saturate(140%);
 }
 
-:root[data-theme="glassmorphism"] input,
-:root[data-theme="glassmorphism"] select,
-:root[data-theme="glassmorphism"] textarea {
+:root[data-theme="glassmorphism"] input:not(td input),
+:root[data-theme="glassmorphism"] select:not(td select),
+:root[data-theme="glassmorphism"] textarea:not(td textarea) {
   background: rgba(15, 23, 42, 0.62);
 }
 
@@ -6762,9 +6762,9 @@ table tbody tr:hover {
   box-shadow: 0 0 10px rgba(0, 229, 255, 0.22);
 }
 
-:root[data-theme="sci-fi-cyan"] input,
-:root[data-theme="sci-fi-cyan"] select,
-:root[data-theme="sci-fi-cyan"] textarea {
+:root[data-theme="sci-fi-cyan"] input:not(td input),
+:root[data-theme="sci-fi-cyan"] select:not(td select),
+:root[data-theme="sci-fi-cyan"] textarea:not(td textarea) {
   background: #061020;
 }
 
@@ -6782,9 +6782,9 @@ table tbody tr:hover {
   box-shadow: 0 0 10px rgba(192, 132, 252, 0.24);
 }
 
-:root[data-theme="sci-fi-purple"] input,
-:root[data-theme="sci-fi-purple"] select,
-:root[data-theme="sci-fi-purple"] textarea {
+:root[data-theme="sci-fi-purple"] input:not(td input),
+:root[data-theme="sci-fi-purple"] select:not(td select),
+:root[data-theme="sci-fi-purple"] textarea:not(td textarea) {
   background: #0e091d;
 }
 
@@ -6802,9 +6802,9 @@ table tbody tr:hover {
   box-shadow: 0 0 10px rgba(0, 230, 118, 0.22);
 }
 
-:root[data-theme="sci-fi-matrix"] input,
-:root[data-theme="sci-fi-matrix"] select,
-:root[data-theme="sci-fi-matrix"] textarea {
+:root[data-theme="sci-fi-matrix"] input:not(td input),
+:root[data-theme="sci-fi-matrix"] select:not(td select),
+:root[data-theme="sci-fi-matrix"] textarea:not(td textarea) {
   background: #06130c;
 }
 
@@ -7419,9 +7419,19 @@ html:not([data-simulator-ui-mode="direct"]) .model-switcher > span {
   color: var(--green);
 }
 
+:root[data-color-scheme="dark"] {
+  accent-color: var(--teal);
+}
+
 :root[data-color-scheme="dark"],
 :root[data-color-scheme="dark"] * {
+  scrollbar-width: thin;
   scrollbar-color: var(--line-strong) var(--surface);
+}
+
+:root[data-color-scheme="dark"] ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
 
 :root[data-color-scheme="dark"] ::-webkit-scrollbar-track {
@@ -7430,7 +7440,8 @@ html:not([data-simulator-ui-mode="direct"]) .model-switcher > span {
 
 :root[data-color-scheme="dark"] ::-webkit-scrollbar-thumb {
   background: var(--line-strong);
-  border-color: var(--surface);
+  border-radius: 999px;
+  border: 2px solid var(--surface);
 }
 
 :root[data-color-scheme="dark"] ::-webkit-scrollbar-thumb:hover {
@@ -7448,8 +7459,13 @@ html:not([data-simulator-ui-mode="direct"]) .model-switcher > span {
 /* ==========================================================================
    2026-11-23 批次 D：人机交互体验升级（Ctrl+K、进度条、三态排序、选中态、焦点与窄屏适配）
    ========================================================================== */
-:root {
+:root,
+:root[data-theme] {
+  --accent: var(--teal);
+  --accent-soft: var(--teal-soft);
   --bg-selected: var(--teal-soft);
+  --success-soft: var(--ok-soft);
+  --radius-xs: calc(var(--radius-sm) * 0.65);
 }
 
 /* 统一表格与树选中行左指示条，覆盖历史硬编码青绿色 */
@@ -8842,21 +8858,21 @@ body.is-ux-col-resizing .app-sidebar {
 
 .model-service-state[data-state="running"],
 .model-service-state-pill[data-state="running"] {
-  background: var(--success-soft, rgba(16, 185, 129, 0.14));
+  background: var(--ok-soft);
   color: var(--green);
   border-color: var(--green);
 }
 
 .model-service-state[data-state="failed"],
 .model-service-state-pill[data-state="failed"] {
-  background: var(--danger-soft, rgba(220, 38, 38, 0.14));
+  background: var(--danger-soft);
   color: var(--red);
   border-color: var(--red);
 }
 
 .model-management-item.is-selected {
-  background: var(--accent-soft, rgba(14, 165, 233, 0.14));
-  border-color: var(--accent, var(--teal));
+  background: var(--accent-soft);
+  border-color: var(--accent);
   color: var(--ink);
 }
 
@@ -8864,10 +8880,6 @@ body.is-ux-col-resizing .app-sidebar {
   background: var(--surface-subtle);
   color: var(--ink);
   border-color: var(--line-strong);
-}
-
-.runtime-log-row.is-selected {
-  background: var(--accent-soft, rgba(14, 165, 233, 0.14));
 }
 
 /* 2. 分隔条胶囊视觉降噪：静息低透明度，悬停/聚焦/拖拽或隐藏态清晰显形 */
@@ -8960,10 +8972,10 @@ table.measurement-compare-table tbody tr.is-row-abnormal > td:first-child {
 
 @keyframes polarDiagramPulse {
   0%, 100% {
-    filter: drop-shadow(0 0 0 rgba(14, 165, 233, 0));
+    filter: drop-shadow(0 0 0 transparent);
   }
   30%, 70% {
-    filter: drop-shadow(0 0 10px var(--accent, #0ea5e9)) drop-shadow(0 0 20px var(--accent, #0ea5e9));
+    filter: drop-shadow(0 0 10px var(--accent)) drop-shadow(0 0 20px var(--accent));
   }
 }
 
@@ -9154,4 +9166,201 @@ dialog.ux-shortcuts-dialog::backdrop {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* =====================================================================
+ * 2026-11-25 最新 Web UI Skill 合规收口：
+ * 1) 表格单元格内嵌子控件去独立边框；2) 漏网浅底语义化；
+ * 3) 高密度紧凑指标条与参数表瘦身；4) 俄文/多语言防溢出
+ * ===================================================================== */
+
+/* 1. 表格单元格内嵌子控件无缝铺满（无独立边框、圆角、底色） */
+table td:has(> input:not([type="checkbox"]):not([type="radio"])),
+table td:has(> select),
+table td:has(> textarea) {
+  padding: 0 !important;
+  vertical-align: middle;
+}
+
+table td > input:not([type="checkbox"]):not([type="radio"]),
+table td > select,
+table td > textarea {
+  display: block;
+  width: 100%;
+  max-width: none !important;
+  min-width: 0;
+  height: 30px;
+  min-height: 100%;
+  padding: 0 8px;
+  margin: 0;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--ink);
+  font-size: 12.5px;
+  outline: none;
+  transition: background-color 0.14s ease, box-shadow 0.14s ease;
+}
+
+table td > input[type="number"] {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+table td:has(> input:not([type="checkbox"]):not([type="radio"])):hover,
+table td:has(> select):hover,
+table td:has(> textarea):hover {
+  background: var(--table-hover);
+}
+
+table td > input:not([type="checkbox"]):not([type="radio"]):focus,
+table td > select:focus,
+table td > textarea:focus,
+table td[contenteditable="true"]:focus {
+  background: var(--surface-subtle) !important;
+  box-shadow: inset 0 0 0 1.5px var(--accent) !important;
+  outline: none !important;
+}
+
+table td > input:not([type="checkbox"]):not([type="radio"]):invalid,
+table td > select:invalid,
+table td > input[aria-invalid="true"],
+table td > select[aria-invalid="true"] {
+  background: var(--danger-soft) !important;
+  box-shadow: inset 0 0 0 1.5px var(--red) !important;
+}
+
+table td > input:disabled,
+table td > select:disabled {
+  color: var(--muted);
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+/* 曲线编辑表暗黑可编辑单元格去厚框感，聚焦用内嵌高亮 */
+:root[data-color-scheme="dark"] .curve-table td[contenteditable="true"] {
+  background: transparent;
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .curve-table td[contenteditable="true"]:hover {
+  background: var(--table-hover);
+}
+
+/* 2. 漏网浅色硬编码状态/面板语义变量全接管 */
+:root[data-color-scheme="dark"] .model-state-pill[data-state="running"] {
+  background: var(--ok-soft);
+  color: var(--green);
+  border-color: var(--green);
+}
+
+:root[data-color-scheme="dark"] .model-state-pill[data-state="paused"],
+:root[data-color-scheme="dark"] .model-service-state-pill[data-state="starting"],
+:root[data-color-scheme="dark"] .model-service-state-pill[data-state="stopping"] {
+  background: var(--warn-soft);
+  color: var(--amber);
+  border-color: var(--amber);
+}
+
+:root[data-color-scheme="dark"] .overview-clock-controls .icon-button:disabled {
+  background: var(--surface-subtle);
+  color: var(--muted);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .energy-balance {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+:root[data-color-scheme="dark"] .tree-node.is-parent-active {
+  background: var(--teal-soft);
+  color: var(--ink);
+}
+
+:root[data-color-scheme="dark"] .diagram-definition-message.is-warning,
+:root[data-color-scheme="dark"] .manual-definition-changes-message.is-warning,
+:root[data-color-scheme="dark"] .manual-change-persistence.is-warning {
+  background: var(--warn-soft);
+  color: var(--amber);
+  border-color: var(--amber);
+}
+
+:root[data-color-scheme="dark"] .model-param-tab:hover,
+:root[data-color-scheme="dark"] .runtime-command-tab:hover,
+:root[data-color-scheme="dark"] .model-context-menu button:focus-visible:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+/* 3. 高密度工程看板：IEC104 托管状态压缩为单行紧凑指标条 + 参数表瘦身 */
+.scada104-host-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0;
+  min-height: 34px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+
+.scada104-host-metric {
+  flex: 1 1 auto;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  position: relative;
+}
+
+.scada104-host-metric + .scada104-host-metric {
+  border-left: 1px solid var(--line);
+}
+
+.scada104-host-metric span {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.scada104-host-metric strong {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.system-parameter-table tbody tr {
+  height: 34px;
+}
+
+.system-parameter-table th,
+.system-parameter-table td {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.system-parameter-table td small {
+  display: none;
+}
+
+/* 4. 俄文与多语言防溢出微调 */
+:root[lang="ru-RU"] .theme-select {
+  max-width: 196px;
+}
+
+:root[lang="ru-RU"] .scada104-config-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+:root[lang="ru-RU"] .scada104-panel .panel-actions button {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

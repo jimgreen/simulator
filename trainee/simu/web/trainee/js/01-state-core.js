@@ -647,6 +647,7 @@ function scheduleNextRefresh(delayMs = refreshSchedulerIntervalMs()) {
 }
 
 function restartRefreshScheduler() {
+  state.refreshConsecutiveFailures = 0;
   scheduleNextRefresh();
 }
 
@@ -3582,16 +3583,33 @@ function applyEmbeddedMeasurementDelta(snapshot) {
 
 async function refreshMeasurementDelta(renderNow = false) {
   if (state.measurementDeltaRequestActive || !state.snapshot) return false;
+  if (state.measurementDeltaAbortController) {
+    try { state.measurementDeltaAbortController.abort(); } catch (_e) {}
+  }
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  state.measurementDeltaAbortController = controller;
+  const reqModelId = state.activeModelId;
+  const reqEpoch = Number(state.modelSwitchEpoch || 0);
   state.measurementDeltaRequestActive = true;
   try {
+    const reqInit = controller ? { signal: controller.signal } : {};
     const payload = state.receiveMode
-      ? await api(teacherMeasurementDeltaAddress())
-      : await api(`/api/measurements/delta?after_seq=${state.measurementDeltaSeq}&compact=1`);
+      ? await api(teacherMeasurementDeltaAddress(), reqInit)
+      : await api(`/api/measurements/delta?after_seq=${state.measurementDeltaSeq}&compact=1`, reqInit);
+    if (reqModelId !== state.activeModelId || reqEpoch !== Number(state.modelSwitchEpoch || 0)) {
+      return false;
+    }
     const changed = applyMeasurementDelta(payload);
     if (changed) hydrateMeasurementBackedDeviceRuntime(state.snapshot);
     if (changed && renderNow && currentPageName() === "measurements") renderMeasurements(state.snapshot || {});
     return changed;
+  } catch (error) {
+    if (error?.name === "AbortError") return false;
+    throw error;
   } finally {
+    if (state.measurementDeltaAbortController === controller) {
+      state.measurementDeltaAbortController = null;
+    }
     state.measurementDeltaRequestActive = false;
   }
 }

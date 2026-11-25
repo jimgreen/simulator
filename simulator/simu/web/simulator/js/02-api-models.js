@@ -2289,7 +2289,7 @@ async function loadDirectSimulatorServiceModel() {
 
 async function refreshServiceCatalog(force = false) {
   if (directSimulatorServiceMode) return state.models;
-  const modalOpen = Boolean($("modelManagementModal") && !$("modelManagementModal").hidden);
+  const modalOpen = Boolean($("modelManagementDialog") && !$("modelManagementDialog").hidden);
   const minIntervalMs = modalOpen ? 3000 : 10000;
   if (!force && Date.now() - state.serviceCatalogLastLoadedAt < minIntervalMs) return state.models;
   if (state.serviceCatalogRequestActive) return state.models;
@@ -2375,6 +2375,7 @@ async function setModelServiceRunning(modelId, shouldRun, { managementAction = f
       }
     }
     if (managementAction) setModelManagementMessage(`已${actionText}模拟服务：${modelName}`, "ok");
+    else if (typeof showUiToast === "function") showUiToast(`已${actionText}模拟服务：${modelName}`, "ok", 2200);
   } catch (error) {
     await refreshServiceCatalog(true);
     const message = apiErrorText(error);
@@ -2387,6 +2388,7 @@ async function setModelServiceRunning(modelId, shouldRun, { managementAction = f
       }
     }
     if (managementAction) setModelManagementMessage(`${actionText}模拟服务失败：${message}`, "error");
+    if (typeof showUiToast === "function") showUiToast(`${actionText}模拟服务失败：${message}`, "error", 5000);
   } finally {
     state.modelServiceOperationActive = false;
     renderModelServiceControl();

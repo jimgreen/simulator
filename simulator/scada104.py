@@ -374,9 +374,10 @@ class Bridge:
         cached_def = self._point_def_cache.get(rtu)
         sample_updates = {}
         if cached_def is not None and cached_def["signature"] == def_signature:
-            # 快速路径：点表定义未变，检查是否有遥测/遥信值变化，无变化则完全跳过写事务。
+            # 快速路径：点表定义未变，检查是否有遥测/遥信值变化（yc 施加轻量死区），无变化则完全跳过写事务。
             known_by_kind = cached_def["known"]
             last_samples = self._last_samples.setdefault(rtu, {})
+            yc_deadband = 1e-5
             for kind in ("yc", "yx"):
                 current = points.get(kind, {})
                 known = known_by_kind.get(kind, {})
@@ -391,26 +392,38 @@ class Bridge:
                     prev_value, prev_status = last_samples.get((kind, no), (None, None))
                     quality = 0 if valid else 128
                     effective_value = value if valid else (prev_value if prev_value is not None else 0)
-                    if (effective_value, quality) != (prev_value, prev_status):
+                    changed_sample = False
+                    if quality != prev_status or prev_value is None:
+                        changed_sample = True
+                    elif kind == "yc":
+                        changed_sample = abs(float(effective_value) - float(prev_value)) > yc_deadband
+                    else:
+                        changed_sample = effective_value != prev_value
+                    if changed_sample:
                         sample_updates[(kind, no)] = (effective_value, quality)
             if not sample_updates:
                 return False
             now = time.time_ns() // 1_000_000
+            yc_batch = []
+            yx_batch = []
+            for (kind, no), (val, quality) in sample_updates.items():
+                if kind == "yc":
+                    yc_batch.append((val, quality, now, val, quality, now, rtu, no))
+                else:
+                    yx_batch.append((val, quality, now, rtu, no))
             with self.server.store.connection() as db, db:
                 db.execute("BEGIN IMMEDIATE")
-                for (kind, no), (val, quality) in sample_updates.items():
-                    table = f"fes_{kind}_define"
-                    if kind == "yc":
-                        db.execute(
-                            f"UPDATE {table} SET value=?,status=?,refresh_time=?,raw_value=?,raw_status=?,raw_time=? "
-                            "WHERE rtu_id=? AND pnt_no=?",
-                            (val, quality, now, val, quality, now, rtu, no),
-                        )
-                    else:
-                        db.execute(
-                            f"UPDATE {table} SET value=?,status=?,refresh_time=? WHERE rtu_id=? AND pnt_no=?",
-                            (val, quality, now, rtu, no),
-                        )
+                if yc_batch:
+                    db.executemany(
+                        "UPDATE fes_yc_define SET value=?,status=?,refresh_time=?,raw_value=?,raw_status=?,raw_time=? "
+                        "WHERE rtu_id=? AND pnt_no=?",
+                        yc_batch,
+                    )
+                if yx_batch:
+                    db.executemany(
+                        "UPDATE fes_yx_define SET value=?,status=?,refresh_time=? WHERE rtu_id=? AND pnt_no=?",
+                        yx_batch,
+                    )
             # 仅在 SQLite 事务提交成功后更新内存缓存，防止回滚导致测点永久滞留旧值。
             last_samples.update(sample_updates)
             return False
@@ -609,12 +622,26 @@ class Bridge:
                         pass
             except Exception as exc:
                 LOG.warning("停止已删除模型 %s 的 IEC104 通道 RTU%s 失败: %s", name, rtu, exc)
-            cache = getattr(self.server, "_channel_cache", None)
-            if isinstance(cache, dict):
-                cache.pop(f"iec104-rtu-{rtu}", None)
-            svc_cache = getattr(self.server, "_channel_service_cache", None)
-            if isinstance(svc_cache, dict):
-                svc_cache.pop(f"iec104-rtu-{rtu}", None)
+            channel_lock = getattr(self.server, "_channel_lock", None)
+            if channel_lock is not None:
+                with channel_lock:
+                    cache = getattr(self.server, "_channel_cache", None)
+                    if isinstance(cache, dict):
+                        cache.pop(f"iec104-rtu-{rtu}", None)
+            else:
+                cache = getattr(self.server, "_channel_cache", None)
+                if isinstance(cache, dict):
+                    cache.pop(f"iec104-rtu-{rtu}", None)
+            svc_lock = getattr(self.server, "_channel_service_lock", None)
+            if svc_lock is not None:
+                with svc_lock:
+                    svc_cache = getattr(self.server, "_channel_service_cache", None)
+                    if isinstance(svc_cache, dict):
+                        svc_cache.pop(f"iec104-rtu-{rtu}", None)
+            else:
+                svc_cache = getattr(self.server, "_channel_service_cache", None)
+                if isinstance(svc_cache, dict):
+                    svc_cache.pop(f"iec104-rtu-{rtu}", None)
         LOG.info("已回收已删除模型 %s 的 IEC104 通道与点表映射 (RTU%s)", name, rtu)
         return True
 
@@ -653,12 +680,16 @@ class Bridge:
                     if not pts:
                         continue
                     raw_status = ",raw_status=128" if kind == "yc" else ""
-                    placeholders = ",".join("?" for _ in pts)
-                    db.execute(
-                        f"UPDATE fes_{kind}_define SET status=128{raw_status},refresh_time=? "
-                        f"WHERE rtu_id=? AND status IS NOT 128 AND pnt_no IN ({placeholders})",
-                        (now, rtu, *pts),
-                    )
+                    # 按 500 点分批执行，避免大站测点数超过 SQLITE_MAX_VARIABLE_NUMBER 报错
+                    chunk_size = 500
+                    for offset in range(0, len(pts), chunk_size):
+                        batch = pts[offset : offset + chunk_size]
+                        placeholders = ",".join("?" for _ in batch)
+                        db.execute(
+                            f"UPDATE fes_{kind}_define SET status=128{raw_status},refresh_time=? "
+                            f"WHERE rtu_id=? AND status IS NOT 128 AND pnt_no IN ({placeholders})",
+                            (now, rtu, *batch),
+                        )
         for rtu in offline:
             self._last_samples.pop(rtu, None)
             self._point_def_cache.pop(rtu, None)

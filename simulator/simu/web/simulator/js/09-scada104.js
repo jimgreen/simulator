@@ -1208,6 +1208,7 @@
     });
 
     get("scada104PointsRtuSelect")?.addEventListener("change", () => {
+      preferredModelName = "";
       pointsTablePage = 0;
       syncPointsKindCounts();
       loadPointsTable();
@@ -1220,7 +1221,10 @@
       renderPointsTableRows();
     }, 150);
     get("scada104ReloadPointsBtn")?.addEventListener("click", () => loadPointsTable());
-    get("scada104LogsRtuSelect")?.addEventListener("change", () => loadChannelLogs());
+    get("scada104LogsRtuSelect")?.addEventListener("change", () => {
+      preferredModelName = "";
+      loadChannelLogs();
+    });
     get("scada104LogsLevelSelect")?.addEventListener("change", () => renderChannelLogRows());
     bindDebouncedSearch(get("scada104LogsSearch"), () => renderChannelLogRows(), 150);
     get("scada104ReloadLogsBtn")?.addEventListener("click", () => loadChannelLogs());
@@ -1369,6 +1373,8 @@
         sel.value = targetRtu;
       }
     }
+    // 一次性应用顶栏模型同步意图，防止后续 2s 轮询强行覆写用户手动切换的 RTU
+    preferredModelName = "";
   }
 
   function syncActiveModel(modelName, { refreshNow = true } = {}) {

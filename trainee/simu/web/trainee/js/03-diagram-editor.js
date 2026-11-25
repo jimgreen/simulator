@@ -3670,6 +3670,10 @@ async function initializeModelFromLink() {
     );
     setImportStatus(`模型初始化完成：${activeModelIdBeforeInitialize}`, "ok");
     renderReceiveMode();
+    const autoStartEl = $("receiveLinkAutoStart");
+    if (autoStartEl && autoStartEl.checked && typeof startReceiveMode === "function") {
+      await startReceiveMode();
+    }
   } catch (error) {
     addRuntimeLog("模型初始化", "模拟台定义下载", "初始化失败", apiErrorText(error), "warn");
     setReceiveLinkMessage(apiErrorText(error), "error");

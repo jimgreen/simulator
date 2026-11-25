@@ -1528,11 +1528,12 @@ function drawCurveYAxis(ctx, canvas, plot, meta) {
   const left = plot.left;
   const top = plot.top;
   const bottom = height - plot.bottom;
+  const palette = chartThemePalette();
   ctx.save();
   ctx.font = "11px Microsoft YaHei, Arial";
   ctx.lineWidth = 1;
-  ctx.strokeStyle = "#aebfc7";
-  ctx.fillStyle = "#63717a";
+  ctx.strokeStyle = palette.axis;
+  ctx.fillStyle = palette.text;
   ctx.textAlign = "right";
   ctx.textBaseline = "middle";
   ctx.beginPath();
@@ -1549,7 +1550,7 @@ function drawCurveYAxis(ctx, canvas, plot, meta) {
   });
   const unit = String(meta?.unit || "").trim();
   if (unit) {
-    ctx.fillStyle = meta?.color || "#52656d";
+    ctx.fillStyle = meta?.color || palette.text;
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
     ctx.fillText(unit, Math.max(4, left - 42), top - 10);
@@ -1790,6 +1791,16 @@ function curveXFromPointIndex(index, canvas) {
   return left + (clamp(index, 0, curvePointCount() - 1) / Math.max(1, curvePointCount() - 1)) * (right - left);
 }
 
+let _curveEditorDrawRafId = 0;
+
+function scheduleCurveEditorDraw() {
+  if (_curveEditorDrawRafId) return;
+  _curveEditorDrawRafId = requestAnimationFrame(() => {
+    _curveEditorDrawRafId = 0;
+    drawCurves();
+  });
+}
+
 function setCurveCursorFromEvent(event, shouldDraw = true) {
   const canvas = $("curveEditorChart");
   if (!canvas) return;
@@ -1801,17 +1812,29 @@ function setCurveCursorFromEvent(event, shouldDraw = true) {
   const top = plot.top;
   const bottom = height - plot.bottom;
   if (pos.x < left || pos.x > right || pos.y < top || pos.y > bottom) {
+    const wasVisible = Boolean(state.curveCursor.visible);
     state.curveCursor = { visible: false, x: pos.x, y: pos.y, index: state.curveCursor.index || 0 };
-    if (shouldDraw) drawCurves();
+    if (shouldDraw && wasVisible) scheduleCurveEditorDraw();
+    return;
+  }
+  const nextX = clamp(pos.x, left, right);
+  const nextY = clamp(pos.y, top, bottom);
+  const nextIndex = curvePointIndexFromX(pos.x, canvas);
+  if (
+    state.curveCursor.visible
+    && state.curveCursor.index === nextIndex
+    && Math.abs(state.curveCursor.x - nextX) < 0.5
+    && Math.abs(state.curveCursor.y - nextY) < 0.5
+  ) {
     return;
   }
   state.curveCursor = {
     visible: true,
-    x: clamp(pos.x, left, right),
-    y: clamp(pos.y, top, bottom),
-    index: curvePointIndexFromX(pos.x, canvas),
+    x: nextX,
+    y: nextY,
+    index: nextIndex,
   };
-  if (shouldDraw) drawCurves();
+  if (shouldDraw) scheduleCurveEditorDraw();
 }
 
 function hideCurveCursor() {
@@ -1853,8 +1876,9 @@ function drawCurveCursor(ctx, canvas, plot, metas) {
     return { meta, text: `${meta.label}: ${value} ${meta.unit}` };
   });
 
+  const palette = chartThemePalette();
   ctx.save();
-  ctx.strokeStyle = "rgba(29, 57, 66, 0.58)";
+  ctx.strokeStyle = palette.cursorLine || palette.axis;
   ctx.lineWidth = 1;
   ctx.setLineDash([5, 4]);
   ctx.beginPath();
@@ -1865,7 +1889,6 @@ function drawCurveCursor(ctx, canvas, plot, metas) {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  const palette = chartThemePalette();
   tooltipMetas.forEach((meta) => {
     const values = state.curveSeries[meta.key] || [];
     if (!values.length) return;
@@ -1880,9 +1903,10 @@ function drawCurveCursor(ctx, canvas, plot, metas) {
   });
 
   ctx.font = "12px Microsoft YaHei, Arial";
-  const title = `时刻: ${timeLabel}`;
-  const point = `点号: ${index + 1}`;
-  const lineTexts = [title, point, ...valueLines.map((line) => line.text), extraCount ? `另有 ${extraCount} 条曲线` : ""].filter(Boolean);
+  const tr = (text) => (typeof translatePhrase === "function" ? translatePhrase(text) : text);
+  const title = `${tr("时刻")}: ${timeLabel}`;
+  const point = `${tr("点号")}: ${index + 1}`;
+  const lineTexts = [title, point, ...valueLines.map((line) => line.text), extraCount ? tr(`另有 ${extraCount} 条曲线`) : ""].filter(Boolean);
   const tooltipWidth = Math.max(154, ...lineTexts.map((line) => ctx.measureText(line).width + 28));
   const lineHeight = 18;
   const tooltipHeight = 16 + lineTexts.length * lineHeight;

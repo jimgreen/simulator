@@ -294,9 +294,18 @@ function refreshSchedulerIntervalMs() {
   if (pageIsHidden()) return HIDDEN_REFRESH_INTERVAL_MS;
   const baseMs = frontendRefreshIntervalMs();
   const failures = Math.max(0, Number(state.refreshConsecutiveFailures || 0));
-  if (failures <= 0) return baseMs;
-  // 连续断连时阶梯退避（1x -> 2x -> 4x，上限 10s），降低无效重试风暴
-  return Math.min(10000, baseMs * Math.pow(2, Math.min(3, failures)));
+  if (failures > 0) {
+    // 连续断连时阶梯退避（1x -> 2x -> 4x，上限 10s），降低无效重试风暴
+    return Math.min(10000, baseMs * Math.pow(2, Math.min(3, failures)));
+  }
+  const page = typeof currentPageName === "function" ? currentPageName() : "";
+  // IEC104 联动页有自身独立轮询，主调度器降频至 5s 仅维持顶栏状态心跳
+  if (page === "scada104") return Math.max(baseMs, 5000);
+  const clockState = String(state.snapshot?.clock?.state || "");
+  if (clockState === "stopped" && (page === "model" || page === "curves" || page === "parameters" || page === "manual-changes")) {
+    return Math.max(baseMs, 3000);
+  }
+  return baseMs;
 }
 
 function scheduleNextRefresh(delayMs = refreshSchedulerIntervalMs()) {
@@ -784,8 +793,9 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
   const y = clamp(mainPoint.y, top, bottom);
   const timeLabel = options.timeLabel ? options.timeLabel(mainPoint) : (mainPoint.time || "");
 
+  const palette = chartThemePalette();
   ctx.save();
-  ctx.strokeStyle = "rgba(29, 57, 66, 0.58)";
+  ctx.strokeStyle = palette.cursorLine || palette.axis;
   ctx.lineWidth = options.ratio || 1;
   ctx.setLineDash([5 * (options.ratio || 1), 4 * (options.ratio || 1)]);
   ctx.beginPath();
@@ -796,7 +806,6 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
   ctx.stroke();
   ctx.setLineDash([]);
 
-  const palette = chartThemePalette();
   samples.forEach(({ series, point }) => {
     ctx.fillStyle = palette.markerFill;
     ctx.strokeStyle = series.color;
@@ -810,10 +819,11 @@ function drawChartCursor(ctx, chartKey, canvas, plot, seriesData, options = {}) 
   const ratio = options.ratio || 1;
   ctx.font = `${12 * ratio}px Microsoft YaHei, Arial`;
   const valueFormatter = options.valueFormatter || ((value) => formatMeasurementValue(value));
+  const tr = (text) => (typeof translatePhrase === "function" ? translatePhrase(text) : text);
   const lines = [
-    timeLabel ? `时刻: ${timeLabel}` : "",
+    timeLabel ? `${tr("时刻")}: ${timeLabel}` : "",
     ...samples.slice(0, 6).map(({ series, point }) => `${series.label}: ${valueFormatter(point.value)}${series.unit ? ` ${series.unit}` : ""}`),
-    samples.length > 6 ? `另有 ${samples.length - 6} 条曲线` : "",
+    samples.length > 6 ? tr(`另有 ${samples.length - 6} 条曲线`) : "",
   ].filter(Boolean);
   const tooltipWidth = Math.max(150 * ratio, ...lines.map((line) => ctx.measureText(line).width + 24 * ratio));
   const tooltipHeight = 14 * ratio + lines.length * 18 * ratio;
@@ -1479,6 +1489,7 @@ function chartThemePalette() {
       grid: "rgba(0, 229, 255, 0.14)",
       gridSubtle: "rgba(0, 229, 255, 0.07)",
       axis: "rgba(0, 229, 255, 0.34)",
+      cursorLine: "rgba(0, 229, 255, 0.56)",
       text: "#7da2c4",
       markerFill: "#061020",
       tooltipBg: "rgba(8, 17, 33, 0.96)",
@@ -1493,6 +1504,7 @@ function chartThemePalette() {
       grid: "rgba(192, 132, 252, 0.15)",
       gridSubtle: "rgba(192, 132, 252, 0.08)",
       axis: "rgba(192, 132, 252, 0.36)",
+      cursorLine: "rgba(192, 132, 252, 0.58)",
       text: "#a695c9",
       markerFill: "#120c24",
       tooltipBg: "rgba(18, 12, 36, 0.96)",
@@ -1507,6 +1519,7 @@ function chartThemePalette() {
       grid: "rgba(0, 230, 118, 0.14)",
       gridSubtle: "rgba(0, 230, 118, 0.07)",
       axis: "rgba(0, 230, 118, 0.34)",
+      cursorLine: "rgba(0, 230, 118, 0.56)",
       text: "#7eb396",
       markerFill: "#081810",
       tooltipBg: "rgba(8, 24, 16, 0.96)",
@@ -1521,6 +1534,7 @@ function chartThemePalette() {
       grid: "rgba(203, 213, 225, 0.14)",
       gridSubtle: "rgba(203, 213, 225, 0.08)",
       axis: "rgba(148, 163, 184, 0.34)",
+      cursorLine: "rgba(96, 165, 250, 0.6)",
       text: "#cbd5e1",
       markerFill: "#0f172a",
       tooltipBg: "rgba(15, 23, 42, 0.94)",
@@ -1535,6 +1549,7 @@ function chartThemePalette() {
       grid: "rgba(148, 163, 184, 0.16)",
       gridSubtle: "rgba(148, 163, 184, 0.1)",
       axis: "rgba(148, 163, 184, 0.34)",
+      cursorLine: "rgba(56, 189, 248, 0.58)",
       text: "#94a3b8",
       markerFill: "#0f172a",
       tooltipBg: "rgba(15, 23, 42, 0.96)",
@@ -1549,6 +1564,7 @@ function chartThemePalette() {
       grid: "#e4e4e7",
       gridSubtle: "#f0eee9",
       axis: "#a1a1aa",
+      cursorLine: "rgba(159, 18, 57, 0.46)",
       text: "#52525b",
       markerFill: "#ffffff",
       tooltipBg: "rgba(255, 255, 255, 0.98)",
@@ -1563,6 +1579,7 @@ function chartThemePalette() {
       grid: "#e5e5ea",
       gridSubtle: "#f0f0f5",
       axis: "#c7c7cc",
+      cursorLine: "rgba(0, 113, 227, 0.48)",
       text: "#6e6e73",
       markerFill: "#ffffff",
       tooltipBg: "rgba(255, 255, 255, 0.97)",
@@ -1576,6 +1593,7 @@ function chartThemePalette() {
     grid: "#e2e8f0",
     gridSubtle: "#f1f5f9",
     axis: "#cbd5e1",
+    cursorLine: "rgba(29, 57, 66, 0.55)",
     text: "#64748b",
     markerFill: "#ffffff",
     tooltipBg: "rgba(255, 255, 255, 0.96)",
@@ -1587,12 +1605,15 @@ function chartThemePalette() {
 
 function redrawActiveSimulatorCharts() {
   const page = typeof currentPageName === "function" ? currentPageName() : "";
-  if (page === "curves" && typeof drawCurveEditor === "function") {
-    drawCurveEditor();
+  if (page === "curves" && typeof drawCurves === "function") {
+    drawCurves();
   } else if (page === "runtime" && typeof drawRuntimeTraceChart === "function") {
     drawRuntimeTraceChart();
   } else if (page === "measurements" && typeof drawMeasurementTraceChart === "function") {
     drawMeasurementTraceChart();
+  }
+  if (typeof drawDiagramTrendChart === "function" && state.diagramTrendDialogOpen) {
+    drawDiagramTrendChart();
   }
 }
 
@@ -1848,10 +1869,12 @@ async function saveSystemParameters() {
     }
     state.systemParametersDirty = false;
     await refresh();
+    if (typeof showUiToast === "function") showUiToast("系统参数已保存", "ok", 2000);
   } catch (error) {
+    const msg = typeof apiErrorText === "function" ? apiErrorText(error) : String(error?.message || error);
     const summary = $("systemParameterSummary");
     if (summary) summary.textContent = "保存失败";
-    throw error;
+    if (typeof showUiToast === "function") showUiToast(`保存系统参数失败：${msg}`, "error", 4200);
   } finally {
     state.systemParametersSaving = false;
     if (saveButton) saveButton.disabled = false;
