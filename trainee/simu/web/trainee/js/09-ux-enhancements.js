@@ -81,6 +81,112 @@
   window.locateDeviceOnDiagram = locateDeviceOnDiagram;
 
   /**
+   * 从接线图或其它页面按设备名一键穿透到「实时量测」或「控制指令」并自动过滤定位（兼容教员端与学员端）
+   */
+  function jumpToDeviceMeasurements(devName) {
+    const targetName = String(devName || "").trim();
+    if (!targetName) return false;
+    if (typeof showPage === "function") {
+      showPage("measurements");
+    } else {
+      document.querySelector('.page-nav button[data-nav-page="measurements"]')?.click();
+    }
+    requestAnimationFrame(() => {
+      if (typeof state !== "undefined" && state) {
+        if ("measurementCompareFilter" in state) state.measurementCompareFilter = { dev_type: "all", dev_name: "" };
+        if ("measurementCompareKeywordFilter" in state) state.measurementCompareKeywordFilter = targetName;
+        if ("measurementFilter" in state) state.measurementFilter = { dev_type: "all", dev_name: "" };
+        if ("measurementKeywordFilter" in state) state.measurementKeywordFilter = targetName;
+      }
+      const input = document.getElementById("measurementCompareKeywordFilter")
+        || document.getElementById("traineeMeasurementKeywordFilter")
+        || document.querySelector('[data-page="measurements"] input[type="search"]');
+      if (input) {
+        input.value = targetName;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      if (typeof renderMeasurementCompareTable === "function") renderMeasurementCompareTable();
+      if (typeof renderMeasurements === "function") renderMeasurements();
+    });
+    return true;
+  }
+
+  function jumpToDeviceCommands(devName) {
+    const targetName = String(devName || "").trim();
+    if (!targetName) return false;
+    const isTrainee = Boolean(document.getElementById("traineeRunToggle"));
+    const targetPage = isTrainee ? "commands" : "runtime";
+    if (typeof showPage === "function") {
+      showPage(targetPage);
+    } else {
+      document.querySelector(`.page-nav button[data-nav-page="${targetPage}"]`)?.click();
+    }
+    requestAnimationFrame(() => {
+      if (typeof state !== "undefined" && state) {
+        if ("runtimeDeviceFilter" in state) state.runtimeDeviceFilter = { dev_type: "all", dev_name: "" };
+        if ("runtimeCommandKeywordFilter" in state) state.runtimeCommandKeywordFilter = targetName;
+        if ("controlFilter" in state) state.controlFilter = { dev_type: "all", dev_name: "" };
+        if ("commandKeywordFilter" in state) state.commandKeywordFilter = targetName;
+      }
+      const input = document.getElementById("runtimeCommandKeywordFilter")
+        || document.getElementById("commandKeywordFilter")
+        || document.querySelector(`[data-page="${targetPage}"] input[type="search"]`);
+      if (input) {
+        input.value = targetName;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      if (typeof renderRuntimeDeviceTable === "function") renderRuntimeDeviceTable();
+      if (typeof renderCombinedControlPage === "function") renderCombinedControlPage();
+    });
+    return true;
+  }
+
+  window.jumpToDeviceMeasurements = jumpToDeviceMeasurements;
+  window.jumpToDeviceCommands = jumpToDeviceCommands;
+
+  /**
+   * 在接线图面板头部动态显示当前选中设备的快捷穿透入口（查看量测 / 查看控制）
+   */
+  function enhanceDiagramSelectionActions() {
+    const canvas = document.getElementById("modelDiagramCanvas");
+    const panelHead = canvas?.closest?.(".model-diagram-panel")?.querySelector?.(".panel-head");
+    if (!canvas || !panelHead) return;
+    let bar = panelHead.querySelector(".ux-diagram-selection-actions");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.className = "ux-diagram-selection-actions";
+      bar.hidden = true;
+      bar.innerHTML = `
+        <span class="ux-diagram-selected-name"></span>
+        <button type="button" class="compact-action-btn" data-ux-diagram-jump="measurements">${tr("查看量测")}</button>
+        <button type="button" class="compact-action-btn" data-ux-diagram-jump="commands">${tr("查看控制")}</button>
+      `;
+      bar.addEventListener("click", (event) => {
+        const btn = event.target instanceof Element ? event.target.closest("[data-ux-diagram-jump]") : null;
+        if (!btn) return;
+        const devName = String(canvas.dataset.selectedDeviceName || "").trim();
+        if (!devName) return;
+        if (btn.dataset.uxDiagramJump === "measurements") jumpToDeviceMeasurements(devName);
+        else jumpToDeviceCommands(devName);
+      });
+      const summary = panelHead.querySelector("#modelDiagramSummary, span");
+      if (summary) panelHead.insertBefore(bar, summary);
+      else panelHead.appendChild(bar);
+    }
+    if (canvas.dataset.uxSelectionActionsBound !== "true") {
+      canvas.dataset.uxSelectionActionsBound = "true";
+      const syncBar = () => {
+        const devName = String(canvas.dataset.selectedDeviceName || "").trim();
+        bar.hidden = !devName;
+        const labelEl = bar.querySelector(".ux-diagram-selected-name");
+        if (labelEl) labelEl.textContent = devName;
+      };
+      canvas.addEventListener("ux-diagram-selection", syncBar);
+      syncBar();
+    }
+  }
+
+  /**
    * 复制文本到剪贴板并给出轻量 Toast 反馈
    */
   async function copyTextWithFeedback(rawText) {
@@ -107,7 +213,7 @@
 
   function buildCommandPaletteItems() {
     const items = [];
-    // 1. 一级导航页签
+    // 1. 一级导航页签及常用二级视图
     document.querySelectorAll(".page-nav button[data-nav-page]").forEach((btn, idx) => {
       const page = btn.dataset.navPage;
       const label = (btn.textContent || "").trim();
@@ -122,6 +228,30 @@
         },
       });
     });
+    if (typeof showPage === "function") {
+      items.push({
+        group: tr("页面"),
+        label: tr("人工修改"),
+        hint: "model",
+        keywords: "人工修改 manual changes model 电网模型",
+        run: () => {
+          showPage("manual-changes");
+          flashTopProgress();
+        },
+      });
+      if (!document.getElementById("traineeRunToggle")) {
+        items.push({
+          group: tr("页面"),
+          label: tr("故障与模式"),
+          hint: "faults",
+          keywords: "故障与模式 设备故障 量测故障 运行模式 faults modes",
+          run: () => {
+            showPage("faults");
+            flashTopProgress();
+          },
+        });
+      }
+    }
     // 2. 高频快捷动作
     items.push({
       group: tr("操作"),
@@ -893,6 +1023,7 @@
     initSharedSidebarToggle();
     enhanceAllHorizontalSplitters();
     enhanceTableFilterClearButtons();
+    enhanceDiagramSelectionActions();
 
     const pageMain = document.querySelector(".page-main");
     if (pageMain && typeof MutationObserver === "function") {
@@ -903,6 +1034,7 @@
           splitSyncRaf = 0;
           enhanceAllHorizontalSplitters();
           enhanceTableFilterClearButtons();
+          enhanceDiagramSelectionActions();
         });
       });
       splitObserver.observe(pageMain, { childList: true });

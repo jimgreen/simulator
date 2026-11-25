@@ -632,7 +632,7 @@ function renderOverviewEvents(snapshot) {
   container.dataset.eventsKey = renderKey;
   if (logs.length) {
     container.innerHTML = logs.map((item) => `
-      <div class="overview-event-item">
+      <div class="overview-event-item is-clickable-row" data-overview-event-jump="logs" title="点击查看运行日志">
         <time>${escapeHtml(item.simu_time || item.sim_time || "--")}</time>
         <strong>${escapeHtml(item.type || "运行")}</strong>
         <span title="${escapeHtml(logDetailText(item))}">${escapeHtml(item.result || logDetailText(item) || "完成")}</span>
@@ -721,7 +721,12 @@ function renderOverviewActiveCommands(snapshot) {
       </thead>
       <tbody>
         ${rows.map((row) => `
-          <tr title="${escapeHtml(runtimeCommandTraceLabel(row))}">
+          <tr
+            class="is-clickable-row"
+            data-overview-cmd-device="${escapeHtml(row.device?.dev_name || "")}"
+            data-overview-cmd-tab="${escapeHtml(row.command_kind || "remote_control")}"
+            title="${escapeHtml(runtimeCommandTraceLabel(row))}"
+          >
             <td class="mono-cell">${escapeHtml(row.receive_time?.wall_time || "--")}</td>
             <td>${escapeHtml(row.device?.dev_name || "--")}</td>
             <td>${escapeHtml(row.command || "--")} <small class="command-set-type">${escapeHtml(row.set_type || "")}</small></td>
@@ -796,6 +801,28 @@ function renderActiveSimulatorPage(snapshot = state.snapshot, force = false) {
     return;
   }
   if (activePage === "model") {
+    syncModelSubtabDom();
+    if (state.activeModelSubtab === "manual-changes") {
+      renderManualDefinitionChanges();
+      const activeDefinitionRevision = Number(snapshot?.static_meta?.definitions?.revision) || 0;
+      if (
+        (
+          state.manualDefinitionChangesLoadedModelId !== state.activeModelId
+          || (activeDefinitionRevision && activeDefinitionRevision !== state.manualDefinitionChangesRevision)
+        )
+        && !state.manualDefinitionChangesLoading
+        && !state.manualDefinitionChangesResetting
+        && !state.manualDefinitionChangesRetrying
+      ) {
+        loadManualDefinitionChanges();
+      }
+      return;
+    }
+    if (state.activeModelSubtab === "faults") {
+      syncFaultSubtabDom();
+      if (typeof renderActiveFaultSubtab === "function") renderActiveFaultSubtab(force);
+      return;
+    }
     renderGridModelPage();
     return;
   }
@@ -907,9 +934,10 @@ function renderSnapshot(snapshot) {
     state.deviceFaults = [...(snapshot.settings?.device_faults || [])];
     state.measurementFaults = [...(snapshot.settings?.measurement_faults || [])];
     state.settingsLoaded = true;
+    updateModelHubBadges();
   }
   const activePage = currentPageName();
-  if (activePage === "modes" || !state.modes.length) {
+  if ((activePage === "model" && state.activeModelSubtab === "faults") || activePage === "modes" || !state.modes.length) {
     state.modes = syncModesFromDevices(snapshot.devices || [], [
       ...(snapshot.settings?.modes || []),
       ...state.modes,
@@ -1086,6 +1114,8 @@ function renderRuntimeLogs() {
   const filterOn = state.runtimeLogTypeFilter !== "all"
     || Boolean(String(state.runtimeLogKeywordFilter || "").trim())
     || Boolean(state.runtimeLogOnlyAlert);
+  const clearFilterBtn = $("clearRuntimeLogFilters");
+  if (clearFilterBtn) clearFilterBtn.hidden = !filterOn;
   const totalLogs = !filterOn
     ? Math.max(state.runtimeLogs.length, Number(state.runtimeLogTotal) || 0)
     : state.runtimeLogs.length;
@@ -2393,16 +2423,29 @@ function runtimeCommandDeleteButtonHtml(row) {
   const commandName = runtimeCommandDeleteName(row);
   const sending = commandName && state.runtimeCommandDeleteSending.has(commandName);
   const label = runtimeCommandTraceLabel(row);
-  return `
-    <button
+  const devName = String(row?.device?.dev_name || "").trim();
+  const kind = row?.command_kind === "remote_adjustment" ? "yt" : "yk";
+  const jump104Btn = devName
+    ? `<button
       type="button"
-      class="runtime-command-delete-button"
-      data-runtime-command-delete-name="${escapeHtml(commandName)}"
-      data-runtime-command-delete-label="${escapeHtml(label)}"
-      title="删除当前有效指令"
-      aria-label="删除当前有效指令：${escapeHtml(label)}"
-      ${row.active && !sending ? "" : "disabled"}
-    >${sending ? "删除中" : "删除"}</button>
+      class="compact-action-btn runtime-command-104-button"
+      data-jump-scada104-device="${escapeHtml(devName)}"
+      data-jump-scada104-kind="${kind}"
+      title="在 IEC104 四遥点表中定位该设备"
+    >104</button>`
+    : "";
+  return `
+    <span class="runtime-command-row-actions">
+      <button
+        type="button"
+        class="runtime-command-delete-button"
+        data-runtime-command-delete-name="${escapeHtml(commandName)}"
+        data-runtime-command-delete-label="${escapeHtml(label)}"
+        title="删除当前有效指令"
+        aria-label="删除当前有效指令：${escapeHtml(label)}"
+        ${row.active && !sending ? "" : "disabled"}
+      >${sending ? "删除中" : "删除"}</button>${jump104Btn}
+    </span>
   `;
 }
 

@@ -40,7 +40,7 @@
         }
       } catch (_e) {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20261125-skill-opt" />
+    <link rel="stylesheet" href="/styles.css?v=20261126-ux-hub" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -49,7 +49,7 @@
           <span class="brand-mark"></span>
           <div>
             <h1>极地微电网学员台</h1>
-            <p><span id="connectionDot"></span><span id="connectionText">连接中</span></p>
+            <p><button id="openTraineeDiagnosticsBtn" class="connection-diag-trigger" type="button" title="点击查看系统联调诊断"><span id="connectionDot"></span><span id="connectionText">连接中</span></button></p>
           </div>
         </div>
 
@@ -131,10 +131,6 @@
             <button data-nav-page="renewable" title="新能源控制">
               <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M2 12h3M19 12h3M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12"/></svg>
               <span class="nav-label">新能源控制</span>
-            </button>
-            <button data-nav-page="manual-changes" title="人工修改">
-              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>
-              <span class="nav-label">人工修改</span>
             </button>
             <button data-nav-page="parameters" title="参数配置">
               <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
@@ -566,25 +562,56 @@
         </section>
 
         <section class="page-section" data-page="model">
-          <div class="model-page-layout">
-            <aside class="panel model-tree-panel">
-              <div class="panel-head">
-                <h2>设备树</h2>
-                <span id="modelTreeSummary">0 类 · 0 台</span>
+          <div class="model-hub-shell">
+            <div class="model-hub-bar">
+              <div class="sub-tabs model-hub-tabs" role="tablist" aria-label="电网模型视图">
+                <button type="button" class="sub-tab is-active" role="tab" aria-selected="true" data-model-subtab="params"><span>设备参数</span></button>
+                <button type="button" class="sub-tab" role="tab" aria-selected="false" data-model-subtab="manual-changes"><span>人工修改</span><span id="modelManualChangesBadge" class="subtab-count-badge"></span></button>
               </div>
-              <label class="device-tree-filter">
-                <input type="search" data-device-tree-filter-scope="model" aria-label="过滤电网模型设备树" placeholder="过滤设备" autocomplete="off" />
-              </label>
-              <div id="modelDeviceTree" class="device-tree" aria-label="电网模型设备树"></div>
-            </aside>
+            </div>
 
-            <section class="panel model-table-panel">
-              <div class="panel-head">
-                <h2>模型参数</h2>
-                <span id="modelParamSummary">全部设备 · 0 台</span>
+            <div class="model-hub-pane" data-model-subtab-pane="params">
+              <div class="model-page-layout">
+                <aside class="panel model-tree-panel">
+                  <div class="panel-head">
+                    <h2>设备树</h2>
+                    <span id="modelTreeSummary">0 类 · 0 台</span>
+                  </div>
+                  <label class="device-tree-filter">
+                    <input type="search" data-device-tree-filter-scope="model" aria-label="过滤电网模型设备树" placeholder="过滤设备" autocomplete="off" />
+                  </label>
+                  <div id="modelDeviceTree" class="device-tree" aria-label="电网模型设备树"></div>
+                </aside>
+
+                <section class="panel model-table-panel">
+                  <div class="panel-head">
+                    <h2>模型参数</h2>
+                    <span id="modelParamSummary">全部设备 · 0 台</span>
+                  </div>
+                  <div id="modelParamTable" class="model-param-wrap"></div>
+                </section>
               </div>
-              <div id="modelParamTable" class="model-param-wrap"></div>
-            </section>
+            </div>
+
+            <div class="model-hub-pane" data-model-subtab-pane="manual-changes" hidden>
+              <section class="panel manual-definition-changes-panel">
+                <div class="panel-head">
+                  <div class="panel-title-group">
+                    <h2>人工修改</h2>
+                    <span id="manualDefinitionChangesSummary">0 项修改 · 已选 0 项</span>
+                  </div>
+                  <div class="manual-definition-changes-actions">
+                    <button id="refreshManualChanges" type="button">刷新</button>
+                    <button id="retryPendingManualChanges" type="button" disabled>重试保存</button>
+                    <button id="resetSelectedManualChanges" class="primary" type="button" disabled>恢复默认值</button>
+                  </div>
+                </div>
+                <p id="manualDefinitionChangesMessage" class="manual-definition-changes-message" hidden></p>
+                <div id="manualDefinitionChangesTable" class="manual-definition-changes-wrap" aria-live="polite">
+                  <div class="empty-state">当前模型没有人工修改</div>
+                </div>
+              </section>
+            </div>
           </div>
         </section>
 
@@ -769,6 +796,10 @@
               <div class="panel-head">
                 <div class="panel-title-group">
                   <h2>控制指令</h2>
+                  <div class="command-tab-bar command-tab-bar-inline" role="tablist" aria-label="控制指令类型">
+                    <button type="button" class="command-tab is-active" data-command-tab="remote-control" role="tab" aria-selected="true"><span>遥控</span><span id="runPendingCount" class="subtab-count-badge">0 待发</span></button>
+                    <button type="button" class="command-tab" data-command-tab="remote-adjustment" role="tab" aria-selected="false"><span>遥调</span><span id="setpointPendingCount" class="subtab-count-badge">0 待发</span></button>
+                  </div>
                   <label class="command-active-only-toggle" for="commandOnlyActive">
                     <span>只显示有效指令：</span>
                     <input id="commandOnlyActive" type="checkbox" role="switch" aria-label="只显示有效指令" />
@@ -779,30 +810,33 @@
                 <span id="commandPendingCount">0 待发</span>
               </div>
               <div class="table-filter-bar" aria-label="控制指令过滤">
-                <label>名称
+                <label>
                   <input
                     id="commandKeywordFilter"
                     type="search"
                     data-table-filter-scope="command"
                     data-table-filter-field="keyword"
                     placeholder="过滤指令或设备"
+                    aria-label="过滤指令或设备"
                     autocomplete="off"
                   />
                 </label>
-                <label>类型
+                <label>
                   <select
                     id="commandTypeFilter"
                     data-table-filter-scope="command"
                     data-table-filter-field="type"
+                    aria-label="类型"
                   >
                     <option value="all">全部类型</option>
                   </select>
                 </label>
-                <label>来源
+                <label>
                   <select
                     id="commandOriginFilter"
                     data-table-filter-scope="command"
                     data-table-filter-field="origin"
+                    aria-label="来源"
                   >
                     <option value="all">全部来源</option>
                     <option value="manual">人工指令</option>
@@ -817,16 +851,10 @@
                 data-vertical-split-min-bottom="240"
               >
                 <div class="command-table-stack">
-                  <div class="command-tab-bar" role="tablist" aria-label="控制指令类型">
-                    <button type="button" class="command-tab is-active" data-command-tab="remote-control" role="tab" aria-selected="true">遥控</button>
-                    <button type="button" class="command-tab" data-command-tab="remote-adjustment" role="tab" aria-selected="false">遥调</button>
-                  </div>
                   <section class="command-tab-page is-active" data-command-tab-page="remote-control" role="tabpanel">
-                    <div class="command-table-head"><strong>遥控指令</strong><span id="runPendingCount">0 待发</span></div>
                     <div id="runControlTable" class="runtime-device-wrap"></div>
                   </section>
                   <section class="command-tab-page" data-command-tab-page="remote-adjustment" role="tabpanel">
-                    <div class="command-table-head"><strong>遥调指令</strong><span id="setpointPendingCount">0 待发</span></div>
                     <div id="setpointControlTable" class="runtime-device-wrap"></div>
                   </section>
                 </div>
@@ -918,7 +946,10 @@
                     </dl>
                   </div>
                 </div>
-                <p id="renewableControlStatus" class="renewable-status">请选择单次计算或启动实时控制。</p>
+                <div class="renewable-status-row">
+                  <p id="renewableControlStatus" class="renewable-status">待命</p>
+                  <button id="renewableQuickConnectBtn" class="compact-action-btn renewable-quick-connect-btn" type="button" hidden>启动接收</button>
+                </div>
                 <div class="renewable-last-action"><span id="renewableLastActionLabel">最近计算</span><strong id="renewableLastSent">--</strong></div>
               </section>
 
@@ -1069,6 +1100,7 @@
                 <div id="renewableDetailTabs" class="renewable-detail-tabs" role="tablist" aria-label="新能源控制曲线与日志">
                   <button type="button" class="is-active" role="tab" data-renewable-detail-tab="trend" aria-selected="true">曲线</button>
                   <button type="button" role="tab" data-renewable-detail-tab="logs" aria-selected="false">日志</button>
+                  <button type="button" role="tab" data-renewable-detail-tab="review" aria-selected="false">运行统计</button>
                 </div>
                 <div class="renewable-detail-body">
                   <section class="renewable-detail-pane renewable-trend-panel is-active" data-renewable-detail-pane="trend" role="tabpanel">
@@ -1141,30 +1173,43 @@
                   <div id="renewableControlLogPager" class="runtime-log-pager" aria-label="控制日志分页"></div>
                   </section>
 
+                  <section class="renewable-detail-pane renewable-review-panel" data-renewable-detail-pane="review" role="tabpanel" hidden>
+                    <div class="panel-head compact-panel-head">
+                      <h2>运行指标复盘</h2>
+                      <div class="panel-actions">
+                        <span id="renewableReviewSampleSummary">0 点</span>
+                        <button id="exportRenewableReviewCsv" type="button" class="compact-action-btn">导出 CSV</button>
+                      </div>
+                    </div>
+                    <div id="renewableReviewStrip" class="renewable-review-strip">
+                      <div class="renewable-review-kpi"><span>新能源消纳率</span><strong id="reviewRenewableUtilization" class="mono-cell">--</strong></div>
+                      <div class="renewable-review-kpi"><span>弃电率</span><strong id="reviewCurtailmentRate" class="mono-cell">--</strong></div>
+                      <div class="renewable-review-kpi"><span>柴发平均出力</span><strong id="reviewDieselAvgKw" class="mono-cell">--</strong></div>
+                      <div class="renewable-review-kpi"><span>电储 SOC 区间</span><strong id="reviewBessSocRange" class="mono-cell">--</strong></div>
+                      <div class="renewable-review-kpi"><span>电储越限占比</span><strong id="reviewBessLimitPct" class="mono-cell">--</strong></div>
+                      <div class="renewable-review-kpi"><span>氢罐 SOC 变化</span><strong id="reviewH2SocDelta" class="mono-cell">--</strong></div>
+                    </div>
+                    <div id="renewableReviewTableWrap" class="runtime-log-wrap renewable-review-table-wrap">
+                      <table class="runtime-device-table renewable-review-table">
+                        <thead>
+                          <tr>
+                            <th>指标项</th>
+                            <th class="numeric-cell">数值</th>
+                            <th>单位</th>
+                            <th>口径说明</th>
+                          </tr>
+                        </thead>
+                        <tbody id="renewableReviewTableBody">
+                          <tr><td colspan="4" class="empty-state">暂无运行统计数据</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+
                 </div>
               </section>
             </div>
           </div>
-        </section>
-
-        <section class="page-section" data-page="manual-changes">
-          <section class="panel manual-definition-changes-panel">
-            <div class="panel-head">
-              <div class="panel-title-group">
-                <h2>人工修改</h2>
-                <span id="manualDefinitionChangesSummary">0 项修改 · 已选 0 项</span>
-              </div>
-              <div class="manual-definition-changes-actions">
-                <button id="refreshManualChanges" type="button">刷新</button>
-                <button id="retryPendingManualChanges" type="button" disabled>重试保存</button>
-                <button id="resetSelectedManualChanges" class="primary" type="button" disabled>恢复默认值</button>
-              </div>
-            </div>
-            <p id="manualDefinitionChangesMessage" class="manual-definition-changes-message" hidden></p>
-            <div id="manualDefinitionChangesTable" class="manual-definition-changes-wrap" aria-live="polite">
-              <div class="empty-state">当前模型没有人工修改</div>
-            </div>
-          </section>
         </section>
 
         <section class="page-section" data-page="parameters">
@@ -1759,6 +1804,23 @@
       </form>
     </dialog>
 
+    <dialog id="traineeDiagnosticsDialog" class="remote-control-dialog trainee-diagnostics-dialog" aria-labelledby="traineeDiagnosticsTitle">
+      <form method="dialog" class="remote-control-form">
+        <div class="remote-control-head">
+          <div>
+            <h2 id="traineeDiagnosticsTitle">系统联调诊断</h2>
+            <p id="traineeDiagnosticsUpdatedAt">--</p>
+          </div>
+          <button id="closeTraineeDiagnosticsDialog" class="dialog-close-button" type="button" aria-label="关闭诊断窗口">×</button>
+        </div>
+        <dl id="traineeDiagnosticsSummary" class="import-file-summary trainee-diagnostics-grid"></dl>
+        <div class="dialog-actions">
+          <button id="refreshTraineeDiagnosticsBtn" type="button">刷新</button>
+          <button id="confirmTraineeDiagnosticsDialog" class="primary" type="button">关闭</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="dangerConfirmDialog" class="danger-confirm-dialog" aria-labelledby="dangerConfirmTitle" aria-describedby="dangerConfirmMessage">
       <div class="danger-confirm-card">
         <div class="danger-confirm-head">
@@ -1774,15 +1836,15 @@
       </div>
     </dialog>
     <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
-    <script defer src="/js/00-i18n.js?v=20261125-skill-opt"></script>
-    <script defer src="/js/01-state-core.js?v=20261125-skill-opt"></script>
-    <script defer src="/js/02-diagram-core.js?v=20261123-audit-v3"></script>
-    <script defer src="/js/03-diagram-editor.js?v=20261125-skill-opt"></script>
-    <script defer src="/js/04-receive-models.js?v=20261125-skill-opt"></script>
-    <script defer src="/js/05-curves.js?v=20261125-skill-opt"></script>
-    <script defer src="/js/06-renewable-control.js?v=20261125-skill-opt"></script>
-    <script defer src="/js/07-measurements-commands.js?v=20261125-skill-opt"></script>
-    <script defer src="/js/08-bootstrap.js?v=20261123-audit-v3"></script>
-    <script defer src="/js/09-ux-enhancements.js?v=20261123-audit-v3"></script>
+    <script defer src="/js/00-i18n.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/01-state-core.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/02-diagram-core.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/03-diagram-editor.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/04-receive-models.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/05-curves.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/06-renewable-control.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/07-measurements-commands.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/08-bootstrap.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/09-ux-enhancements.js?v=20261126-ux-hub"></script>
   </body>
 </html>

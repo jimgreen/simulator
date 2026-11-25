@@ -2202,11 +2202,19 @@ function setDiagramSelectedDevice(container, devId = "") {
     });
   }
   interaction.selectedElements = [];
-  if (!selectedDevId) return;
+  if (!selectedDevId) {
+    container.dataset.selectedDeviceName = "";
+    container.dispatchEvent(new CustomEvent("ux-diagram-selection", { detail: { devId: "", devName: "" } }));
+    return;
+  }
   const { selectableByDevId } = diagramDeviceElements(container);
   const matched = selectableByDevId.get(selectedDevId) || [];
   matched.forEach((element) => element.classList.add("is-diagram-selected"));
   interaction.selectedElements = matched;
+  const selectedInfo = diagramDeviceIndex(container)?.get(selectedDevId);
+  const selectedName = String(selectedInfo?.devName || selectedDevId || "").trim();
+  container.dataset.selectedDeviceName = selectedName;
+  container.dispatchEvent(new CustomEvent("ux-diagram-selection", { detail: { devId: selectedDevId, devName: selectedName } }));
 }
 
 function focusDiagramDeviceByName(container, devName) {

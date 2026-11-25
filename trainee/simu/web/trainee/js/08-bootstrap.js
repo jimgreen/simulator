@@ -944,11 +944,74 @@ document.querySelectorAll("[data-renewable-parameter-tab]").forEach((button) => 
 document.querySelectorAll("[data-renewable-detail-tab]").forEach((button) => {
   button.addEventListener("click", () => {
     const tab = button.dataset.renewableDetailTab || "trend";
-    state.renewableControl.detailTab = ["trend", "logs"].includes(tab)
+    state.renewableControl.detailTab = ["trend", "logs", "review"].includes(tab)
       ? tab
       : "trend";
     renderRenewableDetailTabs();
   });
+});
+$("exportRenewableReviewCsv")?.addEventListener("click", () => {
+  if (typeof exportRenewableReviewCsv === "function") exportRenewableReviewCsv();
+});
+$("renewableQuickConnectBtn")?.addEventListener("click", () => {
+  const action = $("renewableQuickConnectBtn")?.dataset?.quickAction || "";
+  if (action === "start" && state.modelInitialized) {
+    if (typeof toggleReceiveMode === "function") toggleReceiveMode();
+  } else if (typeof openReceiveLinkDialog === "function") {
+    openReceiveLinkDialog();
+  }
+});
+$("openTraineeDiagnosticsBtn")?.addEventListener("click", () => {
+  if (typeof openTraineeDiagnosticsDialog === "function") openTraineeDiagnosticsDialog();
+});
+$("closeTraineeDiagnosticsDialog")?.addEventListener("click", () => {
+  if (typeof closeTraineeDiagnosticsDialog === "function") closeTraineeDiagnosticsDialog();
+});
+$("confirmTraineeDiagnosticsDialog")?.addEventListener("click", () => {
+  if (typeof closeTraineeDiagnosticsDialog === "function") closeTraineeDiagnosticsDialog();
+});
+$("refreshTraineeDiagnosticsBtn")?.addEventListener("click", () => {
+  if (typeof refreshTraineeDiagnostics === "function") refreshTraineeDiagnostics();
+});
+$("traineeDiagnosticsDialog")?.addEventListener("click", (event) => {
+  if (event.target === $("traineeDiagnosticsDialog") && typeof closeTraineeDiagnosticsDialog === "function") {
+    closeTraineeDiagnosticsDialog();
+  }
+});
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const modelSubtabBtn = event.target.closest("[data-model-subtab]");
+  if (modelSubtabBtn) {
+    event.preventDefault();
+    if (typeof setModelSubtab === "function") setModelSubtab(modelSubtabBtn.dataset.modelSubtab || "params");
+    return;
+  }
+  const overviewCmdRow = event.target.closest("[data-overview-cmd-device]");
+  if (overviewCmdRow) {
+    const devName = String(overviewCmdRow.dataset.overviewCmdDevice || "").trim();
+    const cmdTab = String(overviewCmdRow.dataset.overviewCmdTab || "").trim();
+    if (cmdTab === "remote-control" || cmdTab === "remote-adjustment") {
+      state.activeControlTab = cmdTab;
+    }
+    state.controlFilter = { dev_type: "all", dev_name: "" };
+    state.commandKeywordFilter = devName;
+    showPage("commands");
+    requestAnimationFrame(() => {
+      if (typeof syncControlTabs === "function") syncControlTabs();
+      const input = $("commandKeywordFilter")
+        || document.querySelector('[data-page="commands"] input[type="search"]');
+      if (input) {
+        input.value = devName;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      if (typeof renderCombinedControlPage === "function") renderCombinedControlPage();
+    });
+    return;
+  }
+  const overviewEventJump = event.target.closest("[data-overview-event-jump]");
+  if (overviewEventJump) {
+    showPage(overviewEventJump.dataset.overviewEventJump || "history");
+  }
 });
 $("renewableControlLogPager")?.addEventListener("click", (event) => {
   const button = event.target instanceof Element ? event.target.closest("[data-renewable-pager=\"logs\"]") : null;

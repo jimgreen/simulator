@@ -44,7 +44,7 @@
         }
       } catch (_e) {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20261125-skill-opt" />
+    <link rel="stylesheet" href="/styles.css?v=20261126-ux-hub" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -68,8 +68,8 @@
             <span id="modelServiceState" class="model-service-state" data-state="stopped">已停止</span>
           </div>
           <button id="traineeLinkButton" class="trainee-link-button" type="button">交互地址</button>
-          <label class="simulation-mode-switcher"><span>仿真模式</span>
-            <select id="simulationModeSelector" title="选择时、日、周、月或年仿真">
+          <label class="simulation-mode-switcher">
+            <select id="simulationModeSelector" aria-label="仿真模式" title="选择时、日、周、月或年仿真">
               <option value="hour">时仿真</option>
               <option value="day">日仿真</option>
               <option value="week">周仿真</option>
@@ -86,6 +86,18 @@
           </div>
         </div>
         <div id="topbarClockControls" class="overview-clock-controls topbar-clock-controls" data-clock-state="stopped" aria-label="时钟控制">
+          <button
+            id="topbarQuickStepBtn"
+            class="icon-button topbar-quick-step-btn"
+            type="button"
+            data-clock="step"
+            title="单步"
+            aria-label="单步"
+            aria-disabled="true"
+            disabled
+          >
+            <svg viewBox="0 0 24 24"><path d="M5 5v14l9-7-9-7zm11 0h3v14h-3z" /></svg>
+          </button>
           <button
             id="clockControlTrigger"
             class="clock-control-trigger"
@@ -182,10 +194,6 @@
             <button data-nav-page="parameters" title="参数配置">
               <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
               <span class="nav-label">参数配置</span>
-            </button>
-            <button data-nav-page="manual-changes" title="人工修改">
-              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>
-              <span class="nav-label">人工修改</span>
             </button>
             <button data-nav-page="runtime" title="控制指令">
               <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h8l-1 8 10-12h-8Z"/></svg>
@@ -625,36 +633,152 @@
         </section>
 
         <section class="page-section" data-page="model">
-          <div class="model-page-layout">
-            <aside class="panel model-tree-panel">
-              <div class="panel-head">
-                <h2>设备树</h2>
-                <span id="modelTreeSummary">0 类 · 0 台</span>
+          <div class="model-hub-shell">
+            <div class="model-hub-bar">
+              <div class="sub-tabs model-hub-tabs" role="tablist" aria-label="电网模型视图">
+                <button type="button" class="sub-tab is-active" role="tab" aria-selected="true" data-model-subtab="params"><span>设备参数</span></button>
+                <button type="button" class="sub-tab" role="tab" aria-selected="false" data-model-subtab="manual-changes"><span>人工修改</span><span id="modelManualChangesBadge" class="subtab-count-badge"></span></button>
+                <button type="button" class="sub-tab" role="tab" aria-selected="false" data-model-subtab="faults"><span>故障与模式</span><span id="modelFaultsBadge" class="subtab-count-badge"></span></button>
               </div>
-              <label class="device-tree-filter">
-                <input type="search" data-device-tree-filter-scope="model" aria-label="过滤电网模型设备树" placeholder="过滤设备" autocomplete="off" />
-              </label>
-              <div id="modelDeviceTree" class="device-tree" aria-label="电网模型设备树">
-                <button
-                  type="button"
-                  class="tree-node tree-root is-active"
-                  data-model-tree-type="all"
-                  data-model-tree-name=""
-                >
-                  <span>全部设备</span>
-                  <strong>0</strong>
-                </button>
-              </div>
-            </aside>
+            </div>
 
-            <section class="panel model-table-panel">
-              <div class="panel-head">
-                <h2>模型参数</h2>
-                <span id="modelParamSummary">待同步</span>
+            <div class="model-hub-pane" data-model-subtab-pane="params">
+              <div class="model-page-layout">
+                <aside class="panel model-tree-panel">
+                  <div class="panel-head">
+                    <h2>设备树</h2>
+                    <span id="modelTreeSummary">0 类 · 0 台</span>
+                  </div>
+                  <label class="device-tree-filter">
+                    <input type="search" data-device-tree-filter-scope="model" aria-label="过滤电网模型设备树" placeholder="过滤设备" autocomplete="off" />
+                  </label>
+                  <div id="modelDeviceTree" class="device-tree" aria-label="电网模型设备树">
+                    <button
+                      type="button"
+                      class="tree-node tree-root is-active"
+                      data-model-tree-type="all"
+                      data-model-tree-name=""
+                    >
+                      <span>全部设备</span>
+                      <strong>0</strong>
+                    </button>
+                  </div>
+                </aside>
+
+                <section class="panel model-table-panel">
+                  <div class="panel-head">
+                    <h2>模型参数</h2>
+                    <span id="modelParamSummary">待同步</span>
+                  </div>
+                  <div class="sr-only">idx 名称 设备属性</div>
+                  <div id="modelParamTable" class="model-param-wrap" data-model-role="param-table"></div>
+                </section>
               </div>
-              <div class="sr-only">idx 名称 设备属性</div>
-              <div id="modelParamTable" class="model-param-wrap" data-model-role="param-table"></div>
-            </section>
+            </div>
+
+            <div class="model-hub-pane" data-model-subtab-pane="manual-changes" hidden>
+              <section class="panel manual-definition-changes-panel">
+                <div class="panel-head">
+                  <div class="panel-title-group">
+                    <h2>人工修改</h2>
+                    <span id="manualDefinitionChangesSummary">0 项修改 · 已选 0 项</span>
+                  </div>
+                  <div class="panel-actions">
+                    <button id="refreshManualChanges" type="button">刷新</button>
+                    <button id="retryPendingManualChanges" type="button" disabled>重试保存</button>
+                    <button id="resetSelectedManualChanges" class="primary" type="button" disabled>恢复默认值</button>
+                  </div>
+                </div>
+                <p id="manualDefinitionChangesMessage" class="manual-definition-changes-message" hidden></p>
+                <div class="sr-only">对象 修改类型 参数或状态项 默认值 当前值 修改时间 保存状态</div>
+                <div
+                  id="manualDefinitionChangesTable"
+                  class="manual-definition-changes-wrap"
+                  aria-live="polite"
+                ></div>
+              </section>
+            </div>
+
+            <div class="model-hub-pane" data-model-subtab-pane="faults" hidden>
+              <div class="fault-hub-shell">
+                <div class="fault-hub-toolbar">
+                  <div class="sub-tabs" role="tablist" aria-label="故障与模式类型">
+                    <button type="button" class="sub-tab is-active" role="tab" aria-selected="true" data-fault-subtab="device">设备故障</button>
+                    <button type="button" class="sub-tab" role="tab" aria-selected="false" data-fault-subtab="measurement">量测故障</button>
+                    <button type="button" class="sub-tab" role="tab" aria-selected="false" data-fault-subtab="mode">运行模式</button>
+                  </div>
+                  <div class="panel-actions">
+                    <button id="saveFaults" class="primary" type="button">保存设置</button>
+                  </div>
+                </div>
+
+                <div class="fault-subtab-pane" data-fault-subtab-pane="device">
+                  <div class="model-page-layout">
+                    <aside class="panel model-tree-panel">
+                      <div class="panel-head">
+                        <h2>设备树</h2>
+                        <span id="faultDeviceTreeSummary">0 类 · 0 台</span>
+                      </div>
+                      <label class="device-tree-filter">
+                        <input type="search" data-device-tree-filter-scope="faultDevice" aria-label="过滤设备故障设备树" placeholder="过滤设备" autocomplete="off" />
+                      </label>
+                      <div id="faultDeviceTree" class="device-tree" aria-label="设备故障设备树"></div>
+                    </aside>
+                    <section class="panel model-table-panel">
+                      <div class="panel-head">
+                        <h2>设备故障</h2>
+                        <span id="deviceFaultSummary">待同步</span>
+                      </div>
+                      <div id="deviceFaultTable" class="model-param-wrap"></div>
+                    </section>
+                  </div>
+                </div>
+
+                <div class="fault-subtab-pane" data-fault-subtab-pane="measurement" hidden>
+                  <div class="model-page-layout">
+                    <aside class="panel model-tree-panel">
+                      <div class="panel-head">
+                        <h2>设备树</h2>
+                        <span id="faultMeasurementTreeSummary">0 类 · 0 点</span>
+                      </div>
+                      <label class="device-tree-filter">
+                        <input type="search" data-device-tree-filter-scope="faultMeasurement" aria-label="过滤量测故障设备树" placeholder="过滤设备" autocomplete="off" />
+                      </label>
+                      <div id="faultMeasurementTree" class="device-tree" aria-label="量测故障设备树"></div>
+                    </aside>
+                    <section class="panel model-table-panel">
+                      <div class="panel-head">
+                        <h2>量测故障</h2>
+                        <span id="measurementFaultSummary">待同步</span>
+                      </div>
+                      <div id="measurementFaultTable" class="model-param-wrap"></div>
+                    </section>
+                  </div>
+                </div>
+
+                <div class="fault-subtab-pane" data-fault-subtab-pane="mode" hidden>
+                  <div class="model-page-layout">
+                    <aside class="panel model-tree-panel">
+                      <div class="panel-head">
+                        <h2>设备树</h2>
+                        <span id="modeTreeSummary">0 类 · 0 台</span>
+                      </div>
+                      <label class="device-tree-filter">
+                        <input type="search" data-device-tree-filter-scope="mode" aria-label="过滤运行模式设备树" placeholder="过滤设备" autocomplete="off" />
+                      </label>
+                      <div id="modeDeviceTree" class="device-tree" aria-label="运行模式设备树"></div>
+                    </aside>
+                    <section class="panel model-table-panel">
+                      <div class="panel-head">
+                        <h2>运行模式</h2>
+                        <span id="modeTableSummary">待同步</span>
+                      </div>
+                      <div id="modeDeviceTable" class="model-param-wrap"></div>
+                    </section>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -1018,29 +1142,6 @@
           </div>
         </section>
 
-        <section class="page-section" data-page="manual-changes">
-          <section class="panel manual-definition-changes-panel">
-            <div class="panel-head">
-              <div class="panel-title-group">
-                <h2>人工修改</h2>
-                <span id="manualDefinitionChangesSummary">0 项修改 · 已选 0 项</span>
-              </div>
-              <div class="panel-actions">
-                <button id="refreshManualChanges" type="button">刷新</button>
-                <button id="retryPendingManualChanges" type="button" disabled>重试保存</button>
-                <button id="resetSelectedManualChanges" class="primary" type="button" disabled>恢复默认值</button>
-              </div>
-            </div>
-            <p id="manualDefinitionChangesMessage" class="manual-definition-changes-message" hidden></p>
-            <div class="sr-only">对象 修改类型 参数或状态项 默认值 当前值 修改时间 保存状态</div>
-            <div
-              id="manualDefinitionChangesTable"
-              class="manual-definition-changes-wrap"
-              aria-live="polite"
-            ></div>
-          </section>
-        </section>
-
         <section class="page-section" data-page="runtime">
           <div class="runtime-page-layout">
             <aside class="panel runtime-tree-panel">
@@ -1085,30 +1186,33 @@
                   </div>
                 </div>
                 <div class="table-filter-bar" aria-label="控制指令过滤">
-                  <label>名称
+                  <label>
                     <input
                       id="runtimeCommandKeywordFilter"
                       type="search"
                       data-table-filter-scope="runtimeCommand"
                       data-table-filter-field="keyword"
                       placeholder="过滤指令或设备"
+                      aria-label="过滤指令或设备"
                       autocomplete="off"
                     />
                   </label>
-                  <label>类型
+                  <label>
                     <select
                       id="runtimeCommandTypeFilter"
                       data-table-filter-scope="runtimeCommand"
                       data-table-filter-field="type"
+                      aria-label="类型"
                     >
                       <option value="all">全部类型</option>
                     </select>
                   </label>
-                  <label>来源
+                  <label>
                     <select
                       id="runtimeCommandOriginFilter"
                       data-table-filter-scope="runtimeCommand"
                       data-table-filter-field="origin"
+                      aria-label="来源"
                     >
                       <option value="all">全部来源</option>
                       <option value="manual">人工指令</option>
@@ -1202,21 +1306,23 @@
                   <span id="measurementCompareSummary">待同步</span>
                 </div>
                 <div class="table-filter-bar" aria-label="实时量测过滤">
-                  <label>名称
+                  <label>
                     <input
                       id="measurementCompareKeywordFilter"
                       type="search"
                       data-table-filter-scope="measurementCompare"
                       data-table-filter-field="keyword"
                       placeholder="过滤量测或设备"
+                      aria-label="过滤量测或设备"
                       autocomplete="off"
                     />
                   </label>
-                  <label>类型
+                  <label>
                     <select
                       id="measurementCompareTypeFilter"
                       data-table-filter-scope="measurementCompare"
                       data-table-filter-field="type"
+                      aria-label="类型"
                     >
                       <option value="all">全部类型</option>
                     </select>
@@ -1288,18 +1394,15 @@
             <div class="panel-head">
               <h2>运行日志</h2>
               <div class="panel-actions">
-                <label class="compact-field">搜索
-                  <input id="runtimeLogKeywordFilter" type="search" placeholder="筛选对象/结果/概要" autocomplete="off" />
-                </label>
-                <label class="compact-field">日志类型
-                  <select id="runtimeLogTypeFilter">
-                    <option value="all">全部类型</option>
-                  </select>
-                </label>
+                <input id="runtimeLogKeywordFilter" class="scada104-search" type="search" placeholder="筛选对象/结果/概要" aria-label="筛选对象/结果/概要" autocomplete="off" />
+                <select id="runtimeLogTypeFilter" aria-label="日志类型">
+                  <option value="all">全部类型</option>
+                </select>
                 <label class="inline-check-filter">
                   <input id="runtimeLogOnlyAlertFilter" type="checkbox" />
                   仅看告警
                 </label>
+                <button id="clearRuntimeLogFilters" type="button" hidden>清空筛选</button>
                 <button id="clearRuntimeLogs" type="button">清空日志</button>
                 <span id="runtimeLogSummary">最近 0 条</span>
               </div>
@@ -2011,15 +2114,15 @@
       </div>
     </dialog>
     <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
-    <script defer src="/js/00-i18n.js?v=20261125-skill-opt"></script>
-    <script defer src="/js/01-state-core.js?v=20261125-skill-opt"></script>
-    <script defer src="/js/02-api-models.js?v=20261125-skill-opt"></script>
-    <script defer src="/js/03-diagram-core.js?v=20261123-audit-v4"></script>
-    <script defer src="/js/04-diagram-editor.js?v=20261123-audit-v4"></script>
-    <script defer src="/js/05-curves.js?v=20261125-skill-opt"></script>
-    <script defer src="/js/06-overview-runtime.js?v=20261125-skill-opt"></script>
-    <script defer src="/js/07-measurements-faults.js?v=20261125-skill-opt"></script>
-    <script defer src="/js/08-ux-enhancements.js?v=20261123-audit-v4"></script>
-    <script defer src="/js/09-scada104.js?v=20261125-skill-opt"></script>
+    <script defer src="/js/00-i18n.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/01-state-core.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/02-api-models.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/03-diagram-core.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/04-diagram-editor.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/05-curves.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/06-overview-runtime.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/07-measurements-faults.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/08-ux-enhancements.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/09-scada104.js?v=20261126-ux-hub"></script>
   </body>
 </html>

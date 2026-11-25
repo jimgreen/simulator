@@ -251,6 +251,8 @@ const SIMULATOR_PAGE_ROUTES = {
   "/curves": "curves",
   "/parameters": "parameters",
   "/manual-changes": "manual-changes",
+  "/faults": "faults",
+  "/modes": "modes",
   "/runtime": "runtime",
   "/measurements": "measurements",
   "/logs": "logs",
@@ -308,8 +310,90 @@ function mountPageSection(page) {
   main.appendChild(section);
 }
 
+function updateModelHubBadges() {
+  const manualCount = Array.isArray(state.manualDefinitionChanges) ? state.manualDefinitionChanges.length : 0;
+  const manualBadge = $("modelManualChangesBadge");
+  if (manualBadge) manualBadge.textContent = manualCount > 0 ? String(manualCount) : "";
+  const faultCount = (Array.isArray(state.deviceFaults) ? state.deviceFaults.length : 0)
+    + (Array.isArray(state.measurementFaults) ? state.measurementFaults.length : 0);
+  const faultBadge = $("modelFaultsBadge");
+  if (faultBadge) faultBadge.textContent = faultCount > 0 ? String(faultCount) : "";
+}
+
+function syncModelSubtabDom() {
+  const activeTab = ["params", "manual-changes", "faults"].includes(state.activeModelSubtab)
+    ? state.activeModelSubtab
+    : "params";
+  state.activeModelSubtab = activeTab;
+  document.querySelectorAll("[data-model-subtab]").forEach((btn) => {
+    const matched = btn.dataset.modelSubtab === activeTab;
+    btn.classList.toggle("is-active", matched);
+    btn.setAttribute("aria-selected", matched ? "true" : "false");
+  });
+  document.querySelectorAll("[data-model-subtab-pane]").forEach((pane) => {
+    const matched = pane.dataset.modelSubtabPane === activeTab;
+    pane.classList.toggle("is-active", matched);
+    pane.hidden = !matched;
+  });
+  updateModelHubBadges();
+}
+
+function syncFaultSubtabDom() {
+  const activeTab = ["device", "measurement", "mode"].includes(state.activeFaultSubtab)
+    ? state.activeFaultSubtab
+    : "device";
+  state.activeFaultSubtab = activeTab;
+  document.querySelectorAll("[data-fault-subtab]").forEach((btn) => {
+    const matched = btn.dataset.faultSubtab === activeTab;
+    btn.classList.toggle("is-active", matched);
+    btn.setAttribute("aria-selected", matched ? "true" : "false");
+  });
+  document.querySelectorAll("[data-fault-subtab-pane]").forEach((pane) => {
+    const matched = pane.dataset.faultSubtabPane === activeTab;
+    pane.classList.toggle("is-active", matched);
+    pane.hidden = !matched;
+  });
+}
+
+function setModelSubtab(subtab) {
+  const next = ["params", "manual-changes", "faults"].includes(subtab) ? subtab : "params";
+  state.activeModelSubtab = next;
+  syncModelSubtabDom();
+  if (next === "manual-changes") {
+    renderManualDefinitionChanges();
+    loadManualDefinitionChanges();
+  } else if (next === "faults") {
+    syncFaultSubtabDom();
+    if (typeof renderActiveFaultSubtab === "function") renderActiveFaultSubtab(true);
+  } else {
+    renderGridModelPage();
+  }
+  window.refreshUxSplitters?.();
+}
+
+function setFaultSubtab(subtab) {
+  const next = ["device", "measurement", "mode"].includes(subtab) ? subtab : "device";
+  state.activeFaultSubtab = next;
+  syncFaultSubtabDom();
+  if (typeof renderActiveFaultSubtab === "function") renderActiveFaultSubtab(true);
+  window.refreshUxSplitters?.();
+}
+
 function showPage(page, updateHash = true) {
-  const target = state.pageSections?.[page] ? page : "overview";
+  let requested = page;
+  if (requested === "manual-changes") {
+    state.activeModelSubtab = "manual-changes";
+    requested = "model";
+  } else if (requested === "faults") {
+    state.activeModelSubtab = "faults";
+    state.activeFaultSubtab = "device";
+    requested = "model";
+  } else if (requested === "modes") {
+    state.activeModelSubtab = "faults";
+    state.activeFaultSubtab = "mode";
+    requested = "model";
+  }
+  const target = state.pageSections?.[requested] ? requested : "overview";
   const previousPage = state.activePage || currentPageName();
   if (previousPage === "curves" && target !== "curves") cancelCurveRequests();
   if (previousPage === "scada104" && target !== "scada104") {
@@ -317,6 +401,10 @@ function showPage(page, updateHash = true) {
   }
   state.activePage = target;
   mountPageSection(target);
+  if (target === "model") {
+    syncModelSubtabDom();
+    if (state.activeModelSubtab === "faults") syncFaultSubtabDom();
+  }
   if (target === "scada104") {
     window.Scada104Module?.setActive(true);
   }
@@ -331,10 +419,11 @@ function showPage(page, updateHash = true) {
   }
   requestAnimationFrame(() => {
     renderActiveSimulatorPage(state.snapshot, true);
-    if (target === "manual-changes") loadManualDefinitionChanges();
+    if (target === "model" && state.activeModelSubtab === "manual-changes") loadManualDefinitionChanges();
     if (state.snapshot && !hasStaticSnapshotPayload(state.snapshot, staticSnapshotKeysForPage(target))) {
       refresh();
     }
+    window.refreshUxSplitters?.();
   });
 }
 
@@ -583,6 +672,7 @@ function renderManualDefinitionChanges() {
   const pendingChanges = changes.filter((item) => !item.persisted);
   const summary = $("manualDefinitionChangesSummary");
   if (summary) summary.textContent = `${changes.length} 项修改 · ${pendingChanges.length} 项未保存 · 已选 ${selectedCount} 项`;
+  updateModelHubBadges();
   const message = $("manualDefinitionChangesMessage");
   if (message) {
     const text = state.manualDefinitionChangesError || state.manualDefinitionChangesMessage || "";

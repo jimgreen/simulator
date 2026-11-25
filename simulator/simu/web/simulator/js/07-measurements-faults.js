@@ -927,7 +927,12 @@ function renderMeasurementCompareTable() {
               aria-selected="${key === selectedKey ? "true" : "false"}"
             >
               <td>${escapeHtml(measurementDisplayName(row) || "--")}</td>
-              <td>${escapeHtml(measurementDeviceDisplay(row))}</td>
+              <td>
+                <span class="meas-device-cell">
+                  <span>${escapeHtml(measurementDeviceDisplay(row))}</span>
+                  ${row.dev_name ? `<button type="button" class="compact-action-btn inline-jump-104-btn" data-jump-scada104-device="${escapeHtml(row.dev_name)}" data-jump-scada104-kind="${state.activeMeasurementCompareTab === "signal" ? "yx" : "yc"}" title="在 IEC104 四遥点表中定位该设备">104</button>` : ""}
+                </span>
+              </td>
               <td>${escapeHtml(measurementTypeDisplay(row) || "--")}</td>
               <td class="numeric-cell" data-measurement-live-field="real">${formatMeasurementDisplayValue(measurementPresentationValue(row.real_value, row), row)}</td>
               <td class="numeric-cell" data-measurement-live-field="scada">${formatMeasurementDisplayValue(measurementPresentationValue(row.scada_value, row), row)}</td>
@@ -1240,13 +1245,33 @@ function setMeasurementFaultFilter(devType, devName = "", event = null, button =
   renderFaults(true);
 }
 
+function renderActiveFaultSubtab(force = false) {
+  const tab = state.activeFaultSubtab || "device";
+  if (tab === "mode") {
+    renderModes(force);
+  } else {
+    renderFaults(force);
+  }
+  if (typeof updateModelHubBadges === "function") updateModelHubBadges();
+}
+
 function renderFaults(force = false) {
   const activeEditor = document.activeElement?.closest?.("#deviceFaultTable, #measurementFaultTable");
   if (!force && activeEditor) return;
-  renderFaultDeviceTree();
-  renderDeviceFaultTable();
-  renderFaultMeasurementTree();
-  renderMeasurementFaultTable();
+  const activeTab = state.activeFaultSubtab || "device";
+  if (activeTab === "device") {
+    renderFaultDeviceTree();
+    renderDeviceFaultTable(force);
+  } else if (activeTab === "measurement") {
+    renderFaultMeasurementTree();
+    renderMeasurementFaultTable(force);
+  } else {
+    renderFaultDeviceTree();
+    renderDeviceFaultTable(force);
+    renderFaultMeasurementTree();
+    renderMeasurementFaultTable(force);
+  }
+  if (typeof updateModelHubBadges === "function") updateModelHubBadges();
 }
 
 function faultWindowFields() {
@@ -1327,13 +1352,23 @@ function faultSimulationModeLabel() {
   return `${simulationModeLabel()} · ${isExtendedSimulationMode() ? "按日整定" : "按时分整定"}`;
 }
 
-function renderDeviceFaultTable() {
+function renderDeviceFaultTable(force = false) {
   const container = $("deviceFaultTable");
   const devices = faultDevices();
   const rows = filteredFaultDevices();
   const windowFields = faultWindowFields();
   if (!container) return;
-  $("deviceFaultSummary").textContent = `${faultSimulationModeLabel()} · ${state.deviceFaults.length} 个故障 · 显示 ${rows.length}/${devices.length} 台`;
+  const summaryEl = $("deviceFaultSummary");
+  if (summaryEl) summaryEl.textContent = `${faultSimulationModeLabel()} · ${state.deviceFaults.length} 个故障 · 显示 ${rows.length}/${devices.length} 台`;
+  const renderKey = [
+    state.curveMode,
+    rows.map(({ dev, index }) => {
+      const fault = findDeviceFault(dev);
+      return `${index}:${dev.dev_type}:${dev.dev_name}:${dev.run_stat ? 1 : 0}:${fault ? `${fault[windowFields.startField] ?? ""}-${fault[windowFields.clearField] ?? ""}` : "n"}`;
+    }).join("|"),
+  ].join("::");
+  if (!force && container.dataset.deviceFaultRenderKey === renderKey) return;
+  container.dataset.deviceFaultRenderKey = renderKey;
   if (!devices.length) {
     container.innerHTML = '<div class="empty-state">暂无设备数据</div>';
     return;
@@ -1377,13 +1412,33 @@ function renderDeviceFaultTable() {
     </table>`;
 }
 
-function renderMeasurementFaultTable() {
+function renderMeasurementFaultTable(force = false) {
   const container = $("measurementFaultTable");
   const measurements = faultMeasurements();
   const rows = filteredFaultMeasurements();
   const windowFields = faultWindowFields();
   if (!container) return;
-  $("measurementFaultSummary").textContent = `${faultSimulationModeLabel()} · ${state.measurementFaults.length} 个故障 · 显示 ${rows.length}/${measurements.length} 点`;
+  const summaryEl = $("measurementFaultSummary");
+  if (summaryEl) summaryEl.textContent = `${faultSimulationModeLabel()} · ${state.measurementFaults.length} 个故障 · 显示 ${rows.length}/${measurements.length} 点`;
+  const renderKey = [
+    state.curveMode,
+    rows.map(({ meas, index }) => {
+      const fault = findMeasurementFault(meas);
+      return `${index}:${meas.name}:${fault ? `${fault.fault_type}:${fault[windowFields.startField] ?? ""}:${fault[windowFields.clearField] ?? ""}:${fault.median ?? ""}:${fault.bias ?? ""}` : "n"}`;
+    }).join("|"),
+  ].join("::");
+  if (!force && container.dataset.measFaultRenderKey === renderKey) {
+    // 仅轻量更新当前值单元格，避免打断滚动与编辑
+    rows.forEach(({ meas }, idx) => {
+      const cell = container.querySelector(`[data-meas-fault-val-idx="${idx}"]`);
+      if (cell) {
+        const txt = String(meas.value ?? "--");
+        if (cell.textContent !== txt) cell.textContent = txt;
+      }
+    });
+    return;
+  }
+  container.dataset.measFaultRenderKey = renderKey;
   if (!measurements.length) {
     container.innerHTML = '<div class="empty-state">暂无量测数据</div>';
     return;
@@ -1408,7 +1463,7 @@ function renderMeasurementFaultTable() {
         </tr>
       </thead>
       <tbody>
-        ${rows.map(({ meas, index }) => {
+        ${rows.map(({ meas, index }, rowIdx) => {
           const fault = findMeasurementFault(meas);
           const faultType = fault?.fault_type || "normal";
           const disabled = fault ? "" : "disabled";
@@ -1417,7 +1472,7 @@ function renderMeasurementFaultTable() {
               <td>${escapeHtml(meas.name)}</td>
               <td>${escapeHtml(meas.dev_type)}.${escapeHtml(meas.dev_name)}</td>
               <td>${escapeHtml(meas.meas_type)}</td>
-              <td>${meas.value ?? "--"}</td>
+              <td class="numeric-cell" data-meas-fault-val-idx="${rowIdx}">${meas.value ?? "--"}</td>
               <td>
                 <select data-meas-index="${index}" data-meas-field="fault_type">
                   <option value="normal" ${faultType === "normal" ? "selected" : ""}>正常</option>
@@ -1584,11 +1639,17 @@ function renderModeDeviceTree() {
   updateDeviceTreeHtml(container, treeHtml);
 }
 
-function renderModeDeviceTable() {
+function renderModeDeviceTable(force = false) {
   const container = $("modeDeviceTable");
   if (!container) return;
   const rows = modeRows();
-  $("modeTableSummary").textContent = `${rows.length}/${state.modes.length} 台设备`;
+  const summaryEl = $("modeTableSummary");
+  if (summaryEl) summaryEl.textContent = `${rows.length}/${state.modes.length} 台设备`;
+  const renderKey = rows.map(({ item, index, device }) => (
+    `${index}:${item.dev_type}:${item.dev_name}:${item.mode}:${device?.run_stat ?? ""}:${device?.status ?? ""}:${device?.mode ?? ""}`
+  )).join("|");
+  if (!force && container.dataset.modeTableRenderKey === renderKey) return;
+  container.dataset.modeTableRenderKey = renderKey;
   if (!state.modes.length) {
     container.innerHTML = '<div class="empty-state">暂无可设模式设备</div>';
     return;
@@ -1637,7 +1698,7 @@ function renderModes(force = false) {
   const activeEditor = document.activeElement?.closest?.("#modeDeviceTable");
   if (!force && activeEditor) return;
   renderModeDeviceTree();
-  renderModeDeviceTable();
+  renderModeDeviceTable(force);
 }
 
 function setModeFilter(devType, devName = "", event = null, button = null) {
@@ -1710,6 +1771,7 @@ async function pushSettings() {
       }),
     });
     await refresh();
+    if (typeof updateModelHubBadges === "function") updateModelHubBadges();
     if (typeof showUiToast === "function") showUiToast("设置已保存", "ok", 1800);
   } catch (error) {
     const msg = typeof apiErrorText === "function" ? apiErrorText(error) : String(error?.message || error);
@@ -2086,6 +2148,62 @@ document.addEventListener("change", (event) => {
 });
 document.addEventListener("scroll", handleVirtualTableScroll, true);
 document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const modelSubtabBtn = event.target.closest("[data-model-subtab]");
+  if (modelSubtabBtn) {
+    event.preventDefault();
+    setModelSubtab(modelSubtabBtn.dataset.modelSubtab || "params");
+    return;
+  }
+  const faultSubtabBtn = event.target.closest("[data-fault-subtab]");
+  if (faultSubtabBtn) {
+    event.preventDefault();
+    setFaultSubtab(faultSubtabBtn.dataset.faultSubtab || "device");
+    return;
+  }
+  const saveFaultsBtn = event.target.closest("#saveFaults");
+  if (saveFaultsBtn) {
+    event.preventDefault();
+    pushSettings();
+    return;
+  }
+  const jump104Btn = event.target.closest("[data-jump-scada104-device]");
+  if (jump104Btn) {
+    event.preventDefault();
+    event.stopPropagation();
+    const devName = jump104Btn.dataset.jumpScada104Device || "";
+    const kind = jump104Btn.dataset.jumpScada104Kind || "";
+    showPage("scada104");
+    setTimeout(() => {
+      window.Scada104Module?.focusPointSearch?.(devName, kind);
+    }, 80);
+    return;
+  }
+  const overviewCmdRow = event.target.closest("[data-overview-cmd-device]");
+  if (overviewCmdRow) {
+    const devName = String(overviewCmdRow.dataset.overviewCmdDevice || "").trim();
+    const cmdTab = String(overviewCmdRow.dataset.overviewCmdTab || "").trim();
+    if (cmdTab === "remote_control" || cmdTab === "remote_adjustment") {
+      state.activeRuntimeCommandTab = cmdTab;
+    }
+    state.runtimeDeviceFilter = { dev_type: "all", dev_name: "" };
+    state.runtimeCommandKeywordFilter = devName;
+    showPage("runtime");
+    requestAnimationFrame(() => {
+      const input = $("runtimeCommandKeywordFilter");
+      if (input) {
+        input.value = devName;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      renderRuntimeDeviceTable();
+    });
+    return;
+  }
+  const overviewEventJump = event.target.closest("[data-overview-event-jump]");
+  if (overviewEventJump) {
+    showPage(overviewEventJump.dataset.overviewEventJump || "logs");
+    return;
+  }
   const curveTreeToggle = event.target.closest("[data-curve-tree-toggle]");
   if (curveTreeToggle) {
     event.preventDefault();
@@ -2293,6 +2411,19 @@ document.addEventListener("input", (event) => {
   $("runtimeLogOnlyAlertFilter")?.addEventListener("change", (event) => {
     state.runtimeLogOnlyAlert = Boolean(event.target.checked);
     state.runtimeLogPage = 1;
+    renderRuntimeLogs();
+  });
+  $("clearRuntimeLogFilters")?.addEventListener("click", () => {
+    state.runtimeLogKeywordFilter = "";
+    state.runtimeLogTypeFilter = "all";
+    state.runtimeLogOnlyAlert = false;
+    state.runtimeLogPage = 1;
+    const kw = $("runtimeLogKeywordFilter");
+    if (kw) kw.value = "";
+    const tp = $("runtimeLogTypeFilter");
+    if (tp) tp.value = "all";
+    const oa = $("runtimeLogOnlyAlertFilter");
+    if (oa) oa.checked = false;
     renderRuntimeLogs();
   });
 

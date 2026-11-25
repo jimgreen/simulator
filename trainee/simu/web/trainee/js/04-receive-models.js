@@ -1243,6 +1243,86 @@ function renderReceiveMode(extraText = "") {
   if (teacherModelDisplayName) {
     teacherModelDisplayName.textContent = state.teacherModelName || state.teacherModelId || "--";
   }
+  const quickBtn = $("renewableQuickConnectBtn");
+  if (quickBtn) {
+    if (state.receiveMode) {
+      quickBtn.hidden = true;
+    } else if (!state.modelInitialized) {
+      quickBtn.hidden = false;
+      quickBtn.dataset.quickAction = "init";
+      quickBtn.textContent = typeof translatePhrase === "function" ? translatePhrase("模型初始化") : "模型初始化";
+    } else {
+      quickBtn.hidden = false;
+      quickBtn.dataset.quickAction = "start";
+      quickBtn.textContent = typeof translatePhrase === "function" ? translatePhrase("启动接收") : "启动接收";
+    }
+  }
+}
+
+async function refreshTraineeDiagnostics() {
+  const container = $("traineeDiagnosticsSummary");
+  const updatedEl = $("traineeDiagnosticsUpdatedAt");
+  if (!container) return;
+  const tr = (text) => (typeof translatePhrase === "function" ? translatePhrase(text) : text);
+  if (updatedEl) updatedEl.textContent = tr("刷新中");
+  const startedAt = performance.now();
+  let diag = null;
+  let health = null;
+  let errorText = "";
+  try {
+    const [diagRes, healthRes] = await Promise.allSettled([
+      api("/api/trainee/diagnostics"),
+      api("/api/health", { modelScoped: false }),
+    ]);
+    if (diagRes.status === "fulfilled") diag = diagRes.value;
+    else errorText = apiErrorText(diagRes.reason);
+    if (healthRes.status === "fulfilled") health = healthRes.value;
+  } catch (err) {
+    errorText = apiErrorText(err);
+  }
+  const rttMs = Math.round(performance.now() - startedAt);
+  const nowStr = new Date().toTimeString().slice(0, 8);
+  if (updatedEl) updatedEl.textContent = `${nowStr} (${rttMs} ms)`;
+
+  const snap = state.snapshot || {};
+  const compute = snap.compute || {};
+  const computeMs = compute.duration_ms ?? compute.elapsed_ms ?? diag?.compute_ms ?? diag?.last_compute_ms;
+  const syncAgeSec = diag?.age_seconds ?? diag?.stale_seconds ?? diag?.frame_age_seconds;
+  const consecutiveFailures = diag?.consecutive_failures ?? diag?.failure_count ?? 0;
+  const rows = [
+    [tr("连接地址"), teacherReceiveAddress() || "--"],
+    [tr("教员端模型"), state.teacherModelName || state.teacherModelId || "--"],
+    [tr("模型初始化"), state.modelInitialized ? tr("已初始化") : tr("待初始化")],
+    [tr("数据接收"), state.receiveMode ? tr("接收中") : (state.frozen ? tr("已冻结") : tr("已停止"))],
+    [tr("接口往返延迟"), `${rttMs} ms`],
+    [tr("最近帧延迟"), Number.isFinite(Number(syncAgeSec)) ? `${Number(syncAgeSec).toFixed(2)} s` : "--"],
+    [tr("连续失败次数"), String(consecutiveFailures)],
+    [tr("单步求解耗时"), Number.isFinite(Number(computeMs)) ? `${Number(computeMs).toFixed(1)} ms` : "--"],
+    [tr("仿真时钟"), `${snap.clock?.time || "--"} (${snap.clock?.state || "stopped"})`],
+    [tr("后端服务状态"), health?.status || (health?.ok ? "ok" : (errorText ? tr("异常") : "--"))],
+    [tr("前端累计请求"), `${state.frontendDiagnostics?.requestCount || 0}`],
+    [tr("最后诊断错误"), String(diag?.last_error || errorText || "—")],
+  ];
+  container.innerHTML = rows.map(([label, val]) => `
+    <div class="trainee-diag-item">
+      <dt>${escapeHtml(label)}</dt>
+      <dd class="mono-cell">${escapeHtml(String(val ?? "--"))}</dd>
+    </div>
+  `).join("");
+}
+
+function openTraineeDiagnosticsDialog() {
+  const dialog = $("traineeDiagnosticsDialog");
+  if (!dialog) return;
+  if (!dialog.open && typeof dialog.showModal === "function") {
+    dialog.showModal();
+  }
+  refreshTraineeDiagnostics();
+}
+
+function closeTraineeDiagnosticsDialog() {
+  const dialog = $("traineeDiagnosticsDialog");
+  if (dialog?.open) dialog.close();
 }
 
 function curveMinute(snapshot) {
@@ -2291,7 +2371,7 @@ function renderTraineeOverviewEvents() {
   container.dataset.eventsKey = renderKey;
   if (logs.length) {
     container.innerHTML = logs.map((item) => `
-      <div class="overview-event-item">
+      <div class="overview-event-item is-clickable-row" data-overview-event-jump="history" title="点击查看运行日志">
         <time>${escapeHtml(item.wall_time || "--")}</time>
         <strong>${escapeHtml(item.type || "运行")}</strong>
         <span title="${escapeHtml(runtimeLogDetailText(item.detail))}">${escapeHtml(item.result || runtimeLogDetailText(item.detail) || "完成")}</span>
@@ -2350,6 +2430,23 @@ function renderActiveTraineePage(snapshot = state.snapshot || {}, force = false)
     return;
   }
   if (activePage === "model") {
+    syncModelSubtabDom();
+    if (state.activeModelSubtab === "manual-changes") {
+      renderManualDefinitionChanges();
+      const activeDefinitionRevision = Number(snapshot?.static_meta?.definitions?.revision) || 0;
+      if (
+        (
+          state.manualDefinitionChangesLoadedModelId !== state.activeModelId
+          || (activeDefinitionRevision && activeDefinitionRevision !== state.manualDefinitionChangesRevision)
+        )
+        && !state.manualDefinitionChangesLoading
+        && !state.manualDefinitionChangesResetting
+        && !state.manualDefinitionChangesRetrying
+      ) {
+        loadManualDefinitionChanges();
+      }
+      return;
+    }
     renderTraineeModelPage(snapshot);
     return;
   }

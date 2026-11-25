@@ -161,6 +161,8 @@ const state = {
   curveCursor: { visible: false, x: 0, y: 0, index: 0 },
   curveLegendHitBoxes: [],
   settingsLoaded: false,
+  activeModelSubtab: "params",
+  activeFaultSubtab: "device",
   activeFaultTab: "devices",
   faultDeviceFilter: { dev_type: "all", dev_name: "" },
   faultMeasurementFilter: { dev_type: "all", dev_name: "", key: "" },
@@ -3083,7 +3085,7 @@ async function updateModelFromFile() {
     }
     if (updatedActiveModel && (file || diagramFile)) {
       invalidateManualDefinitionChanges();
-      if (currentPageName() === "manual-changes") loadManualDefinitionChanges();
+      if (currentPageName() === "model" && state.activeModelSubtab === "manual-changes") loadManualDefinitionChanges();
       await refresh();
     }
   } catch (error) {

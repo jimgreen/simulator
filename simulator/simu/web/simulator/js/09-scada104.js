@@ -1421,12 +1421,38 @@
     else refresh(true);
   });
 
+  function focusPointSearch(keyword, kind = "") {
+    const query = String(keyword || "").trim();
+    const targetKind = ["yc", "yx", "yk", "yt"].includes(String(kind || "").toLowerCase())
+      ? String(kind).toLowerCase()
+      : "";
+    setActiveViewTab("points");
+    if (targetKind) {
+      activePointsKind = targetKind;
+      document.querySelectorAll("[data-scada104-points-kind]").forEach((btn) => {
+        const matched = btn.dataset.scada104PointsKind === targetKind;
+        btn.classList.toggle("is-active", matched);
+        btn.setAttribute("aria-selected", matched ? "true" : "false");
+      });
+    }
+    const searchInput = get("scada104PointsSearch");
+    if (searchInput) {
+      searchInput.value = query;
+      searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    if (isActive) {
+      if (targetKind) loadPointsTable();
+      else renderPointsTableRows();
+    }
+  }
+
   window.Scada104Module = {
     setActive,
     refresh,
     setActiveViewTab,
     syncActiveModel,
     onLanguageChange,
+    focusPointSearch,
   };
 
   // 若初始直达 /scada104 且主路由已挂载该页签，脚本就绪后立即激活轮询

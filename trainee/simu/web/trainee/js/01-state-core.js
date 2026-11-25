@@ -233,6 +233,7 @@ const state = {
   diagramDeviceCommandContext: null,
   commandCancelSending: new Set(),
   measurementFilter: { dev_type: "all", dev_name: "" },
+  activeModelSubtab: "params",
   measurementKeywordFilter: "",
   measurementTypeFilter: "all",
   measurementDeltaSeq: 0,
@@ -1701,10 +1702,55 @@ function mountPageSection(page) {
   main.appendChild(section);
 }
 
+function updateModelHubBadges() {
+  const manualCount = Array.isArray(state.manualDefinitionChanges) ? state.manualDefinitionChanges.length : 0;
+  const badge = $("modelManualChangesBadge");
+  if (badge) badge.textContent = manualCount > 0 ? String(manualCount) : "";
+}
+
+function syncModelSubtabDom() {
+  const activeTab = ["params", "manual-changes"].includes(state.activeModelSubtab)
+    ? state.activeModelSubtab
+    : "params";
+  state.activeModelSubtab = activeTab;
+  document.querySelectorAll("[data-model-subtab]").forEach((btn) => {
+    const matched = btn.dataset.modelSubtab === activeTab;
+    btn.classList.toggle("is-active", matched);
+    btn.setAttribute("aria-selected", matched ? "true" : "false");
+  });
+  document.querySelectorAll("[data-model-subtab-pane]").forEach((pane) => {
+    const matched = pane.dataset.modelSubtabPane === activeTab;
+    pane.classList.toggle("is-active", matched);
+    pane.hidden = !matched;
+  });
+  updateModelHubBadges();
+}
+
+function setModelSubtab(subtab) {
+  const next = ["params", "manual-changes"].includes(subtab) ? subtab : "params";
+  state.activeModelSubtab = next;
+  syncModelSubtabDom();
+  if (next === "manual-changes") {
+    renderManualDefinitionChanges();
+    loadManualDefinitionChanges();
+  } else if (typeof renderTraineeModelPage === "function") {
+    renderTraineeModelPage(state.snapshot || {});
+  }
+  window.refreshUxSplitters?.();
+}
+
 function showPage(page, updateHash = true) {
-  const target = state.pageSections?.[page] ? page : "overview";
+  let requested = page;
+  if (requested === "manual-changes") {
+    state.activeModelSubtab = "manual-changes";
+    requested = "model";
+  }
+  const target = state.pageSections?.[requested] ? requested : "overview";
   state.activePage = target;
   mountPageSection(target);
+  if (target === "model") {
+    syncModelSubtabDom();
+  }
   document.querySelectorAll("[data-nav-page]").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.navPage === target);
   });
@@ -1716,7 +1762,9 @@ function showPage(page, updateHash = true) {
   }
   requestAnimationFrame(() => {
     renderActiveTraineePage(state.snapshot || {}, true);
+    if (target === "model" && state.activeModelSubtab === "manual-changes") loadManualDefinitionChanges();
     if (target === "renewable") refreshRenewableControlState({ preview: false });
+    window.refreshUxSplitters?.();
   });
 }
 
@@ -2405,6 +2453,7 @@ function renderManualDefinitionChanges() {
   const pendingChanges = changes.filter((item) => !item.persisted);
   const summary = $("manualDefinitionChangesSummary");
   if (summary) summary.textContent = `${changes.length} 项修改 · ${pendingChanges.length} 项未保存 · 已选 ${selectedCount} 项`;
+  updateModelHubBadges();
   const message = $("manualDefinitionChangesMessage");
   if (message) {
     const text = state.manualDefinitionChangesError || state.manualDefinitionChangesMessage || "";

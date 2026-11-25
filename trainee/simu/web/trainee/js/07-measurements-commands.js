@@ -3224,7 +3224,12 @@ function renderActiveCommandPreview(snapshot = state.snapshot || {}) {
       </thead>
       <tbody>
         ${rows.map((item) => `
-          <tr>
+          <tr
+            class="is-clickable-row"
+            data-overview-cmd-device="${escapeHtml(item.name)}"
+            data-overview-cmd-tab="${item.type.startsWith("遥调") ? "remote-adjustment" : "remote-control"}"
+            title="点击跳转到控制指令定位该设备"
+          >
             <td title="${escapeHtml(item.wall_time)}">${escapeHtml(item.wall_time)}</td>
             <td title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</td>
             <td title="${escapeHtml(item.type)}">${escapeHtml(item.type)}</td>
