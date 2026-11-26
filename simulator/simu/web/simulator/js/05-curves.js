@@ -1173,6 +1173,15 @@ function generateCurves(jitter = 0, mode = state.curveMode, shouldRender = true)
   curveSourceCatalog().forEach((source) => {
     state.curveSeries[source.key] = new Array(pointCount).fill(Number(source.default_value) || 0);
   });
+  const loadSpecs = loadDevices.map((dev, loadIndex) => {
+    const key = loadCurveKey(dev.dev_name);
+    const base = curveFallbackValue(key);
+    const lower = Number.isFinite(Number(dev.min)) ? Number(dev.min) : 0;
+    const upper = Number.isFinite(Number(dev.max)) && Number(dev.max) >= lower
+      ? Number(dev.max)
+      : Math.max(lower, Math.abs(base) * 1.2, 1);
+    return { key, offset: 1 + loadIndex * 0.035, base, lower, upper, series: state.curveSeries[key] };
+  });
   for (let i = 0; i < pointCount; i += 1) {
     const minute = pointMinute(i);
     const day = (minute % (24 * 60)) / (24 * 60);
@@ -1189,17 +1198,10 @@ function generateCurves(jitter = 0, mode = state.curveMode, shouldRender = true)
     state.curveSeries.wind_speed_mps[i] = Number(wind.toFixed(2));
     state.curveSeries.solar_irradiance_w_m2[i] = Number((solarPeak * sunShape).toFixed(1));
     state.curveSeries.air_temp_c[i] = Number(temp.toFixed(2));
-    loadDevices.forEach((dev, loadIndex) => {
-      const offset = 1 + loadIndex * 0.035;
-      const base = curveFallbackValue(loadCurveKey(dev.dev_name));
-      const lower = Number.isFinite(Number(dev.min)) ? Number(dev.min) : 0;
-      const upper = Number.isFinite(Number(dev.max)) && Number(dev.max) >= lower
-        ? Number(dev.max)
-        : Math.max(lower, Math.abs(base) * 1.2, 1);
-      state.curveSeries[loadCurveKey(dev.dev_name)][i] = Number(
-        clamp(base * loadShape * offset, lower, upper).toFixed(2),
-      );
-    });
+    for (let li = 0; li < loadSpecs.length; li += 1) {
+      const spec = loadSpecs[li];
+      spec.series[i] = Number(clamp(spec.base * loadShape * spec.offset, spec.lower, spec.upper).toFixed(2));
+    }
   }
   const firstElectricLoad = loadDevices.find((dev) => dev.family === "electric") || loadDevices[0];
   if (firstElectricLoad) {
@@ -1455,32 +1457,53 @@ function confirmTypicalCurveGeneration() {
   closeTypicalCurveDialog();
 }
 
+function roundCurveValueWithMeta(meta, value) {
+  return Number(clamp(Number(value), meta.min, meta.max).toFixed(meta.digits));
+}
+
 function syncCurvePayload(shouldStoreSeries = true) {
   ensureCurveSeries();
   const config = curveModeConfig();
   state.weatherPoints = [];
   state.loadPoints = [];
   state.loadPointsByName = {};
-  curveLoadDevices().forEach((dev) => {
-    state.loadPointsByName[dev.dev_name] = [];
+  // 预计算环境与各负荷曲线元数据，避免在 8760 点循环内重复调用 curveMetaForKey/curveObservedRange 造成 O(N²) 卡顿
+  const windMeta = curveMetaForKey("wind_speed_mps");
+  const tempMeta = curveMetaForKey("air_temp_c");
+  const solarMeta = curveMetaForKey("solar_irradiance_w_m2");
+  const windSeries = state.curveSeries.wind_speed_mps || [];
+  const tempSeries = state.curveSeries.air_temp_c || [];
+  const solarSeries = state.curveSeries.solar_irradiance_w_m2 || [];
+  const loadEntries = curveLoadDevices().map((dev, loadIndex) => {
+    const key = loadCurveKey(dev.dev_name);
+    const bucket = [];
+    state.loadPointsByName[dev.dev_name] = bucket;
+    return {
+      dev,
+      loadIndex,
+      valueKey: dev.value_key || "value",
+      meta: curveMetaForKey(key),
+      series: state.curveSeries[key] || [],
+      bucket,
+    };
   });
   for (let i = 0; i < config.pointCount; i += 1) {
     const minute = Number(pointMinute(i).toFixed(4));
     const year = minute / config.durationMinutes;
     state.weatherPoints.push({
       minute,
-      wind_speed_mps: roundCurveValue("wind_speed_mps", state.curveSeries.wind_speed_mps[i]),
-      air_temp_c: roundCurveValue("air_temp_c", state.curveSeries.air_temp_c[i]),
+      wind_speed_mps: roundCurveValueWithMeta(windMeta, windSeries[i]),
+      air_temp_c: roundCurveValueWithMeta(tempMeta, tempSeries[i]),
       air_pressure_hpa: Number((955 + 10 * Math.sin(year * Math.PI * 2 + 0.4)).toFixed(2)),
-      solar_irradiance_w_m2: roundCurveValue("solar_irradiance_w_m2", state.curveSeries.solar_irradiance_w_m2[i]),
+      solar_irradiance_w_m2: roundCurveValueWithMeta(solarMeta, solarSeries[i]),
       humidity_pct: Number((68 + 9 * Math.sin(year * Math.PI * 2 + 2.2)).toFixed(2)),
     });
-    curveLoadDevices().forEach((dev, loadIndex) => {
-      const key = loadCurveKey(dev.dev_name);
-      const point = { minute, [dev.value_key || "value"]: roundCurveValue(key, state.curveSeries[key]?.[i] ?? 0) };
-      state.loadPointsByName[dev.dev_name].push(point);
-      if (loadIndex === 0) state.loadPoints.push(point);
-    });
+    for (let li = 0; li < loadEntries.length; li += 1) {
+      const entry = loadEntries[li];
+      const point = { minute, [entry.valueKey]: roundCurveValueWithMeta(entry.meta, entry.series[i] ?? 0) };
+      entry.bucket.push(point);
+      if (entry.loadIndex === 0) state.loadPoints.push(point);
+    }
   }
   if (shouldStoreSeries) state.curveSeriesByMode[state.curveMode] = state.curveSeries;
 }

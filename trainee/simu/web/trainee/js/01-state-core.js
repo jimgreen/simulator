@@ -234,6 +234,10 @@ const state = {
   commandCancelSending: new Set(),
   measurementFilter: { dev_type: "all", dev_name: "" },
   activeModelSubtab: "params",
+  tableSort: {
+    measurement: { col: "", dir: "none" },
+    traineeCommand: { col: "", dir: "none" },
+  },
   measurementKeywordFilter: "",
   measurementTypeFilter: "all",
   measurementDeltaSeq: 0,

@@ -832,6 +832,43 @@ function exportSimulatorMeasurementsCsv() {
   showUiToast(`已导出 ${rows.length} 条量测比对记录`, "ok", 2200);
 }
 
+function sortMeasurementCompareRows(rows) {
+  const s = state.tableSort?.measurementCompare;
+  if (!s || !s.col || s.dir === "none") return rows;
+  const dir = s.dir === "ascending" ? 1 : -1;
+  return rows.slice().sort((a, b) => {
+    const col = s.col;
+    if (col === "diff") {
+      const va = a.diff === null || a.diff === undefined ? Number.NaN : Math.abs(Number(a.diff));
+      const vb = b.diff === null || b.diff === undefined ? Number.NaN : Math.abs(Number(b.diff));
+      const fa = Number.isFinite(va);
+      const fb = Number.isFinite(vb);
+      if (fa && fb) return (va - vb) * dir;
+      if (fa) return -1;
+      if (fb) return 1;
+      return 0;
+    }
+    if (col === "real" || col === "scada" || col === "weight" || col === "status") {
+      const field = col === "real" ? "real_value" : (col === "scada" ? "scada_value" : (col === "weight" ? "weight" : "valid"));
+      const va = Number(a[field]);
+      const vb = Number(b[field]);
+      const fa = Number.isFinite(va);
+      const fb = Number.isFinite(vb);
+      if (fa && fb) return (va - vb) * dir;
+      if (fa) return -1;
+      if (fb) return 1;
+      return 0;
+    }
+    const textVal = (r) => {
+      if (col === "name") return String(measurementDisplayName(r) || "");
+      if (col === "device") return String(measurementDeviceDisplay(r) || "");
+      if (col === "type") return String(measurementTypeDisplay(r) || "");
+      return "";
+    };
+    return textVal(a).localeCompare(textVal(b), "zh-CN") * dir;
+  });
+}
+
 function renderMeasurementCompareTable() {
   const container = $("measurementCompareTable");
   if (!container) return;
@@ -847,7 +884,8 @@ function renderMeasurementCompareTable() {
   }
   const telemetryRows = measurementTelemetryRows(tableFilteredRows);
   const signalRows = measurementSignalRows(tableFilteredRows);
-  const rows = activeMeasurementCompareRows(tableFilteredRows);
+  const rows = sortMeasurementCompareRows(activeMeasurementCompareRows(tableFilteredRows));
+  const measSort = state.tableSort?.measurementCompare || { col: "", dir: "none" };
   const selectedKey = ensureSelectedMeasurementKey(rows, []);
   const validCount = rows.filter((row) => Number(row.valid) === 1).length;
   const activeLabel = state.activeMeasurementCompareTab === "signal" ? "遥信" : "遥测";
@@ -860,6 +898,7 @@ function renderMeasurementCompareTable() {
   const virtualRows = virtualTableWindow("measurementCompare", rows);
   const structureKey = [
     measurementCompareTableStructureKey(rows),
+    `${measSort.col}:${measSort.dir}`,
     virtualRows.enabled ? "virtual" : "full",
     virtualRows.start,
     virtualRows.end,
@@ -903,14 +942,14 @@ function renderMeasurementCompareTable() {
     <table class="measurement-compare-table">
       <thead>
         <tr>
-          <th>量测名称</th>
-          <th>设备</th>
-          <th>量测类型</th>
-          <th class="numeric-cell">真值</th>
-          <th class="numeric-cell">量测值</th>
-          <th class="numeric-cell">偏差</th>
-          <th class="numeric-cell">权重</th>
-          <th>状态</th>
+          <th class="is-sortable" data-virtual-sort-table="measurementCompare" data-virtual-sort-col="name" aria-sort="${measSort.col === "name" ? measSort.dir : "none"}">量测名称</th>
+          <th class="is-sortable" data-virtual-sort-table="measurementCompare" data-virtual-sort-col="device" aria-sort="${measSort.col === "device" ? measSort.dir : "none"}">设备</th>
+          <th class="is-sortable" data-virtual-sort-table="measurementCompare" data-virtual-sort-col="type" aria-sort="${measSort.col === "type" ? measSort.dir : "none"}">量测类型</th>
+          <th class="numeric-cell is-sortable" data-virtual-sort-table="measurementCompare" data-virtual-sort-col="real" data-virtual-sort-numeric="1" aria-sort="${measSort.col === "real" ? measSort.dir : "none"}">真值</th>
+          <th class="numeric-cell is-sortable" data-virtual-sort-table="measurementCompare" data-virtual-sort-col="scada" data-virtual-sort-numeric="1" aria-sort="${measSort.col === "scada" ? measSort.dir : "none"}">量测值</th>
+          <th class="numeric-cell is-sortable" data-virtual-sort-table="measurementCompare" data-virtual-sort-col="diff" data-virtual-sort-numeric="1" aria-sort="${measSort.col === "diff" ? measSort.dir : "none"}">偏差</th>
+          <th class="numeric-cell is-sortable" data-virtual-sort-table="measurementCompare" data-virtual-sort-col="weight" data-virtual-sort-numeric="1" aria-sort="${measSort.col === "weight" ? measSort.dir : "none"}">权重</th>
+          <th class="is-sortable" data-virtual-sort-table="measurementCompare" data-virtual-sort-col="status" data-virtual-sort-numeric="1" aria-sort="${measSort.col === "status" ? measSort.dir : "none"}">状态</th>
         </tr>
       </thead>
       <tbody>
@@ -1245,6 +1284,135 @@ function setMeasurementFaultFilter(devType, devName = "", event = null, button =
   renderFaults(true);
 }
 
+const FAULT_PRESETS_STORAGE_KEY = "polarSimulatorFaultPresetsV1";
+
+function loadStoredFaultPresets() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(FAULT_PRESETS_STORAGE_KEY) || "{}");
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw;
+  } catch (_err) {}
+  return {};
+}
+
+function saveStoredFaultPresets(map) {
+  try {
+    localStorage.setItem(FAULT_PRESETS_STORAGE_KEY, JSON.stringify(map || {}));
+  } catch (_err) {}
+}
+
+function modelFaultPresets() {
+  const all = loadStoredFaultPresets();
+  const key = String(state.activeModelId || "__default__");
+  return Array.isArray(all[key]) ? all[key] : [];
+}
+
+function setModelFaultPresets(list) {
+  const all = loadStoredFaultPresets();
+  const key = String(state.activeModelId || "__default__");
+  all[key] = Array.isArray(list) ? list : [];
+  saveStoredFaultPresets(all);
+}
+
+function renderFaultPresetSelector() {
+  const sel = $("faultPresetSelect");
+  const applyBtn = $("applyFaultPreset");
+  const delBtn = $("deleteFaultPreset");
+  const clearBtn = $("clearAllFaults");
+  const totalFaults = (state.deviceFaults?.length || 0) + (state.measurementFaults?.length || 0);
+  if (clearBtn) clearBtn.disabled = totalFaults === 0;
+  if (!sel) return;
+  const presets = modelFaultPresets();
+  const prevVal = sel.value;
+  const tr = (text) => (typeof translatePhrase === "function" ? translatePhrase(text) : text);
+  sel.innerHTML = `<option value="">${escapeHtml(tr("演练场景预设…"))}</option>`
+    + presets.map((p) => {
+      const cnt = (p.device_faults?.length || 0) + (p.measurement_faults?.length || 0);
+      return `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)} (${cnt})</option>`;
+    }).join("");
+  if (presets.some((p) => p.id === prevVal)) sel.value = prevVal;
+  const hasSelected = Boolean(sel.value);
+  if (applyBtn) applyBtn.disabled = !hasSelected;
+  if (delBtn) delBtn.hidden = !hasSelected;
+}
+
+async function clearAllFaultsWithConfirm() {
+  const devCount = state.deviceFaults?.length || 0;
+  const measCount = state.measurementFaults?.length || 0;
+  if (!devCount && !measCount) return;
+  const confirmed = typeof confirmDangerousAction === "function"
+    ? await confirmDangerousAction({
+      title: "清除全部设备与量测故障？",
+      target: `设备故障 ${devCount} 条 · 量测故障 ${measCount} 条`,
+      message: "将清空当前模型下所有故障注入配置并立即保存生效，恢复正常运行态。",
+      confirmLabel: "确认清除",
+    })
+    : true;
+  if (!confirmed) return;
+  state.deviceFaults = [];
+  state.measurementFaults = [];
+  renderActiveFaultSubtab(true);
+  await pushSettings();
+}
+
+function saveCurrentAsFaultPreset() {
+  const defaultName = `场景_${new Date().toTimeString().slice(0, 8).replace(/:/g, "")}`;
+  const rawName = typeof window.prompt === "function" ? window.prompt("请输入故障演练场景预设名称：", defaultName) : defaultName;
+  const name = String(rawName || "").trim();
+  if (!name) return;
+  const presets = modelFaultPresets().filter((p) => p.name !== name);
+  const id = `fp_${Date.now()}`;
+  presets.unshift({
+    id,
+    name,
+    saved_at: new Date().toISOString(),
+    device_faults: JSON.parse(JSON.stringify(state.deviceFaults || [])),
+    measurement_faults: JSON.parse(JSON.stringify(state.measurementFaults || [])),
+    modes: JSON.parse(JSON.stringify(state.modes || [])),
+  });
+  setModelFaultPresets(presets.slice(0, 30));
+  renderFaultPresetSelector();
+  const sel = $("faultPresetSelect");
+  if (sel) sel.value = id;
+  renderFaultPresetSelector();
+  if (typeof showUiToast === "function") showUiToast(`已保存预设：${name}`, "ok", 2000);
+}
+
+async function applySelectedFaultPreset() {
+  const sel = $("faultPresetSelect");
+  const presetId = String(sel?.value || "");
+  if (!presetId) return;
+  const preset = modelFaultPresets().find((p) => p.id === presetId);
+  if (!preset) return;
+  state.deviceFaults = JSON.parse(JSON.stringify(preset.device_faults || []));
+  state.measurementFaults = JSON.parse(JSON.stringify(preset.measurement_faults || []));
+  if (Array.isArray(preset.modes) && preset.modes.length) {
+    state.modes = syncModesFromDevices(state.snapshot?.devices || [], preset.modes);
+  }
+  renderActiveFaultSubtab(true);
+  await pushSettings();
+  if (typeof showUiToast === "function") showUiToast(`已载入并生效预设：${preset.name}`, "ok", 2200);
+}
+
+async function deleteSelectedFaultPreset() {
+  const sel = $("faultPresetSelect");
+  const presetId = String(sel?.value || "");
+  if (!presetId) return;
+  const preset = modelFaultPresets().find((p) => p.id === presetId);
+  if (!preset) return;
+  const confirmed = typeof confirmDangerousAction === "function"
+    ? await confirmDangerousAction({
+      title: "删除演练场景预设？",
+      target: preset.name,
+      message: "删除后将从本地预设列表中移除，不影响当前已下发的模拟台设置。",
+      confirmLabel: "确认删除",
+    })
+    : true;
+  if (!confirmed) return;
+  setModelFaultPresets(modelFaultPresets().filter((p) => p.id !== presetId));
+  renderFaultPresetSelector();
+  if (typeof showUiToast === "function") showUiToast(`已删除预设：${preset.name}`, "info", 1800);
+}
+
 function renderActiveFaultSubtab(force = false) {
   const tab = state.activeFaultSubtab || "device";
   if (tab === "mode") {
@@ -1252,6 +1420,7 @@ function renderActiveFaultSubtab(force = false) {
   } else {
     renderFaults(force);
   }
+  renderFaultPresetSelector();
   if (typeof updateModelHubBadges === "function") updateModelHubBadges();
 }
 
@@ -2149,6 +2318,26 @@ document.addEventListener("change", (event) => {
 document.addEventListener("scroll", handleVirtualTableScroll, true);
 document.addEventListener("click", (event) => {
   if (!(event.target instanceof Element)) return;
+  const virtualSortTh = event.target.closest("th[data-virtual-sort-table][data-virtual-sort-col]");
+  if (virtualSortTh) {
+    const tblKey = virtualSortTh.dataset.virtualSortTable || "";
+    const colKey = virtualSortTh.dataset.virtualSortCol || "";
+    const isNum = virtualSortTh.dataset.virtualSortNumeric === "1";
+    const cur = state.tableSort?.[tblKey] || { col: "", dir: "none" };
+    let nextDir = "none";
+    if (cur.col !== colKey || cur.dir === "none") {
+      nextDir = isNum ? "descending" : "ascending";
+    } else if (isNum) {
+      nextDir = cur.dir === "descending" ? "ascending" : "none";
+    } else {
+      nextDir = cur.dir === "ascending" ? "descending" : "none";
+    }
+    if (!state.tableSort) state.tableSort = {};
+    state.tableSort[tblKey] = { col: nextDir === "none" ? "" : colKey, dir: nextDir };
+    if (tblKey === "measurementCompare") renderMeasurementCompareTable();
+    else if (tblKey === "runtimeCommand") renderRuntimeDeviceTable();
+    return;
+  }
   const modelSubtabBtn = event.target.closest("[data-model-subtab]");
   if (modelSubtabBtn) {
     event.preventDefault();
@@ -2165,6 +2354,30 @@ document.addEventListener("click", (event) => {
   if (saveFaultsBtn) {
     event.preventDefault();
     pushSettings();
+    return;
+  }
+  const clearAllFaultsBtn = event.target.closest("#clearAllFaults");
+  if (clearAllFaultsBtn) {
+    event.preventDefault();
+    clearAllFaultsWithConfirm();
+    return;
+  }
+  const saveFaultPresetBtn = event.target.closest("#saveFaultPreset");
+  if (saveFaultPresetBtn) {
+    event.preventDefault();
+    saveCurrentAsFaultPreset();
+    return;
+  }
+  const applyFaultPresetBtn = event.target.closest("#applyFaultPreset");
+  if (applyFaultPresetBtn) {
+    event.preventDefault();
+    applySelectedFaultPreset();
+    return;
+  }
+  const deleteFaultPresetBtn = event.target.closest("#deleteFaultPreset");
+  if (deleteFaultPresetBtn) {
+    event.preventDefault();
+    deleteSelectedFaultPreset();
     return;
   }
   const jump104Btn = event.target.closest("[data-jump-scada104-device]");
@@ -2366,6 +2579,14 @@ document.addEventListener("dblclick", (event) => {
   );
 });
 document.addEventListener("change", (event) => {
+  if (event.target.id === "faultPresetSelect") {
+    const hasSelected = Boolean(event.target.value);
+    const applyBtn = $("applyFaultPreset");
+    const delBtn = $("deleteFaultPreset");
+    if (applyBtn) applyBtn.disabled = !hasSelected;
+    if (delBtn) delBtn.hidden = !hasSelected;
+    return;
+  }
   if (handleSimulatorTableFilterControl(event.target)) return;
   if (event.target.dataset.modeField !== undefined) {
     updateModeValue(Number(event.target.dataset.modeDeviceIndex), event.target.dataset.modeField, event.target.value);

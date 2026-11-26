@@ -346,15 +346,19 @@
     }
   }
 
+  let lastPointsStructureKey = "";
+
   function renderPointsTableRows() {
     const tbody = get("scada104PointsTableBody");
     const pageInfo = get("scada104PointsPageInfo");
     const prevBtn = get("scada104PointsPrevBtn");
     const nextBtn = get("scada104PointsNextBtn");
+    const clearSearchBtn = get("scada104ClearPointsSearchBtn");
     if (!tbody) return;
     const kind = activePointsKind || "yc";
     const rtu = Number(get("scada104PointsRtuSelect")?.value || 0);
     const keyword = String(get("scada104PointsSearch")?.value || "").trim().toLowerCase();
+    if (clearSearchBtn) clearSearchBtn.hidden = !keyword;
     const filtered = keyword
       ? loadedPointsTableItems.filter((item) => (
         `${item.pnt_no} ${item.name || ""} ${item.source_name || ""} ${item.io_address ?? ""} ${item.io_address_hex || ""} ${item.type_name || ""}`
@@ -384,6 +388,7 @@
     if (nextBtn) nextBtn.disabled = pointsTablePage + 1 >= totalPages;
 
     if (!slice.length) {
+      lastPointsStructureKey = "";
       const cell = textNode("td", loadedPointsTableItems.length ? tr("无匹配点表") : tr("请选择模型查看点表"), "empty-state");
       cell.colSpan = 9;
       const trEl = document.createElement("tr");
@@ -391,6 +396,39 @@
       tbody.replaceChildren(trEl);
       return;
     }
+
+    const structureKey = [
+      rtu,
+      kind,
+      pointsTablePage,
+      pointsSortState.col,
+      pointsSortState.dir,
+      slice.map((it) => `${it.pnt_no}:${it.disabled ? 1 : 0}`).join(","),
+    ].join("|");
+    if (structureKey === lastPointsStructureKey && tbody.rows.length === slice.length) {
+      for (let i = 0; i < slice.length; i += 1) {
+        const item = slice[i];
+        const trEl = tbody.rows[i];
+        const timeTd = trEl.cells[5];
+        const valTd = trEl.cells[6];
+        const statusTd = trEl.cells[7];
+        const nextTime = String(item.time_tag || "NONE");
+        if (timeTd && timeTd.textContent !== nextTime) timeTd.textContent = nextTime;
+        const nextVal = formatTelemetryValue(item.value, kind);
+        if (valTd && valTd.textContent !== nextVal) valTd.textContent = nextVal;
+        if (statusTd) {
+          const isValid = Number(item.status) === 0;
+          const nextText = isValid ? tr("有效") : `${tr("无效")}(${item.status ?? 128})`;
+          const pill = statusTd.firstElementChild;
+          if (pill && pill.textContent !== nextText) {
+            pill.textContent = nextText;
+            pill.className = isValid ? "scada104-pill is-ok" : "scada104-pill is-off";
+          }
+        }
+      }
+      return;
+    }
+    lastPointsStructureKey = structureKey;
 
     const rows = slice.map((item) => {
       const trEl = document.createElement("tr");
@@ -522,6 +560,8 @@
     if (!tbody) return;
     const levelFilter = String(get("scada104LogsLevelSelect")?.value || "all").toUpperCase();
     const keyword = String(get("scada104LogsSearch")?.value || "").trim().toLowerCase();
+    const clearLogsBtn = get("scada104ClearLogsFilterBtn");
+    if (clearLogsBtn) clearLogsBtn.hidden = !(levelFilter !== "ALL" || Boolean(keyword));
     const filtered = loadedChannelLogItems.filter((item) => {
       const lvl = String(item.level || "INFO").toUpperCase();
       if (levelFilter !== "ALL" && lvl !== levelFilter) return false;
@@ -1220,14 +1260,63 @@
       pointsTablePage = 0;
       renderPointsTableRows();
     }, 150);
-    get("scada104ReloadPointsBtn")?.addEventListener("click", () => loadPointsTable());
+    get("scada104ClearPointsSearchBtn")?.addEventListener("click", () => {
+      const inp = get("scada104PointsSearch");
+      if (inp) inp.value = "";
+      pointsTablePage = 0;
+      lastPointsStructureKey = "";
+      renderPointsTableRows();
+    });
+    get("scada104ReloadPointsBtn")?.addEventListener("click", () => {
+      lastPointsStructureKey = "";
+      loadPointsTable();
+    });
     get("scada104LogsRtuSelect")?.addEventListener("change", () => {
       preferredModelName = "";
       loadChannelLogs();
     });
     get("scada104LogsLevelSelect")?.addEventListener("change", () => renderChannelLogRows());
     bindDebouncedSearch(get("scada104LogsSearch"), () => renderChannelLogRows(), 150);
+    get("scada104ClearLogsFilterBtn")?.addEventListener("click", () => {
+      const lvl = get("scada104LogsLevelSelect");
+      if (lvl) lvl.value = "all";
+      const inp = get("scada104LogsSearch");
+      if (inp) inp.value = "";
+      renderChannelLogRows();
+    });
     get("scada104ReloadLogsBtn")?.addEventListener("click", () => loadChannelLogs());
+    get("scada104ReinitDbBtn")?.addEventListener("click", async () => {
+      const confirmed = typeof confirmDangerousAction === "function"
+        ? await confirmDangerousAction({
+          title: tr("备份并重建 IEC104 数据库？"),
+          target: get("scada104Database")?.textContent || "scdfe_s.sqlite3",
+          message: tr("将安全备份当前 scdfe_s 数据库及桥接库，并按最新规约 schema 重新初始化，所有在线模型将自动重新同步点表。"),
+          confirmLabel: tr("确认重建"),
+        })
+        : true;
+      if (!confirmed) return;
+      const btn = get("scada104ReinitDbBtn");
+      if (btn) btn.disabled = true;
+      try {
+        const res = await api("/api/simulator104/reinit-db", {});
+        lastPointsStructureKey = "";
+        lastServiceRowsKey = "";
+        lastRtuDefRowsKey = "";
+        lastAllRtuOptionsKey = "";
+        const backupNames = Array.isArray(res?.backups) && res.backups.length
+          ? `（${res.backups.join(", ")}）`
+          : "";
+        const msg = `${tr("IEC104 数据库已重建并恢复可用")}${backupNames}`;
+        showServiceNotice(msg, false);
+        toast(msg, "ok", 3200);
+        await refresh(true);
+      } catch (err) {
+        showServiceNotice(err.message, true);
+        toast(err.message, "error", 3600);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
 
     section.querySelectorAll("th.is-sortable[data-scada104-sort]").forEach((th) => {
       th.addEventListener("click", (event) => {
@@ -1392,6 +1481,7 @@
     lastAllRtuOptionsKey = "";
     lastServiceRowsKey = "";
     lastRtuDefRowsKey = "";
+    lastPointsStructureKey = "";
     if (!isActive) return;
     renderPointsTableRows();
     renderChannelLogRows();

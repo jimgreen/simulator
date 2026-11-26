@@ -969,6 +969,33 @@ function updateMeasurementTableLiveCells(rows) {
   return true;
 }
 
+function sortTraineeMeasurementRows(rows) {
+  const s = state.tableSort?.measurement;
+  if (!s || !s.col || s.dir === "none") return rows;
+  const dir = s.dir === "ascending" ? 1 : -1;
+  return rows.slice().sort((a, b) => {
+    const col = s.col;
+    if (col === "idx" || col === "scada" || col === "status") {
+      const field = col === "idx" ? "idx" : (col === "scada" ? "scada_value" : "valid");
+      const va = Number(a[field]);
+      const vb = Number(b[field]);
+      const fa = Number.isFinite(va);
+      const fb = Number.isFinite(vb);
+      if (fa && fb) return (va - vb) * dir;
+      if (fa) return -1;
+      if (fb) return 1;
+      return 0;
+    }
+    const textVal = (r) => {
+      if (col === "name") return String(measurementDisplayName(r) || "");
+      if (col === "device") return String(measurementDeviceDisplay(r) || "");
+      if (col === "type") return String(measurementTypeDisplay(r) || "");
+      return "";
+    };
+    return textVal(a).localeCompare(textVal(b), "zh-CN") * dir;
+  });
+}
+
 function renderMeasurements(snapshot = state.snapshot || {}) {
   const container = $("measurementTable");
   if (!container) return;
@@ -1019,9 +1046,12 @@ function renderMeasurements(snapshot = state.snapshot || {}) {
     drawMeasurementTraceChart();
     return;
   }
-  const virtualRows = virtualTableWindow("measurement", rows);
+  const sortedRows = sortTraineeMeasurementRows(rows);
+  const measSort = state.tableSort?.measurement || { col: "", dir: "none" };
+  const virtualRows = virtualTableWindow("measurement", sortedRows);
   const structureKey = [
-    measurementTableStructureKey(rows),
+    measurementTableStructureKey(sortedRows),
+    `${measSort.col}:${measSort.dir}`,
     virtualRows.enabled ? "virtual" : "full",
     virtualRows.start,
     virtualRows.end,
@@ -1034,12 +1064,16 @@ function renderMeasurements(snapshot = state.snapshot || {}) {
     return;
   }
   container.dataset.measurementStructureKey = structureKey;
+  const mSortAttr = (col, numeric = false) => {
+    const dir = measSort.col === col ? measSort.dir : "none";
+    return `class="${numeric ? "numeric-cell " : ""}is-sortable" data-virtual-sort-table="measurement" data-virtual-sort-col="${col}"${numeric ? ' data-virtual-sort-numeric="1"' : ""} aria-sort="${dir}"`;
+  };
   container.innerHTML = `
     ${tabHtml}
     <div class="measurement-type-tab-page is-active">
     <div class="virtual-table-scroll" data-virtual-table="measurement">
     <table class="measurement-compare-table">
-      <thead><tr><th class="numeric-cell">idx</th><th>量测名</th><th>设备</th><th>类型</th><th class="numeric-cell">量测值</th><th>状态</th></tr></thead>
+      <thead><tr><th ${mSortAttr("idx", true)}>idx</th><th ${mSortAttr("name")}>量测名</th><th ${mSortAttr("device")}>设备</th><th ${mSortAttr("type")}>类型</th><th ${mSortAttr("scada", true)}>量测值</th><th ${mSortAttr("status", true)}>状态</th></tr></thead>
       <tbody>
         ${renderVirtualSpacerRow(virtualRows.beforeHeight, 6)}
         ${virtualRows.rows.map((item) => {
@@ -2430,9 +2464,51 @@ function renderTraineeCommandRows(rows, activeTab = state.activeControlTab) {
   }).join("");
 }
 
+function sortTraineeCommandRows(rows) {
+  const s = state.tableSort?.traineeCommand;
+  if (!s || !s.col || s.dir === "none") return rows;
+  const dir = s.dir === "ascending" ? 1 : -1;
+  const rankProcess = (p) => (p === "effective" ? 2 : (p === "queued" ? 1 : 0));
+  return rows.slice().sort((a, b) => {
+    const col = s.col;
+    if (col === "idx" || col === "scada" || col === "control") {
+      const val = (r) => {
+        if (col === "idx") return Number(r.idx ?? r.device?.idx);
+        if (col === "scada") return Number(r.scada_value ?? r.measured_value);
+        return Number(r.control_value ?? r.set_value);
+      };
+      const va = val(a);
+      const vb = val(b);
+      const fa = Number.isFinite(va);
+      const fb = Number.isFinite(vb);
+      if (fa && fb) return (va - vb) * dir;
+      if (fa) return -1;
+      if (fb) return 1;
+      return 0;
+    }
+    if (col === "process") {
+      return (rankProcess(a.time_info?.process_state) - rankProcess(b.time_info?.process_state)) * dir;
+    }
+    const textVal = (r) => {
+      if (col === "name") return String(commandTableName(r) || "");
+      if (col === "device") return String(r.dev_name || r.device?.dev_name || "");
+      if (col === "origin") return String(r.time_info?.origin_text || "");
+      if (col === "wall_time") return String(r.time_info?.wall_time || "");
+      if (col === "simu_time") return String(r.time_info?.simu_time || "");
+      return "";
+    };
+    return textVal(a).localeCompare(textVal(b), "zh-CN") * dir;
+  });
+}
+
 function renderTraineeCommandTable(rows, activeTab, emptyText, virtualRows = { beforeHeight: 0, afterHeight: 0 }) {
   if (!rows.length) return `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
   const columnCount = traineeCommandColumnCount(activeTab);
+  const cmdSort = state.tableSort?.traineeCommand || { col: "", dir: "none" };
+  const cSortAttr = (col, numeric = false) => {
+    const dir = cmdSort.col === col ? cmdSort.dir : "none";
+    return `class="${numeric ? "numeric-cell " : ""}is-sortable" data-virtual-sort-table="traineeCommand" data-virtual-sort-col="${col}"${numeric ? ' data-virtual-sort-numeric="1"' : ""} aria-sort="${dir}"`;
+  };
   if (activeTab === "remote-adjustment") {
     return `
       <table class="runtime-device-table remote-adjustment-table">
@@ -2446,7 +2522,7 @@ function renderTraineeCommandTable(rows, activeTab, emptyText, virtualRows = { b
           <col class="remote-adjustment-time-col" />
           <col class="remote-adjustment-action-col" />
         </colgroup>
-        <thead><tr><th>遥调名称</th><th class="numeric-cell">量测值</th><th class="numeric-cell">控制值</th><th>指令来源</th><th>处理状态</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
+        <thead><tr><th ${cSortAttr("name")}>遥调名称</th><th ${cSortAttr("scada", true)}>量测值</th><th ${cSortAttr("control", true)}>控制值</th><th ${cSortAttr("origin")}>指令来源</th><th ${cSortAttr("process")}>处理状态</th><th ${cSortAttr("wall_time")}>下发本机时刻</th><th ${cSortAttr("simu_time")}>下发仿真时刻</th><th>操作</th></tr></thead>
         <tbody>
           ${renderVirtualSpacerRow(virtualRows.beforeHeight, columnCount)}
           ${renderTraineeCommandRows(rows, activeTab)}
@@ -2456,7 +2532,7 @@ function renderTraineeCommandTable(rows, activeTab, emptyText, virtualRows = { b
   }
   return `
     <table class="runtime-device-table">
-      <thead><tr><th>idx</th><th>遥控名称</th><th>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th>指令来源</th><th>处理状态</th><th>下发本机时刻</th><th>下发仿真时刻</th><th>操作</th></tr></thead>
+      <thead><tr><th ${cSortAttr("idx", true)}>idx</th><th ${cSortAttr("name")}>遥控名称</th><th ${cSortAttr("device")}>设备名称</th><th>类型</th><th>当前状态</th><th>下发状态</th><th ${cSortAttr("origin")}>指令来源</th><th ${cSortAttr("process")}>处理状态</th><th ${cSortAttr("wall_time")}>下发本机时刻</th><th ${cSortAttr("simu_time")}>下发仿真时刻</th><th>操作</th></tr></thead>
       <tbody>
         ${renderVirtualSpacerRow(virtualRows.beforeHeight, columnCount)}
         ${renderTraineeCommandRows(rows, activeTab)}
@@ -2468,10 +2544,12 @@ function renderTraineeCommandTable(rows, activeTab, emptyText, virtualRows = { b
 function renderTraineeCommandTableContainer(container, activeTab, rows, allRows, emptyText) {
   if (!container) return;
   const key = `traineeCommand:${activeTab}`;
-  const activeRows = rows;
+  const activeRows = sortTraineeCommandRows(rows);
+  const cmdSort = state.tableSort?.traineeCommand || { col: "", dir: "none" };
   const virtualRows = virtualTableWindow(`traineeCommand:${activeTab}`, activeRows);
   const structureKey = [
     traineeCommandTableStructureKey(activeRows, activeTab),
+    `${cmdSort.col}:${cmdSort.dir}`,
     virtualRows.enabled ? "virtual" : "full",
     virtualRows.start,
     virtualRows.end,

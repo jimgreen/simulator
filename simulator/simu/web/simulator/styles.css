@@ -9613,3 +9613,51 @@ table td > select:disabled {
   color: var(--teal);
   border-color: var(--teal);
 }
+
+/* 虚拟滚动表头排序箭头指示与故障预设工具栏 */
+th[data-virtual-sort-table].is-sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+th[data-virtual-sort-table].is-sortable:hover {
+  color: var(--teal);
+}
+
+th[data-virtual-sort-table][aria-sort="ascending"]::after {
+  content: " ▲";
+  font-size: 10px;
+  color: var(--teal);
+}
+
+th[data-virtual-sort-table][aria-sort="descending"]::after {
+  content: " ▼";
+  font-size: 10px;
+  color: var(--teal);
+}
+
+.fault-preset-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fault-preset-actions select {
+  height: 28px;
+  min-width: 140px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.compact-action-btn.is-danger {
+  color: var(--red);
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
+.compact-action-btn.is-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--red);
+  color: var(--red);
+}

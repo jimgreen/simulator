@@ -953,6 +953,12 @@ document.querySelectorAll("[data-renewable-detail-tab]").forEach((button) => {
 $("exportRenewableReviewCsv")?.addEventListener("click", () => {
   if (typeof exportRenewableReviewCsv === "function") exportRenewableReviewCsv();
 });
+$("pinRenewableReviewBaseline")?.addEventListener("click", () => {
+  if (typeof pinRenewableReviewBaseline === "function") pinRenewableReviewBaseline();
+});
+$("clearRenewableReviewBaseline")?.addEventListener("click", () => {
+  if (typeof clearRenewableReviewBaseline === "function") clearRenewableReviewBaseline();
+});
 $("renewableQuickConnectBtn")?.addEventListener("click", () => {
   const action = $("renewableQuickConnectBtn")?.dataset?.quickAction || "";
   if (action === "start" && state.modelInitialized) {
@@ -980,6 +986,26 @@ $("traineeDiagnosticsDialog")?.addEventListener("click", (event) => {
 });
 document.addEventListener("click", (event) => {
   if (!(event.target instanceof Element)) return;
+  const virtualSortTh = event.target.closest("th[data-virtual-sort-table][data-virtual-sort-col]");
+  if (virtualSortTh) {
+    const tblKey = virtualSortTh.dataset.virtualSortTable || "";
+    const colKey = virtualSortTh.dataset.virtualSortCol || "";
+    const isNum = virtualSortTh.dataset.virtualSortNumeric === "1";
+    const cur = state.tableSort?.[tblKey] || { col: "", dir: "none" };
+    let nextDir = "none";
+    if (cur.col !== colKey || cur.dir === "none") {
+      nextDir = isNum ? "descending" : "ascending";
+    } else if (isNum) {
+      nextDir = cur.dir === "descending" ? "ascending" : "none";
+    } else {
+      nextDir = cur.dir === "ascending" ? "descending" : "none";
+    }
+    if (!state.tableSort) state.tableSort = {};
+    state.tableSort[tblKey] = { col: nextDir === "none" ? "" : colKey, dir: nextDir };
+    if (tblKey === "measurement" && typeof renderMeasurements === "function") renderMeasurements();
+    else if (tblKey === "traineeCommand" && typeof renderCombinedControlPage === "function") renderCombinedControlPage();
+    return;
+  }
   const modelSubtabBtn = event.target.closest("[data-model-subtab]");
   if (modelSubtabBtn) {
     event.preventDefault();

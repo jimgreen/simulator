@@ -703,7 +703,15 @@ process.exit(0);
 
         sim_i18n = (REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "js" / "00-i18n.js").read_text(encoding="utf-8")
         trn_i18n = (REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "js" / "00-i18n.js").read_text(encoding="utf-8")
+        common_i18n = (REPO_ROOT / "shared" / "simu" / "web" / "common" / "00-i18n.js").read_text(encoding="utf-8")
         self.assertEqual(sim_i18n, trn_i18n, "教员端与学员端 00-i18n.js 内容应保持一致")
+        self.assertEqual(common_i18n, sim_i18n, "shared/simu/web/common/00-i18n.js 真源应与双端完全一致")
+
+        sim_ux = (REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "js" / "08-ux-enhancements.js").read_text(encoding="utf-8")
+        trn_ux = (REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "js" / "09-ux-enhancements.js").read_text(encoding="utf-8")
+        common_ux = (REPO_ROOT / "shared" / "simu" / "web" / "common" / "ux-enhancements.js").read_text(encoding="utf-8")
+        self.assertEqual(sim_ux, trn_ux, "教员端与学员端 ux-enhancements.js 内容应保持一致")
+        self.assertEqual(common_ux, sim_ux, "shared/simu/web/common/ux-enhancements.js 真源应与双端完全一致")
 
         sim_html = (REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
         for token in (

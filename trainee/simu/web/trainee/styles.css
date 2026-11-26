@@ -10075,3 +10075,49 @@ table td > select:disabled {
   color: var(--teal);
   border-color: var(--teal);
 }
+
+/* 虚拟滚动表头排序箭头指示与运行统计基线对比着色 */
+th[data-virtual-sort-table].is-sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+th[data-virtual-sort-table].is-sortable:hover {
+  color: var(--teal);
+}
+
+th[data-virtual-sort-table][aria-sort="ascending"]::after {
+  content: " ▲";
+  font-size: 10px;
+  color: var(--teal);
+}
+
+th[data-virtual-sort-table][aria-sort="descending"]::after {
+  content: " ▼";
+  font-size: 10px;
+  color: var(--teal);
+}
+
+.renewable-baseline-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 9999px;
+  background: var(--teal-soft);
+  color: var(--teal);
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.renewable-review-table td.is-delta-good {
+  color: var(--green);
+  font-weight: 600;
+}
+
+.renewable-review-table td.is-delta-bad {
+  color: var(--red);
+  font-weight: 600;
+}

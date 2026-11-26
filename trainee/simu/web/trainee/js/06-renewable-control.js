@@ -1064,26 +1064,103 @@ function computeRenewableReviewMetrics(points = state.renewableTrendHistory || [
   };
 }
 
-function renewableReviewTableRows(stats) {
+const RENEWABLE_REVIEW_BASELINE_KEY = "polarTraineeRenewableReviewBaselineV1";
+
+function loadRenewableReviewBaseline() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RENEWABLE_REVIEW_BASELINE_KEY) || "{}");
+    const key = String(state.activeModelId || "__default__");
+    return raw && typeof raw === "object" && raw[key] ? raw[key] : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function saveRenewableReviewBaseline(stats) {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RENEWABLE_REVIEW_BASELINE_KEY) || "{}");
+    const map = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const key = String(state.activeModelId || "__default__");
+    if (!stats) {
+      delete map[key];
+    } else {
+      map[key] = {
+        pinnedAt: new Date().toTimeString().slice(0, 8),
+        sampleCount: stats.sampleCount,
+        metrics: {
+          utilizationPct: stats.utilizationPct,
+          curtailmentPct: stats.curtailmentPct,
+          avgRenewAct: stats.avgRenewAct,
+          avgRenewMax: stats.avgRenewMax,
+          avgCurtailKw: stats.avgCurtailKw,
+          avgLoadKw: stats.avgLoadKw,
+          renewSharePct: stats.renewSharePct,
+          avgDieselKw: stats.avgDieselKw,
+          dieselRunRatio: stats.dieselRunRatio,
+          socBreachPct: stats.socBreachPct,
+          avgElectrolyzerKw: stats.avgElectrolyzerKw,
+          avgFuelCellKw: stats.avgFuelCellKw,
+          h2Delta: stats.h2Delta,
+        },
+      };
+    }
+    localStorage.setItem(RENEWABLE_REVIEW_BASELINE_KEY, JSON.stringify(map));
+  } catch (_err) {}
+}
+
+function pinRenewableReviewBaseline() {
+  const stats = computeRenewableReviewMetrics(state.renewableTrendHistory || []);
+  const tr = (text) => (typeof translatePhrase === "function" ? translatePhrase(text) : text);
+  if (!stats.sampleCount) {
+    if (typeof showUiToast === "function") showUiToast(tr("暂无运行统计数据"), "warn", 2000);
+    return;
+  }
+  saveRenewableReviewBaseline(stats);
+  renderRenewableReviewSummary();
+  if (typeof showUiToast === "function") showUiToast(tr("已锁定当前运行指标为对比基线"), "ok", 2200);
+}
+
+function clearRenewableReviewBaseline() {
+  saveRenewableReviewBaseline(null);
+  renderRenewableReviewSummary();
+  const tr = (text) => (typeof translatePhrase === "function" ? translatePhrase(text) : text);
+  if (typeof showUiToast === "function") showUiToast(tr("已清除对比基线"), "info", 1800);
+}
+
+function renewableReviewTableRows(stats, baseline = null) {
   const fmt = (v, digits = 2) => (v !== null && Number.isFinite(v) ? Number(v).toFixed(digits) : "--");
   const tr = (text) => (typeof translatePhrase === "function" ? translatePhrase(text) : text);
+  const bm = baseline?.metrics || null;
+  const deltaOf = (key, cur, digits = 2, preferHigher = null) => {
+    if (!bm || cur === null || !Number.isFinite(cur)) return { text: "—", cls: "" };
+    const baseVal = Number(bm[key]);
+    if (!Number.isFinite(baseVal)) return { text: "—", cls: "" };
+    const diff = cur - baseVal;
+    if (Math.abs(diff) < 1e-6) return { text: "0", cls: "" };
+    const text = `${diff > 0 ? "+" : ""}${diff.toFixed(digits)}`;
+    let cls = "";
+    if (preferHigher === true) cls = diff > 0 ? "is-delta-good" : "is-delta-bad";
+    else if (preferHigher === false) cls = diff < 0 ? "is-delta-good" : "is-delta-bad";
+    return { text, cls };
+  };
   return [
-    { name: tr("新能源消纳率"), value: fmt(stats.utilizationPct, 1), unit: "%", note: tr("实际新能源出力 / 最大可发出力") },
-    { name: tr("弃电率"), value: fmt(stats.curtailmentPct, 1), unit: "%", note: tr("100% - 新能源消纳率") },
-    { name: tr("新能源平均出力"), value: fmt(stats.avgRenewAct, 2), unit: "kW", note: tr("统计窗口内均值") },
-    { name: tr("新能源平均可发"), value: fmt(stats.avgRenewMax, 2), unit: "kW", note: tr("风电 + 光伏最大可发均值") },
-    { name: tr("平均弃电功率"), value: fmt(stats.avgCurtailKw, 2), unit: "kW", note: tr("可发均值与实际均值差值") },
-    { name: tr("总负荷平均功率"), value: fmt(stats.avgLoadKw, 2), unit: "kW", note: tr("交直流负荷合计均值") },
-    { name: tr("新能源负荷渗透率"), value: fmt(stats.renewSharePct, 1), unit: "%", note: tr("新能源均功率 / 总负荷均功率") },
-    { name: tr("柴发平均出力"), value: fmt(stats.avgDieselKw, 2), unit: "kW", note: tr("统计窗口内柴发功率均值") },
-    { name: tr("柴发运行时长占比"), value: fmt(stats.dieselRunRatio, 1), unit: "%", note: tr("柴发出力 > 0.1 kW 样本占比") },
-    { name: tr("电储 SOC 区间"), value: stats.socMin !== null ? `${fmt(stats.socMin, 1)} ~ ${fmt(stats.socMax, 1)}` : "--", unit: "%", note: tr("最小值 ~ 最大值") },
-    { name: tr("电储越限占比"), value: fmt(stats.socBreachPct, 1), unit: "%", note: tr("SOC < 20% 或 > 80% 样本占比") },
-    { name: tr("电制氢平均耗电"), value: fmt(stats.avgElectrolyzerKw, 2), unit: "kW", note: tr("电解槽运行功率均值") },
-    { name: tr("燃料电池平均发电"), value: fmt(stats.avgFuelCellKw, 2), unit: "kW", note: tr("燃料电池出力均值") },
+    { name: tr("新能源消纳率"), value: fmt(stats.utilizationPct, 1), delta: deltaOf("utilizationPct", stats.utilizationPct, 1, true), unit: "%", note: tr("实际新能源出力 / 最大可发出力") },
+    { name: tr("弃电率"), value: fmt(stats.curtailmentPct, 1), delta: deltaOf("curtailmentPct", stats.curtailmentPct, 1, false), unit: "%", note: tr("100% - 新能源消纳率") },
+    { name: tr("新能源平均出力"), value: fmt(stats.avgRenewAct, 2), delta: deltaOf("avgRenewAct", stats.avgRenewAct, 2, true), unit: "kW", note: tr("统计窗口内均值") },
+    { name: tr("新能源平均可发"), value: fmt(stats.avgRenewMax, 2), delta: deltaOf("avgRenewMax", stats.avgRenewMax, 2, null), unit: "kW", note: tr("风电 + 光伏最大可发均值") },
+    { name: tr("平均弃电功率"), value: fmt(stats.avgCurtailKw, 2), delta: deltaOf("avgCurtailKw", stats.avgCurtailKw, 2, false), unit: "kW", note: tr("可发均值与实际均值差值") },
+    { name: tr("总负荷平均功率"), value: fmt(stats.avgLoadKw, 2), delta: deltaOf("avgLoadKw", stats.avgLoadKw, 2, null), unit: "kW", note: tr("交直流负荷合计均值") },
+    { name: tr("新能源负荷渗透率"), value: fmt(stats.renewSharePct, 1), delta: deltaOf("renewSharePct", stats.renewSharePct, 1, true), unit: "%", note: tr("新能源均功率 / 总负荷均功率") },
+    { name: tr("柴发平均出力"), value: fmt(stats.avgDieselKw, 2), delta: deltaOf("avgDieselKw", stats.avgDieselKw, 2, false), unit: "kW", note: tr("统计窗口内柴发功率均值") },
+    { name: tr("柴发运行时长占比"), value: fmt(stats.dieselRunRatio, 1), delta: deltaOf("dieselRunRatio", stats.dieselRunRatio, 1, false), unit: "%", note: tr("柴发出力 > 0.1 kW 样本占比") },
+    { name: tr("电储 SOC 区间"), value: stats.socMin !== null ? `${fmt(stats.socMin, 1)} ~ ${fmt(stats.socMax, 1)}` : "--", delta: { text: "—", cls: "" }, unit: "%", note: tr("最小值 ~ 最大值") },
+    { name: tr("电储越限占比"), value: fmt(stats.socBreachPct, 1), delta: deltaOf("socBreachPct", stats.socBreachPct, 1, false), unit: "%", note: tr("SOC < 20% 或 > 80% 样本占比") },
+    { name: tr("电制氢平均耗电"), value: fmt(stats.avgElectrolyzerKw, 2), delta: deltaOf("avgElectrolyzerKw", stats.avgElectrolyzerKw, 2, null), unit: "kW", note: tr("电解槽运行功率均值") },
+    { name: tr("燃料电池平均发电"), value: fmt(stats.avgFuelCellKw, 2), delta: deltaOf("avgFuelCellKw", stats.avgFuelCellKw, 2, null), unit: "kW", note: tr("燃料电池出力均值") },
     {
       name: tr("氢罐 SOC 变化"),
       value: stats.h2Delta !== null ? `${stats.h2Delta >= 0 ? "+" : ""}${fmt(stats.h2Delta, 2)}` : "--",
+      delta: deltaOf("h2Delta", stats.h2Delta, 2, true),
       unit: "%",
       note: stats.h2First !== null ? `${fmt(stats.h2First, 1)}% -> ${fmt(stats.h2Last, 1)}%` : "--",
     },
@@ -1092,11 +1169,20 @@ function renewableReviewTableRows(stats) {
 
 function renderRenewableReviewSummary() {
   const tbody = $("renewableReviewTableBody");
-  const countEl = $("renewableReviewSampleCount");
+  const countEl = $("renewableReviewSampleSummary") || $("renewableReviewSampleCount");
   if (!tbody) return;
   const stats = computeRenewableReviewMetrics(state.renewableTrendHistory || []);
+  const baseline = loadRenewableReviewBaseline();
   const tr = (text) => (typeof translatePhrase === "function" ? translatePhrase(text) : text);
   if (countEl) countEl.textContent = `${stats.sampleCount} ${tr("样本")}`;
+  const baselineTag = $("renewableReviewBaselineTag");
+  const clearBaselineBtn = $("clearRenewableReviewBaseline");
+  if (baselineTag) {
+    baselineTag.hidden = !baseline;
+    if (baseline) baselineTag.textContent = `${tr("基线")} ${baseline.pinnedAt || ""}`;
+  }
+  if (clearBaselineBtn) clearBaselineBtn.hidden = !baseline;
+
   const setKpi = (id, text) => {
     const el = $(id);
     if (el) el.textContent = text;
@@ -1105,24 +1191,25 @@ function renderRenewableReviewSummary() {
   setKpi("reviewCurtailmentRate", stats.curtailmentPct !== null ? `${stats.curtailmentPct.toFixed(1)}%` : "--");
   setKpi("reviewDieselAvgKw", stats.avgDieselKw !== null ? `${stats.avgDieselKw.toFixed(1)} kW` : "--");
   setKpi(
-    "reviewStorageSocRange",
+    "reviewBessSocRange",
     stats.socMin !== null ? `${stats.socMin.toFixed(1)}% ~ ${stats.socMax.toFixed(1)}%` : "--",
   );
-  setKpi("reviewStorageSocBreach", stats.socBreachPct !== null ? `${stats.socBreachPct.toFixed(1)}%` : "--");
+  setKpi("reviewBessLimitPct", stats.socBreachPct !== null ? `${stats.socBreachPct.toFixed(1)}%` : "--");
   setKpi(
-    "reviewHydrogenSocDelta",
+    "reviewH2SocDelta",
     stats.h2Delta !== null ? `${stats.h2Delta >= 0 ? "+" : ""}${stats.h2Delta.toFixed(2)}%` : "--",
   );
 
   if (!stats.sampleCount) {
-    tbody.innerHTML = `<tr><td colspan="4" class="empty-state">${escapeHtml(tr("暂无运行统计数据"))}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="empty-state">${escapeHtml(tr("暂无运行统计数据"))}</td></tr>`;
     return;
   }
-  const rows = renewableReviewTableRows(stats);
+  const rows = renewableReviewTableRows(stats, baseline);
   tbody.innerHTML = rows.map((row) => `
     <tr>
       <td>${escapeHtml(row.name)}</td>
       <td class="numeric-cell mono-cell">${escapeHtml(row.value)}</td>
+      <td class="numeric-cell mono-cell ${escapeHtml(row.delta?.cls || "")}">${escapeHtml(row.delta?.text || "—")}</td>
       <td>${escapeHtml(row.unit)}</td>
       <td>${escapeHtml(row.note)}</td>
     </tr>
@@ -1131,16 +1218,17 @@ function renderRenewableReviewSummary() {
 
 function exportRenewableReviewCsv() {
   const stats = computeRenewableReviewMetrics(state.renewableTrendHistory || []);
+  const baseline = loadRenewableReviewBaseline();
   const tr = (text) => (typeof translatePhrase === "function" ? translatePhrase(text) : text);
   if (!stats.sampleCount) {
     if (typeof showUiToast === "function") showUiToast(tr("暂无运行统计数据"), "warn", 2000);
     return;
   }
-  const rows = renewableReviewTableRows(stats);
+  const rows = renewableReviewTableRows(stats, baseline);
   const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const lines = [
-    [tr("指标项"), tr("数值"), tr("单位"), tr("口径说明")].map(esc).join(","),
-    ...rows.map((r) => [r.name, r.value, r.unit, r.note].map(esc).join(",")),
+    [tr("指标项"), tr("数值"), tr("较基线变化"), tr("单位"), tr("口径说明")].map(esc).join(","),
+    ...rows.map((r) => [r.name, r.value, r.delta?.text || "—", r.unit, r.note].map(esc).join(",")),
   ];
   const blob = new Blob([`\uFEFF${lines.join("\r\n")}`], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);

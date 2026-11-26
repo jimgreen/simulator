@@ -105,6 +105,7 @@ def make_simulator_proxy_server(
             "/api/simulator104/service/process",
             "/api/simulator104/rtu/update",
             "/api/simulator104/channel-define/update",
+            "/api/simulator104/reinit-db",
         }
 
         def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
@@ -388,6 +389,12 @@ def make_simulator_proxy_server(
                         payload,
                         apply_restart=apply_restart,
                     )
+                    self._send_json(result)
+                    return
+                elif path == "/api/simulator104/reinit-db":
+                    if iec104_host is None or not callable(getattr(iec104_host, "reinit_database", None)):
+                        raise RuntimeError("当前托管环境不支持在线重建 IEC104 数据库")
+                    result = iec104_host.reinit_database()
                     self._send_json(result)
                     return
                 elif path.startswith("/api/rtus/"):

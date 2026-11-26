@@ -44,7 +44,7 @@
         }
       } catch (_e) {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20261126-ux-hub" />
+    <link rel="stylesheet" href="/styles.css?v=20261126-ux-v2" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -707,7 +707,14 @@
                     <button type="button" class="sub-tab" role="tab" aria-selected="false" data-fault-subtab="measurement">量测故障</button>
                     <button type="button" class="sub-tab" role="tab" aria-selected="false" data-fault-subtab="mode">运行模式</button>
                   </div>
-                  <div class="panel-actions">
+                  <div class="panel-actions fault-preset-actions">
+                    <select id="faultPresetSelect" aria-label="故障演练场景预设">
+                      <option value="">演练场景预设…</option>
+                    </select>
+                    <button id="applyFaultPreset" class="compact-action-btn" type="button" disabled>载入预设</button>
+                    <button id="saveFaultPreset" class="compact-action-btn" type="button">存为预设</button>
+                    <button id="deleteFaultPreset" class="compact-action-btn is-danger" type="button" hidden>删除预设</button>
+                    <button id="clearAllFaults" class="compact-action-btn is-danger" type="button">清除全部故障</button>
                     <button id="saveFaults" class="primary" type="button">保存设置</button>
                   </div>
                 </div>
@@ -1424,6 +1431,7 @@
               </div>
               <div class="scada104-page-meta">
                 <span id="scada104Database" class="scada104-db-path"></span>
+                <button id="scada104ReinitDbBtn" class="compact-action-btn is-danger" type="button" title="备份旧库并按最新 schema 重建 IEC104 数据库">重建数据库</button>
                 <a id="scada104ExternalLink" class="compact-action-btn" href="#" target="_blank" rel="noopener" hidden>SCADA 工作台</a>
               </div>
             </div>
@@ -1645,6 +1653,7 @@
                   <div class="panel-actions">
                     <select id="scada104PointsRtuSelect" aria-label="点表模型"></select>
                     <input id="scada104PointsSearch" class="scada104-search" type="search" placeholder="筛选名称、点号或 IOA…" aria-label="筛选四遥点表" autocomplete="off" />
+                    <button id="scada104ClearPointsSearchBtn" class="compact-action-btn" type="button" hidden>清空筛选</button>
                     <label class="inline-check-filter"><input id="scada104PausePointsRefresh" type="checkbox" /><span>暂停自动刷新</span></label>
                     <button id="scada104ReloadPointsBtn" type="button">刷新</button>
                   </div>
@@ -1698,6 +1707,7 @@
                       <option value="ERROR">ERROR</option>
                     </select>
                     <input id="scada104LogsSearch" class="scada104-search" type="search" placeholder="筛选日志内容…" aria-label="筛选日志内容" autocomplete="off" />
+                    <button id="scada104ClearLogsFilterBtn" class="compact-action-btn" type="button" hidden>清空筛选</button>
                     <button id="scada104ReloadLogsBtn" type="button">刷新日志</button>
                   </div>
                 </div>
@@ -2114,15 +2124,15 @@
       </div>
     </dialog>
     <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
-    <script defer src="/js/00-i18n.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/01-state-core.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/02-api-models.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/03-diagram-core.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/04-diagram-editor.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/05-curves.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/06-overview-runtime.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/07-measurements-faults.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/08-ux-enhancements.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/09-scada104.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/00-i18n.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/01-state-core.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/02-api-models.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/03-diagram-core.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/04-diagram-editor.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/05-curves.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/06-overview-runtime.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/07-measurements-faults.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/08-ux-enhancements.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/09-scada104.js?v=20261126-ux-v2"></script>
   </body>
 </html>

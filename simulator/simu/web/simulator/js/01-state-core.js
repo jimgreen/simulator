@@ -260,6 +260,10 @@ const state = {
   verticalSplitRatios: initialVerticalSplitRatios(),
   verticalSplitDrag: null,
   virtualTables: {},
+  tableSort: {
+    measurementCompare: { col: "", dir: "none" },
+    runtimeCommand: { col: "", dir: "none" },
+  },
   virtualTableScrollRaf: {},
 };
 window.__polarFrontendDiagnostics = state.frontendDiagnostics;

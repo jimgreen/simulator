@@ -40,7 +40,7 @@
         }
       } catch (_e) {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20261126-ux-hub" />
+    <link rel="stylesheet" href="/styles.css?v=20261126-ux-v2" />
   </head>
   <body>
     <div class="app-shell" data-default-page="overview">
@@ -1178,6 +1178,9 @@
                       <h2>运行指标复盘</h2>
                       <div class="panel-actions">
                         <span id="renewableReviewSampleSummary">0 点</span>
+                        <span id="renewableReviewBaselineTag" class="renewable-baseline-tag" hidden></span>
+                        <button id="pinRenewableReviewBaseline" type="button" class="compact-action-btn">锁定对比基线</button>
+                        <button id="clearRenewableReviewBaseline" type="button" class="compact-action-btn" hidden>清除基线</button>
                         <button id="exportRenewableReviewCsv" type="button" class="compact-action-btn">导出 CSV</button>
                       </div>
                     </div>
@@ -1195,12 +1198,13 @@
                           <tr>
                             <th>指标项</th>
                             <th class="numeric-cell">数值</th>
+                            <th class="numeric-cell">较基线变化</th>
                             <th>单位</th>
                             <th>口径说明</th>
                           </tr>
                         </thead>
                         <tbody id="renewableReviewTableBody">
-                          <tr><td colspan="4" class="empty-state">暂无运行统计数据</td></tr>
+                          <tr><td colspan="5" class="empty-state">暂无运行统计数据</td></tr>
                         </tbody>
                       </table>
                     </div>
@@ -1836,15 +1840,15 @@
       </div>
     </dialog>
     <div id="uiToastContainer" class="ui-toast-container" aria-live="polite" aria-atomic="false"></div>
-    <script defer src="/js/00-i18n.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/01-state-core.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/02-diagram-core.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/03-diagram-editor.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/04-receive-models.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/05-curves.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/06-renewable-control.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/07-measurements-commands.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/08-bootstrap.js?v=20261126-ux-hub"></script>
-    <script defer src="/js/09-ux-enhancements.js?v=20261126-ux-hub"></script>
+    <script defer src="/js/00-i18n.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/01-state-core.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/02-diagram-core.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/03-diagram-editor.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/04-receive-models.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/05-curves.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/06-renewable-control.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/07-measurements-commands.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/08-bootstrap.js?v=20261126-ux-v2"></script>
+    <script defer src="/js/09-ux-enhancements.js?v=20261126-ux-v2"></script>
   </body>
 </html>

@@ -335,6 +335,10 @@ class ClusterAndProxyTests(unittest.TestCase):
                         "summary": {"rtu_id": rtu, "channel_id": 1, "channel_type": "iec104", "total_points": 4},
                     }
 
+                def reinit_database(self):
+                    calls.append(("reinit_db",))
+                    return {"reinitialized": True, "available": True, "database": "scdfe_s.sqlite3", "backups": ["scdfe_s.sqlite3.bak-test"]}
+
                 def close(self):
                     self.closed = True
 
@@ -418,6 +422,10 @@ class ClusterAndProxyTests(unittest.TestCase):
                     )
 
                 self.assertEqual(_post_json("/api/simulator104/service/process", {"action": "restart", "rtu_id": 1, "scope": "single"})[0], 200)
+                s_reinit, _, b_reinit = _post_json("/api/simulator104/reinit-db", {})
+                self.assertEqual(s_reinit, 200)
+                self.assertTrue(json.loads(b_reinit.decode("utf-8"))["reinitialized"])
+                self.assertIn(("reinit_db",), calls)
                 self.assertEqual(_post_json("/api/simulator104/service/config", {"rtu_id": 1, "config": {"bind_ip": "0.0.0.0", "port": 2406}})[0], 200)
                 self.assertEqual(_post_json("/api/simulator104/rtu/update", {"rtu_id": 1, "name": "StationA", "process_enable": 1})[0], 200)
                 self.assertEqual(_post_json("/api/simulator104/channel-define/update", {"channel_id": 1, "remote_port": 2406})[0], 200)
@@ -431,6 +439,34 @@ class ClusterAndProxyTests(unittest.TestCase):
             self.assertIn(("rtu_update", 1, "StationA"), calls)
             self.assertIn(("channel_def_update", 1, 2406), calls)
             self.assertIn(("export_efile", 1), calls)
+
+    def test_scada104_backup_and_schema_mismatch_detection(self) -> None:
+        """验证 IEC104 数据库 schema 失配检测与主库/边车库带时间戳备份逻辑。"""
+        import scada104
+
+        self.assertTrue(
+            scada104._is_schema_mismatch_error(
+                RuntimeError("数据库表 fes_channel_modbus_define 的 schema 指纹不一致；请重新初始化数据库")
+            )
+        )
+        self.assertFalse(scada104._is_schema_mismatch_error(RuntimeError("permission denied")))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "scdfe_s.sqlite3"
+            wal = root / "scdfe_s.sqlite3-wal"
+            bridge = root / "scdfe_s_bridge.sqlite3"
+            db.write_bytes(b"main-db")
+            wal.write_bytes(b"wal-data")
+            bridge.write_bytes(b"bridge-db")
+
+            backups = scada104.backup_scada104_databases(db, bridge)
+            self.assertEqual(len(backups), 3)
+            self.assertFalse(db.exists())
+            self.assertFalse(wal.exists())
+            self.assertFalse(bridge.exists())
+            for item in backups:
+                self.assertTrue(Path(item).is_file())
 
 
 if __name__ == "__main__":

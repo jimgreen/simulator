@@ -2108,6 +2108,152 @@ class EmbeddedScada104Host:
         _HTTP_POOL.close()
 
 
+def _is_schema_mismatch_error(exc: BaseException) -> bool:
+    """判断异常是否由上游 FES/SCADA 数据库 schema 指纹不匹配引起。"""
+    text = str(exc or "").lower()
+    return ("schema" in text and ("指纹" in text or "fingerprint" in text or "mismatch" in text or "不一致" in text))
+
+
+def backup_scada104_databases(db_path: Path, bridge_db_path: Path | None = None) -> list[str]:
+    """将既有 scdfe_s 主库与边车桥接库（含 WAL/SHM）带时间戳安全备份重命名。"""
+    resolved_db = Path(db_path).resolve()
+    resolved_bridge = (
+        Path(bridge_db_path).resolve()
+        if bridge_db_path is not None
+        else resolved_db.with_name(f"{resolved_db.stem}_bridge.sqlite3")
+    )
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backups: list[str] = []
+    candidates: list[Path] = []
+    for base in (resolved_db, resolved_bridge):
+        candidates.append(base)
+        candidates.append(base.with_name(f"{base.name}-wal"))
+        candidates.append(base.with_name(f"{base.name}-shm"))
+    for src in candidates:
+        if not src.exists():
+            continue
+        dst = src.with_name(f"{src.name}.bak-{stamp}")
+        idx = 1
+        while dst.exists():
+            dst = src.with_name(f"{src.name}.bak-{stamp}-{idx}")
+            idx += 1
+        src.replace(dst)
+        backups.append(str(dst))
+    return backups
+
+
+class EmbeddedScada104Manager:
+    """支持 schema 失配自愈与运行时热重建的嵌入式 IEC104 托管器容器。"""
+
+    def __init__(
+        self,
+        *,
+        db_path: Path,
+        scada_root: Path,
+        simulator_url: str,
+        first_iec104_port: int = 2405,
+        interval: float = 0.5,
+        catalog_provider=None,
+        scada_web_url: str = "",
+        auto_reinit_on_schema_mismatch: bool = True,
+    ) -> None:
+        self._lock = threading.RLock()
+        self.db_path = Path(db_path).resolve()
+        self.bridge_db_path = self.db_path.with_name(f"{self.db_path.stem}_bridge.sqlite3")
+        self.scada_root = Path(scada_root).resolve()
+        self.simulator_url = simulator_url
+        self.first_iec104_port = int(first_iec104_port)
+        self.interval = float(interval)
+        self.catalog_provider = catalog_provider
+        self.scada_web_url = str(scada_web_url or "").strip().rstrip("/")
+        self.last_backups: list[str] = []
+        self._host: Any = self._build_host(auto_reinit=auto_reinit_on_schema_mismatch)
+
+    def _build_host(self, *, auto_reinit: bool = False) -> Any:
+        if not self.scada_root.is_dir():
+            return _UnavailableScada104Host(
+                f"未找到 SCADA 协议库目录（{self.scada_root}），请通过 SCADA_ROOT 或 startup.json(scada_root) 配置",
+                scada_web_url=self.scada_web_url,
+            )
+        try:
+            return EmbeddedScada104Host(
+                db_path=self.db_path,
+                scada_root=self.scada_root,
+                simulator_url=self.simulator_url,
+                first_iec104_port=self.first_iec104_port,
+                interval=self.interval,
+                catalog_provider=self.catalog_provider,
+                scada_web_url=self.scada_web_url,
+            )
+        except Exception as exc:
+            if auto_reinit and _is_schema_mismatch_error(exc):
+                LOG.warning("检测到 IEC104 数据库 schema 指纹不一致，正在自动备份旧库并按最新 schema 重建：%s", exc)
+                try:
+                    backups = backup_scada104_databases(self.db_path, self.bridge_db_path)
+                    self.last_backups = backups
+                    rebuilt = EmbeddedScada104Host(
+                        db_path=self.db_path,
+                        scada_root=self.scada_root,
+                        simulator_url=self.simulator_url,
+                        first_iec104_port=self.first_iec104_port,
+                        interval=self.interval,
+                        catalog_provider=self.catalog_provider,
+                        scada_web_url=self.scada_web_url,
+                    )
+                    LOG.warning("IEC104 数据库已自动重建并恢复可用，旧库已备份：%s", ", ".join(backups) or "无")
+                    return rebuilt
+                except Exception as retry_exc:
+                    LOG.warning("IEC104 数据库自动重建失败，已降级：%s", retry_exc)
+                    return _UnavailableScada104Host(
+                        f"IEC104 联动自动重建失败：{retry_exc}",
+                        scada_web_url=self.scada_web_url,
+                    )
+            LOG.warning("内嵌 IEC104 联动服务初始化失败，已降级：%s", exc)
+            return _UnavailableScada104Host(f"IEC104 联动初始化失败：{exc}", scada_web_url=self.scada_web_url)
+
+    @property
+    def available(self) -> bool:
+        with self._lock:
+            return bool(getattr(self._host, "available", False))
+
+    @property
+    def reason(self) -> str:
+        with self._lock:
+            return str(getattr(self._host, "reason", "") or "")
+
+    def reinit_database(self) -> dict:
+        """免重启热备份旧库、按最新 schema 重建数据库并恢复内嵌 IEC104 托管。"""
+        with self._lock:
+            old_host = self._host
+            if old_host is not None and callable(getattr(old_host, "close", None)):
+                try:
+                    old_host.close()
+                except Exception:
+                    pass
+            backups = backup_scada104_databases(self.db_path, self.bridge_db_path)
+            self.last_backups = backups
+            new_host = self._build_host(auto_reinit=False)
+            self._host = new_host
+            if not getattr(new_host, "available", False):
+                raise RuntimeError(getattr(new_host, "reason", "") or "重建 IEC104 数据库失败")
+            return {
+                "reinitialized": True,
+                "available": True,
+                "database": str(self.db_path),
+                "backups": [Path(p).name for p in backups],
+            }
+
+    def close(self) -> None:
+        with self._lock:
+            if self._host is not None and callable(getattr(self._host, "close", None)):
+                self._host.close()
+
+    def __getattr__(self, name: str) -> Any:
+        with self._lock:
+            target = self._host
+        return getattr(target, name)
+
+
 def create_embedded_scada104_host(
     *,
     simulator_url: str,
@@ -2118,8 +2264,9 @@ def create_embedded_scada104_host(
     first_iec104_port: int = 2405,
     interval: float = 0.5,
     scada_web_url: str = "",
+    auto_reinit_on_schema_mismatch: bool = True,
 ):
-    """为 simulator Web 进程创建内嵌 IEC104 托管器；缺少外部 SCADA 库时优雅降级不阻塞主服务。"""
+    """为 simulator Web 进程创建内嵌 IEC104 托管器；schema 失配时自动备份重建，缺失协议库时优雅降级。"""
     settings = {}
     startup_file = APP_ROOT / "startup.json"
     if startup_file.is_file():
@@ -2135,24 +2282,16 @@ def create_embedded_scada104_host(
     )
     resolved_db = Path(db_path).resolve() if db_path else (resolved_data_dir / "scdfe_s.sqlite3")
     resolved_web_url = str(scada_web_url or settings.get("scada_web_url") or "").strip().rstrip("/")
-    if not resolved_scada_root.is_dir():
-        return _UnavailableScada104Host(
-            f"未找到 SCADA 协议库目录（{resolved_scada_root}），请通过 SCADA_ROOT 或 startup.json(scada_root) 配置",
-            scada_web_url=resolved_web_url,
-        )
-    try:
-        return EmbeddedScada104Host(
-            db_path=resolved_db,
-            scada_root=resolved_scada_root,
-            simulator_url=simulator_url,
-            first_iec104_port=first_iec104_port,
-            interval=interval,
-            catalog_provider=catalog_provider,
-            scada_web_url=resolved_web_url,
-        )
-    except Exception as exc:
-        LOG.warning("内嵌 IEC104 联动服务初始化失败，已降级：%s", exc)
-        return _UnavailableScada104Host(f"IEC104 联动初始化失败：{exc}", scada_web_url=resolved_web_url)
+    return EmbeddedScada104Manager(
+        db_path=resolved_db,
+        scada_root=resolved_scada_root,
+        simulator_url=simulator_url,
+        first_iec104_port=first_iec104_port,
+        interval=interval,
+        catalog_provider=catalog_provider,
+        scada_web_url=resolved_web_url,
+        auto_reinit_on_schema_mismatch=auto_reinit_on_schema_mismatch,
+    )
 
 
 if __name__ == "__main__":

@@ -2548,23 +2548,68 @@ function renderRuntimeCommandRows(rows) {
   }).join("");
 }
 
+function runtimeCommandSortAttr(col) {
+  const s = state.tableSort?.runtimeCommand || { col: "", dir: "none" };
+  const dir = s.col === col ? s.dir : "none";
+  return `class="is-sortable" data-virtual-sort-table="runtimeCommand" data-virtual-sort-col="${col}" aria-sort="${dir}"`;
+}
+
+function sortRuntimeCommandRows(rows) {
+  const s = state.tableSort?.runtimeCommand;
+  if (!s || !s.col || s.dir === "none") return rows;
+  const dir = s.dir === "ascending" ? 1 : -1;
+  const rankProcess = (p) => (p === "effective" ? 2 : (p === "queued" ? 1 : 0));
+  return rows.slice().sort((a, b) => {
+    const col = s.col;
+    if (col === "control" || col === "real" || col === "scada") {
+      const key = col === "control" ? "control_value" : (col === "real" ? "real_value" : "scada_value");
+      const va = Number(a[key]);
+      const vb = Number(b[key]);
+      const fa = Number.isFinite(va);
+      const fb = Number.isFinite(vb);
+      if (fa && fb) return (va - vb) * dir;
+      if (fa) return -1;
+      if (fb) return 1;
+      return 0;
+    }
+    if (col === "process") {
+      return (rankProcess(a.receive_time?.process_state) - rankProcess(b.receive_time?.process_state)) * dir;
+    }
+    const textVal = (r) => {
+      if (col === "device") return String(r.device?.dev_name || "");
+      if (col === "dev_type") return String(r.device?.dev_type || "");
+      if (col === "command") return String(r.command || "");
+      if (col === "origin") return String(r.receive_time?.origin_text || "");
+      if (col === "wall_time") return String(r.receive_time?.wall_time || "");
+      if (col === "simu_time") return String(r.receive_time?.simu_time || r.refresh_time || "");
+      return "";
+    };
+    return textVal(a).localeCompare(textVal(b), "zh-CN") * dir;
+  });
+}
+
 function renderRuntimeCommandTable(rows, emptyText, virtualRows = { beforeHeight: 0, afterHeight: 0 }) {
   if (!rows.length) return `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
+  const numSortAttr = (col) => {
+    const s = state.tableSort?.runtimeCommand || { col: "", dir: "none" };
+    const dir = s.col === col ? s.dir : "none";
+    return `class="numeric-cell is-sortable" data-virtual-sort-table="runtimeCommand" data-virtual-sort-col="${col}" data-virtual-sort-numeric="1" aria-sort="${dir}"`;
+  };
   return `
     <table class="runtime-device-table runtime-command-table">
       <thead>
         <tr>
-          <th>设备</th>
-          <th>设备类型</th>
+          <th ${runtimeCommandSortAttr("device")}>设备</th>
+          <th ${runtimeCommandSortAttr("dev_type")}>设备类型</th>
           <th>模式</th>
-          <th>指令项</th>
-          <th class="numeric-cell">控制指令</th>
-          <th>指令来源</th>
-          <th>接收本机时刻</th>
-          <th>接收仿真时刻</th>
-          <th>处理状态</th>
-          <th class="numeric-cell">实时值</th>
-          <th class="numeric-cell">量测值</th>
+          <th ${runtimeCommandSortAttr("command")}>指令项</th>
+          <th ${numSortAttr("control")}>控制指令</th>
+          <th ${runtimeCommandSortAttr("origin")}>指令来源</th>
+          <th ${runtimeCommandSortAttr("wall_time")}>接收本机时刻</th>
+          <th ${runtimeCommandSortAttr("simu_time")}>接收仿真时刻</th>
+          <th ${runtimeCommandSortAttr("process")}>处理状态</th>
+          <th ${numSortAttr("real")}>实时值</th>
+          <th ${numSortAttr("scada")}>量测值</th>
           <th>操作</th>
         </tr>
       </thead>
@@ -2622,12 +2667,15 @@ function renderRuntimeDeviceTable() {
     return;
   }
   const tabHtml = renderRuntimeCommandTabs(filteredRemoteControlRows, filteredRemoteAdjustmentRows, activeTab);
-  const activeRows = activeTab === "remote_adjustment"
+  const rawActiveRows = activeTab === "remote_adjustment"
     ? filteredRemoteAdjustmentRows
     : filteredRemoteControlRows;
+  const activeRows = sortRuntimeCommandRows(rawActiveRows);
+  const sortState = state.tableSort?.runtimeCommand || { col: "", dir: "none" };
   const virtualRows = virtualTableWindow(`runtimeCommand:${activeTab}`, activeRows);
   const structureKey = [
     runtimeCommandTableStructureKey(activeRows),
+    `${sortState.col}:${sortState.dir}`,
     virtualRows.enabled ? "virtual" : "full",
     virtualRows.start,
     virtualRows.end,
