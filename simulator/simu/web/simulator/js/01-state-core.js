@@ -1436,10 +1436,16 @@ function confirmDangerousAction({
 
 const UI_THEME_PRESETS = [
   { id: "minimalist-light", label: "极简明亮", scheme: "light" },
-  { id: "precision-dark", label: "精密暗黑", scheme: "dark" },
+  { id: "arctic-frost", label: "极地冰蓝", scheme: "light" },
+  { id: "warm-paper", label: "护眼暖纸", scheme: "light" },
+  { id: "slate-daylight", label: "冷灰工程", scheme: "light" },
   { id: "bento-grid", label: "便当盒网格", scheme: "light" },
-  { id: "glassmorphism", label: "毛玻璃拟态", scheme: "dark" },
   { id: "editorial", label: "编辑杂志", scheme: "light" },
+  { id: "precision-dark", label: "精密暗黑", scheme: "dark" },
+  { id: "ocean-slate", label: "深海工业蓝", scheme: "dark" },
+  { id: "nord-dark", label: "北欧极夜", scheme: "dark" },
+  { id: "industrial-amber", label: "碳黑琥珀", scheme: "dark" },
+  { id: "glassmorphism", label: "毛玻璃拟态", scheme: "dark" },
   { id: "sci-fi-cyan", label: "科幻 · 电光青", scheme: "dark" },
   { id: "sci-fi-purple", label: "科幻 · 赛博紫", scheme: "dark" },
   { id: "sci-fi-matrix", label: "科幻 · 矩阵绿", scheme: "dark" },
@@ -1549,6 +1555,51 @@ function chartThemePalette() {
       tooltipText: "#e2e8f0",
     };
   }
+  if (theme === "ocean-slate") {
+    return {
+      bg: "#0a1a2d",
+      grid: "rgba(56, 189, 248, 0.14)",
+      gridSubtle: "rgba(56, 189, 248, 0.07)",
+      axis: "rgba(142, 178, 206, 0.36)",
+      cursorLine: "rgba(56, 189, 248, 0.58)",
+      text: "#8eb2ce",
+      markerFill: "#0a1a2d",
+      tooltipBg: "rgba(13, 32, 54, 0.96)",
+      tooltipBorder: "rgba(56, 189, 248, 0.38)",
+      tooltipTitle: "#eaf4fc",
+      tooltipText: "#c5dff4",
+    };
+  }
+  if (theme === "nord-dark") {
+    return {
+      bg: "#282e39",
+      grid: "rgba(216, 222, 233, 0.12)",
+      gridSubtle: "rgba(216, 222, 233, 0.06)",
+      axis: "rgba(165, 177, 198, 0.36)",
+      cursorLine: "rgba(136, 192, 208, 0.58)",
+      text: "#a5b1c6",
+      markerFill: "#282e39",
+      tooltipBg: "rgba(46, 52, 64, 0.96)",
+      tooltipBorder: "rgba(136, 192, 208, 0.38)",
+      tooltipTitle: "#eceff4",
+      tooltipText: "#d8dee9",
+    };
+  }
+  if (theme === "industrial-amber") {
+    return {
+      bg: "#171513",
+      grid: "rgba(245, 158, 11, 0.14)",
+      gridSubtle: "rgba(245, 158, 11, 0.07)",
+      axis: "rgba(181, 170, 154, 0.36)",
+      cursorLine: "rgba(245, 158, 11, 0.6)",
+      text: "#b5aa9a",
+      markerFill: "#171513",
+      tooltipBg: "rgba(28, 26, 24, 0.96)",
+      tooltipBorder: "rgba(245, 158, 11, 0.42)",
+      tooltipTitle: "#faf5ed",
+      tooltipText: "#e5dccd",
+    };
+  }
   if (theme === "precision-dark") {
     return {
       bg: "#0f172a",
@@ -1562,6 +1613,51 @@ function chartThemePalette() {
       tooltipBorder: "rgba(148, 163, 184, 0.35)",
       tooltipTitle: "#f1f5f9",
       tooltipText: "#cbd5e1",
+    };
+  }
+  if (theme === "arctic-frost") {
+    return {
+      bg: "#f7fbfe",
+      grid: "#d4e4f1",
+      gridSubtle: "#e8f2f9",
+      axis: "#9cc0d9",
+      cursorLine: "rgba(2, 132, 199, 0.5)",
+      text: "#4b6a82",
+      markerFill: "#ffffff",
+      tooltipBg: "rgba(255, 255, 255, 0.97)",
+      tooltipBorder: "#b7d4e8",
+      tooltipTitle: "#0c2233",
+      tooltipText: "#2c4c64",
+    };
+  }
+  if (theme === "warm-paper") {
+    return {
+      bg: "#fcfaf4",
+      grid: "#e2dacb",
+      gridSubtle: "#efe9dc",
+      axis: "#bfb4a1",
+      cursorLine: "rgba(21, 128, 61, 0.48)",
+      text: "#6b6255",
+      markerFill: "#fffdf8",
+      tooltipBg: "rgba(255, 253, 248, 0.98)",
+      tooltipBorder: "#d4c8b4",
+      tooltipTitle: "#231f1a",
+      tooltipText: "#4f473c",
+    };
+  }
+  if (theme === "slate-daylight") {
+    return {
+      bg: "#f6f8fb",
+      grid: "#d5dde7",
+      gridSubtle: "#e6ecf3",
+      axis: "#94a3b8",
+      cursorLine: "rgba(29, 78, 216, 0.48)",
+      text: "#475569",
+      markerFill: "#fafbfd",
+      tooltipBg: "rgba(250, 251, 253, 0.97)",
+      tooltipBorder: "#cbd5e1",
+      tooltipTitle: "#111827",
+      tooltipText: "#334155",
     };
   }
   if (theme === "editorial") {

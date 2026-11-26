@@ -27,10 +27,16 @@ const recentReceipts = [];
 
 const UI_THEME_PRESETS = [
   { id: "minimalist-light", label: "极简明亮", scheme: "light" },
-  { id: "precision-dark", label: "精密暗黑", scheme: "dark" },
+  { id: "arctic-frost", label: "极地冰蓝", scheme: "light" },
+  { id: "warm-paper", label: "护眼暖纸", scheme: "light" },
+  { id: "slate-daylight", label: "冷灰工程", scheme: "light" },
   { id: "bento-grid", label: "便当盒网格", scheme: "light" },
-  { id: "glassmorphism", label: "毛玻璃拟态", scheme: "dark" },
   { id: "editorial", label: "编辑杂志", scheme: "light" },
+  { id: "precision-dark", label: "精密暗黑", scheme: "dark" },
+  { id: "ocean-slate", label: "深海工业蓝", scheme: "dark" },
+  { id: "nord-dark", label: "北欧极夜", scheme: "dark" },
+  { id: "industrial-amber", label: "碳黑琥珀", scheme: "dark" },
+  { id: "glassmorphism", label: "毛玻璃拟态", scheme: "dark" },
   { id: "sci-fi-cyan", label: "科幻 · 电光青", scheme: "dark" },
   { id: "sci-fi-purple", label: "科幻 · 赛博紫", scheme: "dark" },
   { id: "sci-fi-matrix", label: "科幻 · 矩阵绿", scheme: "dark" },

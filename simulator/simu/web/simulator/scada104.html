@@ -26,13 +26,28 @@
     } catch (_e) {}
     try {
       const rawTheme = localStorage.getItem("polarUiTheme");
-      const darkThemes = new Set(["precision-dark", "glassmorphism", "sci-fi-cyan", "sci-fi-purple", "sci-fi-matrix"]);
+      const darkThemes = new Set([
+        "precision-dark",
+        "ocean-slate",
+        "nord-dark",
+        "industrial-amber",
+        "glassmorphism",
+        "sci-fi-cyan",
+        "sci-fi-purple",
+        "sci-fi-matrix",
+      ]);
       const validThemes = new Set([
         "minimalist-light",
-        "precision-dark",
+        "arctic-frost",
+        "warm-paper",
+        "slate-daylight",
         "bento-grid",
-        "glassmorphism",
         "editorial",
+        "precision-dark",
+        "ocean-slate",
+        "nord-dark",
+        "industrial-amber",
+        "glassmorphism",
         "sci-fi-cyan",
         "sci-fi-purple",
         "sci-fi-matrix",
@@ -47,9 +62,9 @@
       document.documentElement.dataset.colorScheme = "light";
     }
   </script>
-  <link rel="stylesheet" href="/scada104.css?v=20261123-ux-v2">
-  <script src="/js/00-i18n.js?v=20261123-ux-v2" defer></script>
-  <script src="/scada104.js?v=20261123-ux-v2" defer></script>
+  <link rel="stylesheet" href="/scada104.css?v=20261126-themes-v14">
+  <script src="/js/00-i18n.js?v=20261126-themes-v14" defer></script>
+  <script src="/scada104.js?v=20261126-themes-v14" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -77,14 +92,26 @@
         <label class="theme-switcher" title="选择界面风格">
           <span class="theme-switcher-label" data-i18n="ui.style">风格</span>
           <select id="themeSelector" class="theme-select" aria-label="选择界面风格">
-            <option value="minimalist-light" data-i18n="theme.minimalist-light">极简明亮</option>
-            <option value="precision-dark" data-i18n="theme.precision-dark">精密暗黑</option>
-            <option value="bento-grid" data-i18n="theme.bento-grid">便当盒网格</option>
-            <option value="glassmorphism" data-i18n="theme.glassmorphism">毛玻璃拟态</option>
-            <option value="editorial" data-i18n="theme.editorial">编辑杂志</option>
-            <option value="sci-fi-cyan" data-i18n="theme.sci-fi-cyan">科幻 · 电光青</option>
-            <option value="sci-fi-purple" data-i18n="theme.sci-fi-purple">科幻 · 赛博紫</option>
-            <option value="sci-fi-matrix" data-i18n="theme.sci-fi-matrix">科幻 · 矩阵绿</option>
+            <optgroup label="浅色风格" data-i18n-label="theme.group.light">
+              <option value="minimalist-light" data-i18n="theme.minimalist-light">极简明亮</option>
+              <option value="arctic-frost" data-i18n="theme.arctic-frost">极地冰蓝</option>
+              <option value="warm-paper" data-i18n="theme.warm-paper">护眼暖纸</option>
+              <option value="slate-daylight" data-i18n="theme.slate-daylight">冷灰工程</option>
+              <option value="bento-grid" data-i18n="theme.bento-grid">便当盒网格</option>
+              <option value="editorial" data-i18n="theme.editorial">编辑杂志</option>
+            </optgroup>
+            <optgroup label="深色工程" data-i18n-label="theme.group.dark">
+              <option value="precision-dark" data-i18n="theme.precision-dark">精密暗黑</option>
+              <option value="ocean-slate" data-i18n="theme.ocean-slate">深海工业蓝</option>
+              <option value="nord-dark" data-i18n="theme.nord-dark">北欧极夜</option>
+              <option value="industrial-amber" data-i18n="theme.industrial-amber">碳黑琥珀</option>
+              <option value="glassmorphism" data-i18n="theme.glassmorphism">毛玻璃拟态</option>
+            </optgroup>
+            <optgroup label="科幻战情" data-i18n-label="theme.group.scifi">
+              <option value="sci-fi-cyan" data-i18n="theme.sci-fi-cyan">科幻 · 电光青</option>
+              <option value="sci-fi-purple" data-i18n="theme.sci-fi-purple">科幻 · 赛博紫</option>
+              <option value="sci-fi-matrix" data-i18n="theme.sci-fi-matrix">科幻 · 矩阵绿</option>
+            </optgroup>
           </select>
         </label>
       </div>

@@ -206,8 +206,35 @@ def read_points(base, model):
     return definitions
 
 
+def _migrate_legacy_sqlite3_to_db(db_path: Path, bridge_db_path: Path | None = None) -> list[str]:
+    """当目标 *.db 尚不存在且同目录存在旧版 *.sqlite3 时，平滑重命名为 *.db（含 WAL/SHM）。"""
+    resolved_db = Path(db_path).resolve()
+    resolved_bridge = (
+        Path(bridge_db_path).resolve()
+        if bridge_db_path is not None
+        else resolved_db.with_name(f"{resolved_db.stem}_bridge.db")
+    )
+    migrated: list[str] = []
+    for target in (resolved_db, resolved_bridge):
+        if target.suffix.lower() != ".db" or target.exists():
+            continue
+        legacy = target.with_suffix(".sqlite3")
+        if not legacy.is_file():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        for ext in ("", "-wal", "-shm"):
+            src = legacy.with_name(f"{legacy.name}{ext}")
+            dst = target.with_name(f"{target.name}{ext}")
+            if src.exists() and not dst.exists():
+                src.replace(dst)
+                migrated.append(f"{src.name} -> {dst.name}")
+    if migrated:
+        LOG.info("已将旧版 .sqlite3 数据库平滑迁移为 .db：%s", ", ".join(migrated))
+    return migrated
+
+
 def migrate_bridge_tables_out(scada_db_path: Path, bridge_db_path: Path) -> None:
-    """将旧版写入 scdfe_s.sqlite3 的 simulator104_* 表迁移到独立边车库，保持 SCADA 库纯净。"""
+    """将旧版写入 scdfe_s.db 的 simulator104_* 表迁移到独立边车库，保持 SCADA 库纯净。"""
     bridge_db_path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(bridge_db_path, timeout=15)) as bdb:
         bdb.execute("PRAGMA journal_mode=WAL")
@@ -293,7 +320,7 @@ class Bridge:
         self._catalog_ttl_seconds = 2.5
         self.bridge_db_path = Path(
             bridge_db_path
-            or server.store.db_path.with_name(server.store.db_path.stem + "_bridge.sqlite3")
+            or server.store.db_path.with_name(server.store.db_path.stem + "_bridge.db")
         ).resolve()
         migrate_bridge_tables_out(server.store.db_path, self.bridge_db_path)
 
@@ -1102,7 +1129,7 @@ def main(argv=None):
     data_dir = (APP_ROOT / settings.get("data_dir", "data")).resolve()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scada-root", type=Path, default=default_scada_root(settings))
-    parser.add_argument("--db", type=Path, default=data_dir / "scdfe_s.sqlite3")
+    parser.add_argument("--db", type=Path, default=data_dir / "scdfe_s.db")
     parser.add_argument("--workspace-root", type=Path)
     parser.add_argument("--simulator-url", default=f"http://127.0.0.1:{settings['port']}")
     parser.add_argument("--web-port", type=int, default=8878)
@@ -1297,7 +1324,8 @@ def main(argv=None):
     workspace_root = args.workspace_root or (WORKSPACE_ROOT if database.is_relative_to(WORKSPACE_ROOT) else database.parent)
     if not database.is_relative_to(workspace_root.resolve()):
         parser.error("仿真点库必须位于工作区根目录内")
-    bridge_db_path = database.with_name(database.stem + "_bridge.sqlite3")
+    bridge_db_path = database.with_name(database.stem + "_bridge.db")
+    _migrate_legacy_sqlite3_to_db(database, bridge_db_path)
     migrate_bridge_tables_out(database, bridge_db_path)
     with ModelScadaServer(("127.0.0.1", args.web_port), db_path=database,
                           workspace_root=workspace_root) as server:
@@ -1430,8 +1458,9 @@ class EmbeddedScada104Host:
         self._iec104_error_cls = IEC104ServiceError
         self.db_path = Path(db_path).resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.bridge_db_path = self.db_path.with_name(self.db_path.stem + "_bridge.sqlite3")
+        self.bridge_db_path = self.db_path.with_name(self.db_path.stem + "_bridge.db")
         self.scada_web_url = str(scada_web_url or "").strip().rstrip("/")
+        _migrate_legacy_sqlite3_to_db(self.db_path, self.bridge_db_path)
         migrate_bridge_tables_out(self.db_path, self.bridge_db_path)
 
         self.store = SimulatorStore(self.db_path)
@@ -2120,7 +2149,7 @@ def backup_scada104_databases(db_path: Path, bridge_db_path: Path | None = None)
     resolved_bridge = (
         Path(bridge_db_path).resolve()
         if bridge_db_path is not None
-        else resolved_db.with_name(f"{resolved_db.stem}_bridge.sqlite3")
+        else resolved_db.with_name(f"{resolved_db.stem}_bridge.db")
     )
     stamp = time.strftime("%Y%m%d-%H%M%S")
     backups: list[str] = []
@@ -2159,7 +2188,8 @@ class EmbeddedScada104Manager:
     ) -> None:
         self._lock = threading.RLock()
         self.db_path = Path(db_path).resolve()
-        self.bridge_db_path = self.db_path.with_name(f"{self.db_path.stem}_bridge.sqlite3")
+        self.bridge_db_path = self.db_path.with_name(f"{self.db_path.stem}_bridge.db")
+        _migrate_legacy_sqlite3_to_db(self.db_path, self.bridge_db_path)
         self.scada_root = Path(scada_root).resolve()
         self.simulator_url = simulator_url
         self.first_iec104_port = int(first_iec104_port)
@@ -2280,7 +2310,7 @@ def create_embedded_scada104_host(
         if data_dir is not None
         else (APP_ROOT / settings.get("data_dir", "data")).resolve()
     )
-    resolved_db = Path(db_path).resolve() if db_path else (resolved_data_dir / "scdfe_s.sqlite3")
+    resolved_db = Path(db_path).resolve() if db_path else (resolved_data_dir / "scdfe_s.db")
     resolved_web_url = str(scada_web_url or settings.get("scada_web_url") or "").strip().rstrip("/")
     return EmbeddedScada104Manager(
         db_path=resolved_db,

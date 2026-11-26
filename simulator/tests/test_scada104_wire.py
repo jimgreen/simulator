@@ -141,7 +141,7 @@ def bridge_process(root, catalog, web_port):
     with logfile.open("wb") as output:
         process = subprocess.Popen(
             [sys.executable, "-X", "utf8", "-u", str(APP / "scada104.py"),
-             "--scada-root", str(SCADA), "--db", str(root / "scdfe_s.sqlite3"),
+             "--scada-root", str(SCADA), "--db", str(root / "scdfe_s.db"),
              "--simulator-url", catalog, "--web-port", str(web_port),
              "--first-iec104-port", str(free_port())],
             cwd=root, stdout=output, stderr=subprocess.STDOUT,
@@ -175,7 +175,7 @@ class Scada104WireTest(unittest.TestCase):
             web_port = free_port()
             web_url = f"http://{HOST}:{web_port}"
             process, logfile = resources.enter_context(bridge_process(root, catalog, web_port))
-            database = root / "scdfe_s.sqlite3"
+            database = root / "scdfe_s.db"
 
             def rows(query, *params):
                 with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=1)) as db:

@@ -19,10 +19,16 @@ from typing import Any
 
 ALL_THEMES = (
     "minimalist-light",
-    "precision-dark",
+    "arctic-frost",
+    "warm-paper",
+    "slate-daylight",
     "bento-grid",
-    "glassmorphism",
     "editorial",
+    "precision-dark",
+    "ocean-slate",
+    "nord-dark",
+    "industrial-amber",
+    "glassmorphism",
     "sci-fi-cyan",
     "sci-fi-purple",
     "sci-fi-matrix",
@@ -136,7 +142,7 @@ def main() -> int:
     if not args.skip_browser:
         ran_pw, pw_errors = run_playwright_smoke(args.simulator_url, args.trainee_url)
         if ran_pw:
-            print("[INFO] 已完成无头 Chromium 8 主题 + 3 语言渲染巡检。")
+            print(f"[INFO] 已完成无头 Chromium {len(ALL_THEMES)} 主题 + {len(ALL_LANGS)} 语言渲染巡检。")
             errors.extend(pw_errors)
         else:
             print("[INFO] 未检测到 playwright，已跳过无头浏览器渲染步骤（仅执行 HTTP 全资源冒烟）。")

@@ -1289,7 +1289,7 @@
       const confirmed = typeof confirmDangerousAction === "function"
         ? await confirmDangerousAction({
           title: tr("备份并重建 IEC104 数据库？"),
-          target: get("scada104Database")?.textContent || "scdfe_s.sqlite3",
+          target: get("scada104Database")?.textContent || "scdfe_s.db",
           message: tr("将安全备份当前 scdfe_s 数据库及桥接库，并按最新规约 schema 重新初始化，所有在线模型将自动重新同步点表。"),
           confirmLabel: tr("确认重建"),
         })

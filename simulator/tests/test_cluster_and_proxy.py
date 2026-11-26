@@ -274,7 +274,7 @@ class ClusterAndProxyTests(unittest.TestCase):
                     return {
                         "available": True,
                         "hosted_by": "simulator",
-                        "database": "test.sqlite3",
+                        "database": "test.db",
                         "scada_web_url": "",
                         "models": [{"model": "m1", "rtu_id": 1, "online": True, "running": True}],
                         "errors": {},
@@ -337,7 +337,7 @@ class ClusterAndProxyTests(unittest.TestCase):
 
                 def reinit_database(self):
                     calls.append(("reinit_db",))
-                    return {"reinitialized": True, "available": True, "database": "scdfe_s.sqlite3", "backups": ["scdfe_s.sqlite3.bak-test"]}
+                    return {"reinitialized": True, "available": True, "database": "scdfe_s.db", "backups": ["scdfe_s.db.bak-test"]}
 
                 def close(self):
                     self.closed = True
@@ -453,9 +453,9 @@ class ClusterAndProxyTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            db = root / "scdfe_s.sqlite3"
-            wal = root / "scdfe_s.sqlite3-wal"
-            bridge = root / "scdfe_s_bridge.sqlite3"
+            db = root / "scdfe_s.db"
+            wal = root / "scdfe_s.db-wal"
+            bridge = root / "scdfe_s_bridge.db"
             db.write_bytes(b"main-db")
             wal.write_bytes(b"wal-data")
             bridge.write_bytes(b"bridge-db")
@@ -467,6 +467,18 @@ class ClusterAndProxyTests(unittest.TestCase):
             self.assertFalse(bridge.exists())
             for item in backups:
                 self.assertTrue(Path(item).is_file())
+
+            # 验证旧版 .sqlite3 到 .db 的平滑自动迁移
+            legacy_db = root / "legacy.sqlite3"
+            legacy_bridge = root / "legacy_bridge.sqlite3"
+            legacy_db.write_bytes(b"old-main")
+            legacy_bridge.write_bytes(b"old-bridge")
+            migrated = scada104._migrate_legacy_sqlite3_to_db(root / "legacy.db", root / "legacy_bridge.db")
+            self.assertEqual(len(migrated), 2)
+            self.assertTrue((root / "legacy.db").is_file())
+            self.assertTrue((root / "legacy_bridge.db").is_file())
+            self.assertFalse(legacy_db.exists())
+            self.assertFalse(legacy_bridge.exists())
 
 
 if __name__ == "__main__":

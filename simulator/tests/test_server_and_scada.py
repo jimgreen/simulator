@@ -173,7 +173,7 @@ class ServerAndScadaTests(unittest.TestCase):
 
     def test_scada104_catalog_timeout_keeps_online_models_valid(self):
         with tempfile.TemporaryDirectory() as td:
-            db_path = Path(td) / "scdfe_s.sqlite3"
+            db_path = Path(td) / "scdfe_s.db"
             fake_srv = _FakeScadaServer(db_path)
             bridge = scada104.Bridge(
                 fake_srv,
@@ -284,7 +284,7 @@ class ServerAndScadaTests(unittest.TestCase):
 
     def test_scada104_list_control_points_returns_active_and_disabled_flags(self):
         with tempfile.TemporaryDirectory() as td:
-            db_path = Path(td) / "scdfe_s.sqlite3"
+            db_path = Path(td) / "scdfe_s.db"
             fake_srv = _FakeScadaServer(db_path)
             bridge = scada104.Bridge(fake_srv, "http://127.0.0.1:18710", first_port=2405)
             with patch.object(scada104, "port_available", return_value=True):

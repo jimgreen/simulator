@@ -647,13 +647,19 @@ process.exit(0);
         self.assertEqual(proc.returncode, 0, f"前端模块顺序加载失败：\n{proc.stderr}")
 
     def test_all_web_pages_expose_all_eight_style_presets(self) -> None:
-        """三套 Web 页面均应完整列出最新 8 套风格预设，移除 neo-brutalism 与旧 sci-fi。"""
+        """三套 Web 页面均应完整列出最新 14 套风格预设，移除 neo-brutalism 与旧 sci-fi。"""
         expected_themes = (
             "minimalist-light",
-            "precision-dark",
+            "arctic-frost",
+            "warm-paper",
+            "slate-daylight",
             "bento-grid",
-            "glassmorphism",
             "editorial",
+            "precision-dark",
+            "ocean-slate",
+            "nord-dark",
+            "industrial-amber",
+            "glassmorphism",
             "sci-fi-cyan",
             "sci-fi-purple",
             "sci-fi-matrix",
@@ -803,6 +809,10 @@ if (translatePhrase("12 台设备", "ru-RU") !== "12 устр.") {
             self.assertIn('data-color-scheme="dark"] th', tail, f"{css_path.name} 缺少暗黑裸标签 th 覆盖（防止表头与 tbody th 惨白穿帮）")
             self.assertIn('data-color-scheme="dark"] tbody th', tail, f"{css_path.name} 缺少暗黑 tbody th 覆盖")
             self.assertIn('.vertical-stack-splitter::before', tail, f"{css_path.name} 缺少暗黑分隔条伪元素覆盖")
+
+        scada_css = (REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "scada104.css").read_text(encoding="utf-8")
+        self.assertIn('data-color-scheme="dark"] ::-webkit-scrollbar-track', scada_css, "scada104.css 缺少暗黑滚动条样式")
+        self.assertIn("accent-color: var(--teal)", scada_css, "scada104.css 缺少主题 accent-color 声明")
 
     def test_all_static_html_chinese_strings_mapped_in_i18n(self) -> None:
         """三套静态 HTML 中的可见中文文案与属性必须 100% 命中 i18n 词典或动态模板。"""
