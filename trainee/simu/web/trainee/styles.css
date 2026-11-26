@@ -10121,3 +10121,84 @@ th[data-virtual-sort-table][aria-sort="descending"]::after {
   color: var(--red);
   font-weight: 600;
 }
+
+/* ==========================================================================
+   2026-11-26 全局字号阶梯收敛与防倒挂修正
+   视觉阶梯：H1(17px) > 面板 H2(15px) > 树分组/子页签/普通按钮/表正文(12.5px–13px) > 树子节点/表头(12px) > 角标(11px)
+   ========================================================================== */
+body {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.panel h2,
+.panel-head h2 {
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+button,
+input,
+select,
+textarea {
+  font-size: 13px;
+}
+
+.tree-node {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.tree-type {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.tree-child {
+  min-height: 26px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.tree-node strong,
+.tree-node small {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.model-param-tabs {
+  gap: 3px;
+  padding: 4px 6px 0;
+}
+
+.model-param-tab,
+.measurement-type-tab,
+.command-tab {
+  height: 28px;
+  padding: 0 9px;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.model-param-tab.is-active,
+.measurement-type-tab.is-active,
+.command-tab.is-active {
+  font-weight: 600;
+}
+
+.model-param-tab strong,
+.measurement-type-tab strong,
+.command-tab strong {
+  min-width: 16px;
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.78;
+}
