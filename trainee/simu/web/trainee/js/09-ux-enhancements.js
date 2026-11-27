@@ -2293,11 +2293,22 @@
   function enhanceDiagramHudAndMinimap() {
     const canvasHost = document.getElementById("modelDiagramCanvas");
     if (!canvasHost) return;
-    const stage = canvasHost.parentElement || canvasHost;
+    // 清理可能挂载在父面板容器上（压盖 panel-head）的旧版 HUD 元素
+    const parentPanel = canvasHost.closest(".model-diagram-panel") || canvasHost.parentElement;
+    if (parentPanel && parentPanel !== canvasHost) {
+      parentPanel.querySelectorAll(":scope > .ux-diagram-hud, :scope > .ux-diagram-legend, :scope > .ux-diagram-minimap").forEach((el) => el.remove());
+    }
+    const stage = canvasHost;
     if (getComputedStyle(stage).position === "static") {
       stage.style.position = "relative";
     }
-    if (!stage.querySelector(".ux-diagram-hud")) {
+    // 页面已自带原生设备定位输入框（如工具条“定位设备…”）时，不再叠加重复搜索浮框避免双框与遮挡
+    const hasNativeLocateInput = Boolean(
+      parentPanel?.querySelector('input[type="search"]:not(.ux-diagram-search-input), input[placeholder*="定位设备"], input[placeholder*="Locate"]'),
+    );
+    if (hasNativeLocateInput) {
+      stage.querySelector(".ux-diagram-hud")?.remove();
+    } else if (!stage.querySelector(".ux-diagram-hud")) {
       const hud = document.createElement("div");
       hud.className = "ux-diagram-hud";
       hud.innerHTML = `

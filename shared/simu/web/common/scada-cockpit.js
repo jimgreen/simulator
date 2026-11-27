@@ -550,7 +550,7 @@
           <article class="sc-panel">
             <header class="sc-head">
               <span class="sc-head-gem" aria-hidden="true"></span>
-              <h2 data-sc-zh="${trainee ? leftMidTitleZh : "极地气象与环境工况"}"></h2>
+              <h2 data-sc-zh="${trainee ? leftMidTitleZh : "极地气象"}"></h2>
               <span class="sc-head-slash" aria-hidden="true"></span>
               <span class="sc-regime-badge" id="scClimateRegime" data-sc-zh="常规极地"></span>
               ${trainee ? '<span class="sc-head-meta" id="scBoundaryTime">--</span>' : `<button type="button" id="scOpenEnvInjectBtn" class="sc-env-inject-btn">${SC_ICONS.spark}<span data-sc-zh="工况注入"></span></button>`}

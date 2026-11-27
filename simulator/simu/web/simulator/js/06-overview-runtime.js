@@ -785,7 +785,8 @@ function renderOverviewDashboard(snapshot) {
   setOverviewText("overviewFlowGreenPower", overviewPowerText(greenPower));
   setOverviewText("overviewFlowGreenShare", overviewPercentText(greenPowerShare));
   renderOverviewFlowGroups(power);
-  setOverviewText("overviewCommandCount", `${activeOverviewCommands.length} 条控制指令`);
+  const overviewEventsCount = state.runtimeLogs.length ? state.runtimeLogs.length : (snapshot.runtime_logs || []).length;
+  setOverviewText("overviewCommandCount", `${overviewEventsCount} 条事件`);
   renderOverviewEvents(snapshot);
 }
 

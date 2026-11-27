@@ -619,6 +619,23 @@
   flex: 1 1 auto;
   min-width: 0;
   border-bottom: 0;
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scrollbar-width: none;
+}
+
+.ux-tabs-scroll-shell > .model-param-tabs::-webkit-scrollbar {
+  display: none !important;
+}
+
+.model-param-tabs > button,
+.model-param-tab {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: max-content !important;
+  white-space: nowrap !important;
 }
 
 .ux-tabs-step-btn {
@@ -681,17 +698,19 @@
 .ux-overview-kpi-group {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
 }
 
 .ux-overview-kpi {
   display: inline-flex;
   align-items: baseline;
-  gap: 5px;
+  gap: 4px;
+  flex: 0 0 auto;
   white-space: nowrap;
-  padding-right: 10px;
+  padding-right: 8px;
   border-right: 1px solid var(--line);
 }
 
@@ -706,7 +725,7 @@
 }
 
 .ux-overview-kpi strong {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -723,6 +742,8 @@
   gap: 6px;
   flex: 0 0 auto;
   margin-left: auto;
+  padding-left: 8px;
+  border-left: 1px solid var(--line);
 }
 
 .ux-overview-sparkline-legend {
@@ -743,16 +764,16 @@
 }
 
 canvas.ux-overview-sparkline {
-  width: 132px !important;
-  min-width: 132px !important;
-  max-width: 132px !important;
-  height: 24px !important;
+  width: 96px !important;
+  min-width: 96px !important;
+  max-width: 96px !important;
+  height: 22px !important;
   min-height: 0 !important;
-  max-height: 24px !important;
+  max-height: 22px !important;
   display: block;
-  border-radius: 3px !important;
-  background: var(--surface);
-  border: 1px solid var(--line);
+  border-radius: 4px !important;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
 }
 
 /* 4. 主页能量流卡片微型进度条与点击穿透反馈 */
@@ -1831,14 +1852,21 @@ button[disabled].primary {
 
 .renewable-trend-inline-legend {
   flex: 0 0 auto !important;
+  height: 30px !important;
+  min-height: 30px !important;
   max-height: 32px !important;
-  padding: 4px 8px !important;
+  padding: 3px 8px !important;
   flex-wrap: nowrap !important;
   align-items: center !important;
   gap: 5px !important;
   overflow-x: auto !important;
   overflow-y: hidden !important;
-  scrollbar-width: thin;
+  scrollbar-width: none !important;
+}
+
+.renewable-trend-inline-legend::-webkit-scrollbar {
+  display: none !important;
+  height: 0 !important;
 }
 
 .renewable-trend-inline-legend-item {
@@ -2214,22 +2242,22 @@ header.topbar.ux-topbar-compact .brand-mark {
 .ux-theme-popover,
 .ux-alert-summary-popover {
   border-radius: var(--radius-md) !important;
-  border: 1px solid color-mix(in srgb, var(--teal) 26%, var(--line-strong)) !important;
-  background: color-mix(in srgb, var(--surface) 88%, transparent) !important;
-  backdrop-filter: blur(22px) saturate(1.4) !important;
+  border: 1px solid color-mix(in srgb, var(--teal) 32%, var(--line-strong)) !important;
+  background: color-mix(in srgb, var(--surface) 96%, var(--bg)) !important;
+  backdrop-filter: blur(22px) saturate(1.35) !important;
   box-shadow:
     inset 0 1px 0 var(--eth-glass-edge),
-    0 18px 46px -14px rgba(4, 12, 32, 0.42),
+    0 18px 46px -14px rgba(4, 12, 32, 0.56),
     0 0 28px -12px color-mix(in srgb, var(--teal) 28%, transparent) !important;
 }
 
 :root[data-color-scheme="light"] .ux-hub-popover,
 :root[data-color-scheme="light"] .ux-theme-popover,
 :root[data-color-scheme="light"] .ux-alert-summary-popover {
-  background: rgba(255, 255, 255, 0.88) !important;
+  background: rgba(255, 255, 255, 0.96) !important;
   box-shadow:
     inset 0 1px 0 #ffffff,
-    0 16px 40px -14px rgba(15, 23, 42, 0.16),
+    0 16px 40px -14px rgba(15, 23, 42, 0.18),
     0 0 24px -10px color-mix(in srgb, var(--teal) 20%, transparent) !important;
 }
 
@@ -2409,6 +2437,390 @@ dialog,
     color-mix(in srgb, var(--surface-subtle) 76%, transparent) 55%,
     color-mix(in srgb, #a78bfa 8%, var(--surface-subtle)) 100%
   ) !important;
+}
+
+/* ==========================================================================
+   10. 全站 20 页字号、配色对比度、表内表单控件、滚动条与防遮挡统一精修
+   ========================================================================== */
+
+/* 10.1 全局细长冰晶半透明滚动条，彻底取代系统厚灰带箭头滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--teal) 36%, var(--line-strong)) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--teal) 32%, var(--line-strong));
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--teal) 58%, var(--line-strong));
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 10.2 原生复选框与单选框统一柔和主题色 */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--teal);
+}
+
+/* 10.3 顶部切页微进度条：非激活态彻底零占位隐身，杜绝常驻蓝线残留 */
+.ux-top-progress {
+  display: none !important;
+  opacity: 0 !important;
+  height: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+.ux-top-progress.is-active {
+  display: block !important;
+  height: 2px !important;
+  margin-bottom: -2px !important;
+  opacity: 1 !important;
+}
+
+.ux-top-progress.is-done {
+  display: block !important;
+  height: 2px !important;
+  margin-bottom: -2px !important;
+  opacity: 0 !important;
+}
+
+/* 10.4 暗色主题下接线图画布与 SVG 智能保色相暗黑反色，消除刺眼大白块 */
+:root[data-color-scheme="dark"] .model-diagram-canvas,
+:root[data-color-scheme="dark"] #modelDiagramCanvas {
+  background: color-mix(in srgb, var(--surface) 84%, var(--bg)) !important;
+  border-color: color-mix(in srgb, var(--teal) 22%, var(--line)) !important;
+}
+
+:root[data-color-scheme="dark"] #modelDiagramCanvas svg:not(button svg):not(.sc-ico) {
+  filter: invert(0.91) hue-rotate(180deg) brightness(1.06) contrast(0.95);
+  border-radius: var(--radius-sm);
+}
+
+:root[data-color-scheme="dark"] .ux-diagram-minimap {
+  background: color-mix(in srgb, var(--bg) 88%, var(--surface)) !important;
+  border-color: color-mix(in srgb, var(--teal) 36%, var(--line-strong)) !important;
+}
+
+:root[data-color-scheme="dark"] canvas.ux-diagram-minimap-canvas {
+  background: transparent !important;
+}
+
+/* 10.5 暗色主题下禁用态表单控件协调配色，避免浅灰穿帮 */
+:root[data-color-scheme="dark"] select:disabled,
+:root[data-color-scheme="dark"] input:disabled,
+:root[data-color-scheme="dark"] textarea:disabled {
+  background: color-mix(in srgb, var(--surface-subtle) 62%, var(--bg)) !important;
+  color: color-mix(in srgb, var(--muted) 88%, var(--ink)) !important;
+  border-color: var(--line) !important;
+  opacity: 0.78 !important;
+}
+
+/* 10.6 表格单元格统一垂直居中 + 内嵌表单控件无独立边框无缝铺满（根治参数配置行高与箭头换行） */
+.system-parameter-table tbody tr,
+.web-runtime-parameter-table tbody tr {
+  height: 34px !important;
+}
+
+.system-parameter-table th,
+.system-parameter-table td,
+.web-runtime-parameter-table th,
+.web-runtime-parameter-table td {
+  height: 34px !important;
+  min-height: 34px !important;
+  vertical-align: middle !important;
+  padding-top: 3px !important;
+  padding-bottom: 3px !important;
+  line-height: 1.3 !important;
+}
+
+.system-parameter-table td:has(input:not([type="checkbox"]):not([type="radio"]), select),
+.web-runtime-parameter-table td:has(input:not([type="checkbox"]):not([type="radio"]), select),
+.model-param-table td:has(input:not([type="checkbox"]):not([type="radio"]), select) {
+  padding: 0 !important;
+}
+
+table td {
+  vertical-align: middle !important;
+}
+
+.system-parameter-table td select,
+.web-runtime-parameter-table td select,
+.scada104-table-wrap td select,
+.model-param-wrap td select,
+table td select {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  display: block !important;
+  width: 100% !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  max-height: 34px !important;
+  padding: 0 26px 0 10px !important;
+  line-height: 32px !important;
+  vertical-align: middle !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  box-sizing: border-box !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background-color: transparent !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 10px center !important;
+  background-size: 12px 12px !important;
+  color: var(--ink) !important;
+  box-shadow: none !important;
+  cursor: pointer;
+}
+
+:root[data-color-scheme="dark"] .system-parameter-table td select,
+:root[data-color-scheme="dark"] .web-runtime-parameter-table td select,
+:root[data-color-scheme="dark"] .scada104-table-wrap td select,
+:root[data-color-scheme="dark"] .model-param-wrap td select,
+:root[data-color-scheme="dark"] table td select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%237dd3fc' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") !important;
+}
+
+.system-parameter-table td select,
+.web-runtime-parameter-table td select {
+  text-align: right !important;
+  text-align-last: right !important;
+}
+
+.system-parameter-table td input:not([type="checkbox"]):not([type="radio"]),
+.web-runtime-parameter-table td input:not([type="checkbox"]):not([type="radio"]),
+.model-param-wrap td input:not([type="checkbox"]):not([type="radio"]) {
+  width: 100% !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  max-height: 34px !important;
+  padding: 0 10px !important;
+  line-height: 32px !important;
+  vertical-align: middle !important;
+  box-sizing: border-box !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background-color: transparent !important;
+  color: var(--ink) !important;
+  box-shadow: none !important;
+}
+
+table td select:hover:not(:disabled),
+.system-parameter-table td input:hover:not(:disabled),
+.web-runtime-parameter-table td input:hover:not(:disabled),
+.model-param-wrap td input:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--teal) 8%, transparent) !important;
+}
+
+table td select:focus,
+.system-parameter-table td input:focus,
+.web-runtime-parameter-table td input:focus,
+.model-param-wrap td input:focus {
+  outline: none !important;
+  background-color: color-mix(in srgb, var(--teal) 10%, transparent) !important;
+  box-shadow: inset 0 0 0 1.5px var(--teal) !important;
+}
+
+table td input:invalid,
+table td select:invalid {
+  box-shadow: inset 0 0 0 1.5px var(--red) !important;
+}
+
+/* 10.7 电网模型参数表单元格防小数点折行（如 15.\n01） */
+.model-param-wrap th,
+.model-param-wrap td {
+  white-space: nowrap !important;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 10.8 面板头部工具栏与运行日志/IEC104 头部按钮、标签零竖排挤压 */
+.panel-head {
+  gap: 8px !important;
+}
+
+.panel-head > h2,
+.panel-head > span,
+.panel-head .panel-actions > button,
+.panel-head .panel-actions > span,
+.panel-head .panel-actions > label,
+.panel-head .panel-actions > .compact-field,
+.runtime-log-toolbar > button,
+.runtime-log-toolbar > span,
+.runtime-log-toolbar > label,
+.scada104-page-toolbar > button,
+.scada104-page-toolbar > span,
+.scada104-page-toolbar > label {
+  flex: 0 0 auto !important;
+  white-space: nowrap !important;
+}
+
+.panel-head .panel-actions,
+.runtime-log-toolbar {
+  display: flex !important;
+  align-items: center !important;
+  flex-wrap: nowrap !important;
+  gap: 6px !important;
+  min-width: 0 !important;
+}
+
+.panel-head .panel-actions input[type="search"],
+.runtime-log-toolbar input[type="search"],
+.panel-head .panel-actions .scada104-search {
+  width: 152px !important;
+  min-width: 104px !important;
+  max-width: 176px !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  flex: 0 1 152px !important;
+}
+
+.panel-head .panel-actions select,
+.runtime-log-toolbar select {
+  width: auto !important;
+  min-width: 84px !important;
+  max-width: 260px !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 24px 0 8px !important;
+  line-height: 26px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  flex: 0 1 auto !important;
+}
+
+.panel-head .panel-actions button,
+.runtime-log-toolbar button {
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 10px !important;
+  line-height: 26px !important;
+}
+
+/* 10.9 控制指令与 IEC104 表格操作列紧凑排布 + 激活页签深色高对比度 */
+.scada104-table-wrap,
+.runtime-command-table-wrap,
+.command-table-wrap {
+  overflow-x: auto !important;
+}
+
+.scada104-table-wrap td button,
+.runtime-command-table-wrap td button,
+.command-table-wrap td button {
+  height: 24px !important;
+  min-height: 24px !important;
+  padding: 0 8px !important;
+  font-size: 11.5px !important;
+  line-height: 22px !important;
+  white-space: nowrap !important;
+}
+
+:root[data-color-scheme="dark"] .sub-tab.is-active,
+:root[data-color-scheme="dark"] .model-param-tab.is-active,
+:root[data-color-scheme="dark"] .runtime-command-tab.is-active,
+:root[data-color-scheme="dark"] .measurement-type-tab.is-active,
+:root[data-color-scheme="dark"] .renewable-strategy-tabs button.is-active,
+:root[data-color-scheme="dark"] .renewable-detail-tabs button.is-active {
+  color: #f0f9ff !important;
+  border-color: color-mix(in srgb, var(--teal) 72%, #ffffff) !important;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--teal) 32%, transparent) 0%,
+    color-mix(in srgb, var(--teal) 16%, transparent) 100%
+  ) !important;
+}
+
+/* 10.10 曲线页及其他空状态按钮与文字间距（防止按钮撞文字） */
+.empty-state {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 10px !important;
+  padding: 20px 14px !important;
+  text-align: center !important;
+}
+
+/* 10.11 左侧设备树根节点与筛选框严格左对齐 */
+.device-tree {
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+}
+
+.device-tree > .tree-node.tree-root {
+  margin-left: 0 !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+/* 10.12 全站最低可读字号护栏（禁止低于 11px 的模糊细字） */
+.ux-diagram-minimap-toggle,
+.energy-device-reading span,
+.energy-hydrogen-readings .energy-device-reading span,
+.tree-node small,
+.subtab-count-badge {
+  font-size: 11px !important;
+}
+
+/* 10.13 曲线图例强制隐去横向滚动条（置于全局滚动条规则之后确保 100% 生效，杜绝贯穿文字） */
+.renewable-trend-inline-legend,
+.ux-tabs-scroll-shell > .model-param-tabs,
+.ux-overview-live-strip {
+  scrollbar-width: none !important;
+}
+
+.renewable-trend-inline-legend::-webkit-scrollbar,
+.ux-tabs-scroll-shell > .model-param-tabs::-webkit-scrollbar,
+.ux-overview-live-strip::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* 10.14 学员端控制指令表紧凑列宽 + 右侧“操作”列吸顶常驻（1440px 视口内始终完整可见可点） */
+.command-table-stack table th,
+.command-table-stack table td {
+  padding: 4px 6px !important;
+  font-size: 12px !important;
+  white-space: nowrap !important;
+}
+
+.command-table-stack table th:last-child,
+.command-table-stack table td:last-child {
+  position: sticky !important;
+  right: 0 !important;
+  z-index: 3 !important;
+  background: color-mix(in srgb, var(--surface) 96%, var(--bg)) !important;
+  box-shadow: -8px 0 14px -8px rgba(4, 12, 28, 0.48) !important;
+}
+
+.command-table-stack table thead th:last-child {
+  z-index: 5 !important;
+  background: color-mix(in srgb, var(--surface-subtle) 96%, var(--bg)) !important;
+}
+
+.command-table-stack table td:last-child button {
+  height: 24px !important;
+  min-height: 24px !important;
+  padding: 0 7px !important;
+  font-size: 11.5px !important;
+  line-height: 22px !important;
 }
 
 

@@ -303,6 +303,8 @@ const PHRASE_TRANSLATIONS = {
   "立即注入": ["Inject Now", "Применить"],
   "注入中": ["Injecting", "Применение"],
   "极地气象与环境工况": ["Polar Weather & Environment", "Полярная погода и среда"],
+  "极地气象": ["Polar Weather", "Полярная погода"],
+  "0 条事件": ["0 Events", "0 событий"],
   "气象已注入": ["Weather injected", "Метеоданные применены"],
   "时步": ["Step", "Шаг"],
   "仿真引擎运行态势": ["Simulation Engine Status", "Статус симулятора"],
