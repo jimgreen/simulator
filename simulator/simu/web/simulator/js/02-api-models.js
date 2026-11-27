@@ -244,7 +244,8 @@ async function importDefinitionModel() {
 }
 
 const SIMULATOR_PAGE_ROUTES = {
-  "/": "overview",
+  "/": "screen",
+  "/screen": "screen",
   "/overview": "overview",
   "/model": "model",
   "/diagram": "diagram",
@@ -266,11 +267,11 @@ function normalizePagePath(pathname) {
 }
 
 function pagePath(page) {
-  return page === "overview" ? "/" : `/${page}`;
+  return page === "screen" ? "/" : `/${page}`;
 }
 
 function pageFromLocation() {
-  const fallback = document.querySelector(".app-shell")?.dataset.defaultPage || "overview";
+  const fallback = document.querySelector(".app-shell")?.dataset.defaultPage || "screen";
   const hashPage = (location.hash || "").replace("#", "").trim();
   if (hashPage) return hashPage;
   return SIMULATOR_PAGE_ROUTES[normalizePagePath(location.pathname)] || fallback;
@@ -393,7 +394,7 @@ function showPage(page, updateHash = true) {
     state.activeFaultSubtab = "mode";
     requested = "model";
   }
-  const target = state.pageSections?.[requested] ? requested : "overview";
+  const target = state.pageSections?.[requested] ? requested : (state.pageSections?.screen ? "screen" : "overview");
   const previousPage = state.activePage || currentPageName();
   if (previousPage === "curves" && target !== "curves") cancelCurveRequests();
   if (previousPage === "scada104" && target !== "scada104") {
@@ -715,7 +716,25 @@ function renderManualDefinitionChanges() {
     return;
   }
   if (!changes.length) {
-    container.innerHTML = '<div class="empty-state">当前模型没有人工修改</div>';
+    container.innerHTML = `
+      <table class="manual-definition-changes-table">
+        <thead>
+          <tr>
+            <th class="manual-change-select-cell"><input type="checkbox" disabled aria-label="选择全部人工修改" /></th>
+            <th>对象</th>
+            <th>修改类型</th>
+            <th>参数 / 状态项</th>
+            <th>默认值</th>
+            <th>当前值</th>
+            <th>修改时间</th>
+            <th>保存状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="manual-definition-changes-empty-row"><td colspan="8">当前模型没有人工修改</td></tr>
+        </tbody>
+      </table>
+    `;
     return;
   }
 
@@ -816,7 +835,7 @@ async function loadManualDefinitionChanges() {
     state.manualDefinitionChanges = Array.isArray(payload.changes) ? payload.changes : [];
     state.manualDefinitionChangesRevision = Number(payload.revision) || 0;
     state.manualDefinitionChangesLoadedModelId = requestedModelId;
-    state.manualDefinitionChangesMessage = `已加载 ${state.manualDefinitionChanges.length} 项人工修改`;
+    state.manualDefinitionChangesMessage = "";
   } catch (error) {
     if (requestedModelId === state.activeModelId) {
       state.manualDefinitionChangesError = apiErrorText(error);
@@ -1075,15 +1094,15 @@ function staticSnapshotMissingKeys(snapshot, requiredKeys = STATIC_SNAPSHOT_KEYS
 }
 
 function pageNeedsMeasurementDelta(page = currentPageName()) {
-  return ["overview", "diagram", "runtime", "measurements"].includes(page);
+  return ["screen", "overview", "diagram", "runtime", "measurements"].includes(page);
 }
 
 function pageNeedsRuntimeLogDelta(page = currentPageName()) {
-  return ["overview", "logs"].includes(page);
+  return ["screen", "overview", "logs"].includes(page);
 }
 
 function pageNeedsDevices(page = currentPageName()) {
-  return ["overview", "diagram", "faults", "modes", "runtime"].includes(page);
+  return ["screen", "overview", "diagram", "faults", "modes", "runtime"].includes(page);
 }
 
 function pageNeedsDeviceStates(page = currentPageName()) {
@@ -1091,7 +1110,7 @@ function pageNeedsDeviceStates(page = currentPageName()) {
 }
 
 function pageNeedsCommands(page = currentPageName()) {
-  return ["overview", "diagram", "runtime"].includes(page);
+  return ["screen", "overview", "diagram", "runtime"].includes(page);
 }
 
 function pageNeedsCommandHistory(page = currentPageName()) {

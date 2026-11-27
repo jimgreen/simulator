@@ -2422,6 +2422,10 @@ function renderActiveTraineePage(snapshot = state.snapshot || {}, force = false)
   if (activePage !== "diagram") {
     hideDiagramTooltip(state.pageSections?.diagram?.querySelector?.("#modelDiagramCanvas") || null);
   }
+  if (activePage === "screen") {
+    window.__updateScadaCockpitFromSnapshot?.(snapshot);
+    return;
+  }
   if (activePage === "overview") {
     renderTeacherWeather(snapshot);
     renderTraineeOverviewDashboard(snapshot);

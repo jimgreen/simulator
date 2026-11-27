@@ -9132,6 +9132,9 @@ table td > select:disabled {
 .model-hub-shell {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
   gap: 8px;
   height: 100%;
   min-height: 0;
@@ -9218,10 +9221,18 @@ table td > select:disabled {
 }
 
 .model-hub-pane > .model-page-layout,
+.model-hub-pane > .manual-definition-changes-panel,
 .model-hub-pane > .manual-changes-panel,
 .model-hub-pane > .fault-hub-shell {
   flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
   min-height: 0;
+}
+
+.model-hub-pane > .manual-definition-changes-panel {
+  display: flex;
+  flex-direction: column;
 }
 
 .fault-hub-shell {

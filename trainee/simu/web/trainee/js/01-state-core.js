@@ -1643,7 +1643,8 @@ function initTraceChartInteractions(chartKey, canvasId, drawFn) {
 }
 
 const TRAINEE_PAGE_ROUTES = {
-  "/": "overview",
+  "/": "screen",
+  "/screen": "screen",
   "/overview": "overview",
   "/model": "model",
   "/diagram": "diagram",
@@ -1662,11 +1663,11 @@ function normalizePagePath(pathname) {
 }
 
 function pagePath(page) {
-  return page === "overview" ? "/" : `/${page}`;
+  return page === "screen" ? "/" : `/${page}`;
 }
 
 function pageFromLocation() {
-  const fallback = document.querySelector(".app-shell")?.dataset.defaultPage || "overview";
+  const fallback = document.querySelector(".app-shell")?.dataset.defaultPage || "screen";
   const hashPage = (location.hash || "").replace("#", "").trim();
   if (hashPage) return hashPage;
   return TRAINEE_PAGE_ROUTES[normalizePagePath(location.pathname)] || fallback;
@@ -1749,7 +1750,7 @@ function showPage(page, updateHash = true) {
     state.activeModelSubtab = "manual-changes";
     requested = "model";
   }
-  const target = state.pageSections?.[requested] ? requested : "overview";
+  const target = state.pageSections?.[requested] ? requested : (state.pageSections?.screen ? "screen" : "overview");
   state.activePage = target;
   mountPageSection(target);
   if (target === "model") {
@@ -2615,7 +2616,25 @@ function renderManualDefinitionChanges() {
     return;
   }
   if (!changes.length) {
-    container.innerHTML = '<div class="empty-state">当前模型没有人工修改</div>';
+    container.innerHTML = `
+      <table class="manual-definition-changes-table">
+        <thead>
+          <tr>
+            <th class="manual-change-select-cell"><input type="checkbox" disabled aria-label="选择全部人工修改" /></th>
+            <th>对象</th>
+            <th>修改类型</th>
+            <th>参数 / 状态项</th>
+            <th>默认值</th>
+            <th>当前值</th>
+            <th>修改时间</th>
+            <th>保存状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="manual-definition-changes-empty-row"><td colspan="8">当前模型没有人工修改</td></tr>
+        </tbody>
+      </table>
+    `;
     return;
   }
 
@@ -2696,7 +2715,7 @@ async function loadManualDefinitionChanges() {
     state.manualDefinitionChanges = Array.isArray(payload.changes) ? payload.changes : [];
     state.manualDefinitionChangesRevision = Number(payload.revision) || 0;
     state.manualDefinitionChangesLoadedModelId = requestedModelId;
-    state.manualDefinitionChangesMessage = `已加载 ${state.manualDefinitionChanges.length} 项人工修改`;
+    state.manualDefinitionChangesMessage = "";
   } catch (error) {
     if (requestedModelId === state.activeModelId) {
       state.manualDefinitionChangesError = apiErrorText(error);
@@ -3056,7 +3075,7 @@ function mergeSnapshot(previous, incoming) {
 }
 
 function pageNeedsRuntimeLogs(page = currentPageName()) {
-  return ["overview", "history"].includes(page);
+  return ["screen", "overview", "history"].includes(page);
 }
 
 function snapshotLogLimit(page = currentPageName()) {
@@ -3064,11 +3083,11 @@ function snapshotLogLimit(page = currentPageName()) {
 }
 
 function pageNeedsMeasurementDelta(page = currentPageName()) {
-  return ["overview", "diagram", "commands", "measurements", "renewable"].includes(page);
+  return ["screen", "overview", "diagram", "commands", "measurements", "renewable"].includes(page);
 }
 
 function pageNeedsDevices(page = currentPageName()) {
-  return ["overview", "model", "diagram", "commands", "renewable"].includes(page);
+  return ["screen", "overview", "model", "diagram", "commands", "renewable"].includes(page);
 }
 
 function pageNeedsDeviceStates(page = currentPageName()) {
@@ -3076,7 +3095,7 @@ function pageNeedsDeviceStates(page = currentPageName()) {
 }
 
 function pageNeedsCommands(page = currentPageName()) {
-  return ["overview", "diagram", "commands", "renewable"].includes(page);
+  return ["screen", "overview", "diagram", "commands", "renewable"].includes(page);
 }
 
 function pageNeedsCommandHistory(page = currentPageName()) {

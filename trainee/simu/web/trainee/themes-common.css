@@ -661,12 +661,16 @@
 .ux-overview-live-strip {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 8px;
+  height: 34px;
   min-height: 34px;
-  padding: 4px 10px;
+  max-height: 36px;
+  padding: 0 10px;
   border-bottom: 1px solid var(--line);
   background: var(--surface-subtle);
   overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: none;
 }
 
@@ -738,11 +742,15 @@
   margin-right: 2px;
 }
 
-.ux-overview-sparkline {
-  width: 132px;
-  height: 24px;
+canvas.ux-overview-sparkline {
+  width: 132px !important;
+  min-width: 132px !important;
+  max-width: 132px !important;
+  height: 24px !important;
+  min-height: 0 !important;
+  max-height: 24px !important;
   display: block;
-  border-radius: 3px;
+  border-radius: 3px !important;
   background: var(--surface);
   border: 1px solid var(--line);
 }
@@ -904,9 +912,13 @@
   cursor: default;
 }
 
-.ux-diagram-minimap-canvas {
-  width: 100%;
-  height: 100%;
+canvas.ux-diagram-minimap-canvas {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  border: 0 !important;
+  border-radius: 0 !important;
   display: block;
 }
 
@@ -975,8 +987,21 @@
   border-radius: var(--radius-sm);
   border: 1px solid var(--line);
   background: var(--surface);
-  opacity: 0.88;
+  opacity: 0.92;
   transition: opacity 150ms ease;
+}
+
+.ux-chart-tools.is-inline {
+  position: static !important;
+  top: auto !important;
+  right: auto !important;
+  z-index: auto !important;
+  flex: 0 0 auto;
+  margin-left: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  opacity: 1;
 }
 
 .ux-chart-tools:hover {
@@ -984,9 +1009,12 @@
 }
 
 .ux-chart-tools .compact-action-btn {
-  height: 22px;
-  padding: 0 6px;
-  font-size: 11px;
+  height: 24px !important;
+  min-height: 24px !important;
+  padding: 0 7px !important;
+  font-size: 11.5px !important;
+  line-height: 22px !important;
+  white-space: nowrap;
 }
 
 .ux-chart-brush {
@@ -1115,3 +1143,887 @@
   color: var(--red);
   flex: 0 0 auto;
 }
+
+/* ==========================================================================
+   8. 双端顶栏极简三胶囊聚合架构（模型管理 / 时钟管理 / 显示管理）
+   常态仅展示当前值；悬停或点击以悬浮窗展开完整控件组，三语在 1280px 下永不溢出重叠
+   ========================================================================== */
+header.topbar.ux-topbar-compact {
+  position: relative !important;
+  z-index: 500 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  flex-wrap: nowrap !important;
+  gap: 10px !important;
+  height: 48px !important;
+  min-height: 48px !important;
+  padding: 0 14px !important;
+  overflow: visible !important;
+}
+
+header.topbar.ux-topbar-compact .brand {
+  flex: 0 1 auto !important;
+  min-width: 0 !important;
+  gap: 8px !important;
+}
+
+header.topbar.ux-topbar-compact .brand h1 {
+  font-size: 14.5px !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  max-width: 190px;
+}
+
+header.topbar.ux-topbar-compact .brand-mark {
+  width: 26px !important;
+  height: 26px !important;
+  flex: 0 0 26px !important;
+}
+
+/* 全站共享顶栏中央梯形全息主桥徽标（自适应防重叠） */
+.ux-topbar-crest {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 0 6px;
+}
+
+.ux-crest-plate {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  max-width: 100%;
+  height: 36px;
+  padding: 0 26px;
+  border: 1px solid var(--teal);
+  border-top: 0;
+  background: linear-gradient(180deg, var(--teal-soft), color-mix(in srgb, var(--surface) 90%, transparent));
+  clip-path: polygon(0 0, 100% 0, calc(100% - 14px) 100%, 14px 100%);
+  overflow: hidden;
+}
+
+.ux-crest-plate::after {
+  content: "";
+  position: absolute;
+  left: 16%;
+  right: 16%;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--teal), transparent);
+}
+
+.ux-crest-wing {
+  width: 18px;
+  height: 2px;
+  flex: 0 0 18px;
+  background: linear-gradient(90deg, transparent, var(--teal));
+}
+
+.ux-crest-wing.right {
+  background: linear-gradient(90deg, var(--teal), transparent);
+}
+
+.ux-crest-title {
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+:root[data-color-scheme="dark"] .ux-crest-title {
+  text-shadow: 0 0 10px var(--teal-soft);
+}
+
+.ux-crest-model {
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+  color: var(--teal);
+  white-space: nowrap;
+  flex: 0 1 auto;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 1360px) {
+  .ux-crest-plate {
+    padding: 0 12px;
+    gap: 6px;
+  }
+  .ux-crest-wing {
+    display: none;
+  }
+  .ux-crest-title {
+    font-size: 13px;
+    letter-spacing: 0.02em;
+  }
+}
+
+.ux-topbar-immersive-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px !important;
+  height: 30px !important;
+  min-width: 30px !important;
+  min-height: 30px !important;
+  padding: 0 !important;
+  border-radius: 9999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-subtle);
+  color: var(--muted);
+  cursor: pointer;
+  flex: 0 0 30px;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+
+.ux-topbar-immersive-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ux-topbar-immersive-btn:hover,
+.ux-topbar-immersive-btn.is-active {
+  border-color: var(--teal);
+  color: var(--teal);
+  background: var(--teal-soft);
+}
+
+.ux-topbar-hubs {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 0;
+  margin-left: 0;
+}
+
+.ux-hub {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.ux-hub-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 9999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-subtle);
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
+}
+
+.ux-hub-trigger:hover,
+.ux-hub.is-open > .ux-hub-trigger {
+  border-color: var(--teal);
+  background: var(--surface-hover);
+  box-shadow: 0 0 0 2px var(--teal-soft);
+}
+
+.ux-hub-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: 0 0 7px;
+}
+
+.ux-hub-dot[data-state="running"],
+.ux-hub-dot[data-state="connected"],
+.ux-hub-dot[data-state="ok"] {
+  background: var(--green);
+}
+
+.ux-hub-dot[data-state="paused"],
+.ux-hub-dot[data-state="warn"],
+.ux-hub-dot[data-state="reconnecting"] {
+  background: var(--amber);
+}
+
+.ux-hub-dot[data-state="error"],
+.ux-hub-dot[data-state="disconnected"],
+.ux-hub-dot[data-state="danger"] {
+  background: var(--red);
+}
+
+.ux-hub-primary {
+  font-weight: 600;
+  color: var(--ink);
+  max-width: 128px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ux-hub-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.ux-hub-sep {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.ux-hub-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+  max-width: 112px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ux-hub-chevron {
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+  flex: 0 0 12px;
+  transition: transform 160ms ease;
+}
+
+.ux-hub.is-open > .ux-hub-trigger .ux-hub-chevron {
+  transform: rotate(180deg);
+  color: var(--teal);
+}
+
+/* 悬浮操作面板（带顶部 8px 透明桥接防止鼠标移动时误关） */
+.ux-hub-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 1250;
+  min-width: 300px;
+  max-width: min(440px, calc(100vw - 20px));
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-modal);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 0s linear 120ms;
+}
+
+.ux-hub-popover::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -10px;
+  height: 10px;
+}
+
+.ux-hub.is-open > .ux-hub-popover,
+.ux-hub:focus-within > .ux-hub-popover {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 0s linear 0s;
+}
+
+.ux-hub-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ux-hub-popover-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.ux-hub-popover-meta {
+  font-size: 11.5px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ux-hub-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.ux-hub-row:last-child {
+  margin-bottom: 0;
+}
+
+.ux-hub-row-label {
+  flex: 0 0 64px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.ux-hub-row select,
+.ux-hub-row .model-switcher,
+.ux-hub-row .simulation-mode-switcher {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  width: 100% !important;
+  margin: 0 !important;
+}
+
+.ux-hub-row select {
+  height: 30px !important;
+  padding: 0 8px !important;
+  font-size: 12.5px !important;
+}
+
+.ux-hub-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.ux-hub-actions > button {
+  flex: 1 1 auto;
+  height: 30px !important;
+  padding: 0 10px !important;
+  font-size: 12px !important;
+  white-space: nowrap;
+}
+
+/* 悬浮面板内的既有控件样式重置，避免继承旧顶栏固定尺寸或绝对定位 */
+.ux-hub-popover .model-switcher > span,
+.ux-hub-popover .active-model-name {
+  display: none !important;
+}
+
+.ux-hub-popover .clock-control-popover {
+  position: static !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+  transform: none !important;
+  box-shadow: none !important;
+  border: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+  width: 100% !important;
+}
+
+.ux-hub-popover .overview-clock-button-group {
+  display: grid !important;
+  grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+  gap: 6px !important;
+  width: 100% !important;
+}
+
+.ux-hub-popover .overview-clock-button-group .icon-button {
+  width: 100% !important;
+  height: 32px !important;
+  justify-content: center;
+}
+
+.ux-hub-popover .lang-switcher,
+.ux-hub-popover .theme-switcher {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  width: 100% !important;
+  margin: 0 !important;
+}
+
+.ux-hub-popover .lang-switcher-label,
+.ux-hub-popover .theme-switcher-label {
+  flex: 0 0 54px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ux-hub-popover .lang-select,
+.ux-hub-popover .theme-select {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 30px !important;
+}
+
+.ux-hub-display-popover {
+  width: 380px;
+}
+
+.ux-hub-display-swatches {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.ux-hub-quick-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.ux-hub-quick-bar > button {
+  height: 28px !important;
+  font-size: 12px !important;
+}
+
+/* 学员端时钟胶囊强制静态流式排布，根治遮挡问题 */
+header.topbar.ux-topbar-compact .clock-strip,
+header.topbar.ux-topbar-compact .clock-readout {
+  position: static !important;
+  margin: 0 !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: auto !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+header.topbar.ux-topbar-compact .ux-hub-hidden-slot,
+.ux-hub-hidden-slot {
+  display: none !important;
+}
+
+button.primary:disabled,
+button[disabled].primary {
+  opacity: 0.42 !important;
+  cursor: not-allowed !important;
+  filter: grayscale(0.35);
+}
+
+.manual-definition-changes-table {
+  width: 100%;
+}
+
+.manual-definition-changes-empty-row td {
+  padding: 28px 12px !important;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* ==================== 新能源控制与曲线区高密度零遮挡排版 ==================== */
+.renewable-strategy-tabs {
+  gap: 4px !important;
+  padding: 4px 6px !important;
+}
+
+.renewable-strategy-tabs button {
+  height: 26px !important;
+  min-height: 26px !important;
+  padding: 0 10px !important;
+  font-size: 12px !important;
+  line-height: 24px !important;
+}
+
+.renewable-detail-panel {
+  padding: 0 !important;
+}
+
+.renewable-detail-tabs {
+  padding: 4px 8px 0 !important;
+  gap: 4px !important;
+  min-height: 30px !important;
+}
+
+.renewable-detail-tabs button {
+  height: 26px !important;
+  min-height: 26px !important;
+  padding: 0 12px !important;
+  font-size: 12px !important;
+  line-height: 24px !important;
+}
+
+.renewable-trend-panel .panel-head.compact-panel-head {
+  min-height: 30px !important;
+  padding: 3px 8px !important;
+  gap: 8px !important;
+  flex-wrap: nowrap !important;
+}
+
+.renewable-trend-panel .panel-head.compact-panel-head h2 {
+  font-size: 12.5px !important;
+  line-height: 1.2 !important;
+  white-space: nowrap;
+}
+
+.renewable-trend-head-meta {
+  gap: 6px !important;
+  flex-wrap: nowrap !important;
+  min-width: 0;
+}
+
+.renewable-trend-head-meta strong {
+  font-size: 11.5px !important;
+}
+
+.renewable-trend-head-meta .compact-field {
+  font-size: 11.5px !important;
+  gap: 4px !important;
+  white-space: nowrap;
+}
+
+.renewable-trend-head-meta .compact-field select {
+  height: 24px !important;
+  min-height: 24px !important;
+  padding: 0 6px !important;
+  font-size: 11.5px !important;
+}
+
+.renewable-trend-head-meta .chart-period-navigation button {
+  height: 24px !important;
+  min-height: 24px !important;
+  min-width: 24px !important;
+  padding: 0 5px !important;
+  font-size: 11.5px !important;
+}
+
+.renewable-trend-workspace {
+  grid-template-columns: minmax(196px, 224px) minmax(0, 1fr) !important;
+}
+
+.renewable-trend-series-head {
+  min-height: 26px !important;
+  padding: 0 8px !important;
+  font-size: 11.5px !important;
+}
+
+.renewable-trend-series-tools {
+  padding: 5px 6px !important;
+  gap: 4px !important;
+}
+
+.renewable-trend-series-search input {
+  height: 24px !important;
+  min-height: 24px !important;
+  padding: 0 7px !important;
+  font-size: 11.5px !important;
+}
+
+.renewable-trend-series-actions {
+  gap: 3px !important;
+}
+
+.renewable-trend-series-toggle {
+  font-size: 11px !important;
+  gap: 3px !important;
+}
+
+.renewable-trend-series-action {
+  height: 22px !important;
+  min-height: 22px !important;
+  padding: 0 4px !important;
+  font-size: 11px !important;
+  line-height: 20px !important;
+  white-space: nowrap;
+}
+
+.renewable-trend-series-group > summary,
+.renewable-trend-series-device > summary {
+  min-height: 24px !important;
+  padding: 2px 6px !important;
+  font-size: 11.5px !important;
+  line-height: 1.3 !important;
+}
+
+.renewable-trend-series-item {
+  min-height: 22px !important;
+  padding: 2px 6px !important;
+  font-size: 11.5px !important;
+  line-height: 1.25 !important;
+}
+
+/* 曲线图例：单行紧凑可横向滚动，彻底消除全局 button 撑高与第 2 行腰斩截断 */
+.renewable-trend-chart-surface {
+  overflow: hidden !important;
+}
+
+.renewable-trend-inline-legend {
+  flex: 0 0 auto !important;
+  max-height: 32px !important;
+  padding: 4px 8px !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 5px !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scrollbar-width: thin;
+}
+
+.renewable-trend-inline-legend-item {
+  flex: 0 0 auto !important;
+  height: 22px !important;
+  min-height: 22px !important;
+  padding: 0 7px !important;
+  font-size: 11.5px !important;
+  line-height: 20px !important;
+  gap: 5px !important;
+  border-radius: 4px !important;
+}
+
+.renewable-trend-inline-legend-swatch {
+  flex: 0 0 16px !important;
+  width: 16px !important;
+}
+
+.renewable-trend-chart-surface canvas {
+  flex: 1 1 0 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  min-height: 120px !important;
+  height: 100% !important;
+  max-height: 100% !important;
+}
+
+/* ==================== 左栏双模式（内嵌 / 悬浮）+ 全模式统一隐藏 ==================== */
+.ux-sidebar-topbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px !important;
+  height: 30px !important;
+  min-width: 30px !important;
+  min-height: 30px !important;
+  padding: 0 !important;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-subtle);
+  color: var(--ink);
+  cursor: pointer;
+  flex: 0 0 30px;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+}
+
+.ux-sidebar-topbar-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.ux-sidebar-topbar-btn:hover {
+  border-color: var(--teal);
+  color: var(--teal);
+  background: var(--teal-soft);
+}
+
+.ux-sidebar-topbar-btn.is-sidebar-hidden {
+  color: var(--muted);
+  background: transparent;
+}
+
+.ux-sidebar-topbar-btn.is-sidebar-overlay {
+  border-style: dashed;
+}
+
+/* 左栏底部模式与隐藏控制条 */
+.ux-sidebar-footer-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 5px;
+}
+
+.ux-sidebar-mini-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 26px !important;
+  min-height: 26px !important;
+  padding: 0 6px !important;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 11.5px !important;
+  line-height: 1 !important;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+
+.ux-sidebar-mini-btn svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+}
+
+.ux-sidebar-mini-btn:hover,
+.ux-sidebar-mini-btn.is-active {
+  border-color: var(--teal);
+  color: var(--teal);
+  background: var(--teal-soft);
+}
+
+html[data-sidebar-collapsed="true"]:not([data-sidebar-mode="overlay"]) .ux-sidebar-footer-controls {
+  grid-template-columns: 1fr;
+}
+
+html[data-sidebar-collapsed="true"]:not([data-sidebar-mode="overlay"]) .ux-sidebar-mini-btn .nav-label {
+  display: none !important;
+}
+
+/* 显示与工具面板内的左栏模式分段选择器 */
+.ux-sidebar-mode-row {
+  gap: 6px !important;
+}
+
+.ux-sidebar-mode-seg {
+  display: inline-flex;
+  align-items: center;
+  flex: 1 1 auto;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-subtle);
+}
+
+.ux-sidebar-mode-seg button {
+  flex: 1 1 0;
+  height: 24px !important;
+  min-height: 24px !important;
+  padding: 0 8px !important;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px !important;
+  line-height: 1 !important;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ux-sidebar-mode-seg button.is-active {
+  border-color: var(--teal);
+  background: var(--teal-soft);
+  color: var(--teal);
+  font-weight: 600;
+}
+
+.ux-sidebar-disp-hide {
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 9px !important;
+  font-size: 11.5px !important;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.ux-sidebar-disp-hide.is-active {
+  border-color: var(--teal) !important;
+  color: var(--teal) !important;
+  background: var(--teal-soft) !important;
+}
+
+/* 内嵌模式（docked）隐藏态：完全隐去左栏，主工作区占满 100% 宽度 */
+html[data-sidebar-mode="docked"][data-sidebar-hidden="true"] #appSidebar,
+html:not([data-sidebar-mode])[data-sidebar-hidden="true"] #appSidebar {
+  display: none !important;
+}
+
+/* 悬浮模式（overlay）：脱离文档流悬浮于主工作区左侧，右侧主工作区始终 100% 占宽 */
+html[data-sidebar-mode="overlay"] .ux-col-splitter.is-sidebar-splitter {
+  display: none !important;
+}
+
+html[data-sidebar-mode="overlay"] #appSidebar {
+  position: fixed !important;
+  top: 48px !important;
+  left: 0 !important;
+  bottom: 0 !important;
+  z-index: 460 !important;
+  width: var(--app-sidebar-width, 184px) !important;
+  min-width: 168px !important;
+  max-width: 280px !important;
+  border-right: 1px solid var(--teal) !important;
+  box-shadow: var(--shadow-modal) !important;
+  backdrop-filter: blur(12px);
+  transform: translateX(0);
+  opacity: 1;
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), opacity 160ms ease !important;
+}
+
+html[data-sidebar-mode="overlay"] #appSidebar #appSidebarToggle {
+  display: none !important;
+}
+
+/* 悬浮模式隐藏态：平滑移出视口左侧 */
+html[data-sidebar-mode="overlay"][data-sidebar-hidden="true"] #appSidebar {
+  transform: translateX(calc(-100% - 10px)) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* 悬浮隐藏态鼠标贴近最左缘自动滑出预览 */
+html[data-sidebar-mode="overlay"][data-sidebar-hidden="true"][data-sidebar-hover-open="true"] #appSidebar {
+  transform: translateX(0) !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+/* 最左缘 6px 感应热区（仅悬浮且隐藏态激活） */
+.ux-sidebar-edge-sensor {
+  display: none;
+  position: fixed;
+  top: 48px;
+  left: 0;
+  bottom: 0;
+  width: 6px;
+  z-index: 455;
+  background: transparent;
+}
+
+html[data-sidebar-mode="overlay"][data-sidebar-hidden="true"] .ux-sidebar-edge-sensor {
+  display: block;
+}
+
+html[data-sidebar-mode="overlay"][data-sidebar-hidden="true"] .ux-sidebar-edge-sensor:hover {
+  background: linear-gradient(90deg, var(--teal-soft), transparent);
+}
+
+
+

@@ -40,6 +40,34 @@ SHARED_ASSET_MAP: tuple[tuple[Path, tuple[Path, ...]], ...] = (
             REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "themes-common.css",
         ),
     ),
+    (
+        COMMON_DIR / "scada-cockpit.css",
+        (
+            REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "scada-cockpit.css",
+            REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "scada-cockpit.css",
+        ),
+    ),
+    (
+        COMMON_DIR / "scada-cockpit.js",
+        (
+            REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "js" / "10-scada-cockpit.js",
+            REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "js" / "10-scada-cockpit.js",
+        ),
+    ),
+    (
+        COMMON_DIR / "assets" / "qinling-hero.jpg",
+        (
+            REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "assets" / "qinling-hero.jpg",
+            REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "assets" / "qinling-hero.jpg",
+        ),
+    ),
+    (
+        COMMON_DIR / "assets" / "qinling-station-holo.png",
+        (
+            REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "assets" / "qinling-station-holo.png",
+            REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "assets" / "qinling-station-holo.png",
+        ),
+    ),
 )
 
 

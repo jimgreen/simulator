@@ -742,7 +742,17 @@
     const store = readHorizontalSplitStore();
     const saved = store.__appSidebar || {};
     let expandedWidth = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Number(saved.size) || DEFAULT_WIDTH));
+    let sidebarMode = "docked";
+    try {
+      const savedMode = localStorage.getItem("polarSidebarMode");
+      if (savedMode === "overlay" || savedMode === "docked") sidebarMode = savedMode;
+    } catch (_e) {}
     let isHidden = Boolean(saved.hidden);
+    try {
+      const savedHidden = localStorage.getItem("polarSidebarHidden");
+      if (savedHidden === "1") isHidden = true;
+      else if (savedHidden === "0") isHidden = false;
+    } catch (_e) {}
 
     const { splitter, toggleBtn: hideBtn } = createColSplitterElement("left", () => {
       isHidden = !isHidden;
@@ -750,20 +760,186 @@
     });
     splitter.classList.add("is-sidebar-splitter");
 
+    // 悬浮隐藏时的最左缘 6px 感应热区（鼠标贴近自动滑出，离开平滑收起）
+    let hoverCloseTimer = null;
+    let edgeSensor = document.getElementById("uxSidebarHoverEdge");
+    if (!edgeSensor) {
+      edgeSensor = document.createElement("div");
+      edgeSensor.id = "uxSidebarHoverEdge";
+      edgeSensor.className = "ux-sidebar-edge-sensor";
+      edgeSensor.setAttribute("aria-hidden", "true");
+      document.body.appendChild(edgeSensor);
+    }
+
+    const setHoverPeek = (open) => {
+      clearTimeout(hoverCloseTimer);
+      if (open) {
+        if (sidebarMode === "overlay" && isHidden) {
+          document.documentElement.dataset.sidebarHoverOpen = "true";
+        }
+      } else {
+        hoverCloseTimer = setTimeout(() => {
+          delete document.documentElement.dataset.sidebarHoverOpen;
+        }, 200);
+      }
+    };
+    edgeSensor.addEventListener("mouseenter", () => setHoverPeek(true));
+    sidebar.addEventListener("mouseenter", () => {
+      if (sidebarMode === "overlay" && isHidden) setHoverPeek(true);
+    });
+    sidebar.addEventListener("mouseleave", () => {
+      if (sidebarMode === "overlay" && isHidden) setHoverPeek(false);
+    });
+
+    // 左栏底部追加极简「内嵌 / 悬浮」模式切换按钮与「隐藏左栏」按钮
+    const sidebarFooter = sidebar.querySelector(".app-sidebar-footer");
+    let modeBtn = document.getElementById("uxSidebarModeBtn");
+    let footerHideBtn = document.getElementById("uxSidebarHideBtn");
+    if (sidebarFooter && !modeBtn) {
+      const ctrlRow = document.createElement("div");
+      ctrlRow.className = "ux-sidebar-footer-controls";
+
+      modeBtn = document.createElement("button");
+      modeBtn.id = "uxSidebarModeBtn";
+      modeBtn.type = "button";
+      modeBtn.className = "ux-sidebar-mini-btn";
+      modeBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg><span class="nav-label"></span>';
+      modeBtn.addEventListener("click", () => {
+        setSidebarMode(sidebarMode === "overlay" ? "docked" : "overlay", true);
+      });
+
+      footerHideBtn = document.createElement("button");
+      footerHideBtn.id = "uxSidebarHideBtn";
+      footerHideBtn.type = "button";
+      footerHideBtn.className = "ux-sidebar-mini-btn";
+      footerHideBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg><span class="nav-label" data-ux-zh="隐藏左栏"></span>';
+      footerHideBtn.addEventListener("click", () => {
+        setSidebarHidden(true, true);
+      });
+
+      ctrlRow.append(modeBtn, footerHideBtn);
+      sidebarFooter.prepend(ctrlRow);
+    }
+
+    function syncSidebarControlsUi() {
+      const isOverlay = sidebarMode === "overlay";
+      const topBtn = document.getElementById("uxSidebarToggleBtn");
+      if (topBtn) {
+        const label = tr(isHidden ? "显示左栏" : "隐藏左栏");
+        topBtn.title = `${label} (${tr(isOverlay ? "悬浮" : "内嵌")})`;
+        topBtn.setAttribute("aria-label", label);
+        topBtn.setAttribute("aria-pressed", isHidden ? "false" : "true");
+        topBtn.classList.toggle("is-sidebar-hidden", isHidden);
+        topBtn.classList.toggle("is-sidebar-overlay", isOverlay);
+      }
+      if (modeBtn) {
+        const modeText = tr(isOverlay ? "悬浮" : "内嵌");
+        modeBtn.title = `${tr("切换左栏模式")} · ${modeText}`;
+        modeBtn.setAttribute("aria-label", modeBtn.title);
+        modeBtn.classList.toggle("is-active", isOverlay);
+        const lbl = modeBtn.querySelector(".nav-label");
+        if (lbl) lbl.textContent = modeText;
+      }
+      if (footerHideBtn) {
+        const hideTxt = tr("隐藏左栏");
+        footerHideBtn.title = hideTxt;
+        footerHideBtn.setAttribute("aria-label", hideTxt);
+        const lbl = footerHideBtn.querySelector(".nav-label");
+        if (lbl) lbl.textContent = hideTxt;
+      }
+      document.querySelectorAll("[data-ux-sidebar-mode]").forEach((btn) => {
+        btn.classList.toggle("is-active", btn.dataset.uxSidebarMode === sidebarMode);
+      });
+      const dispHideBtn = document.getElementById("uxDisplaySidebarHideBtn");
+      if (dispHideBtn) {
+        dispHideBtn.textContent = tr(isHidden ? "显示左栏" : "隐藏左栏");
+        dispHideBtn.classList.toggle("is-active", isHidden);
+      }
+    }
+
     function applySidebarState(persist = false) {
       document.documentElement.style.setProperty("--app-sidebar-width", `${Math.round(expandedWidth)}px`);
+      document.documentElement.dataset.sidebarMode = sidebarMode;
       document.documentElement.dataset.sidebarHidden = isHidden ? "true" : "false";
+      if (sidebarMode === "overlay") {
+        // 悬浮模式下始终展开完整文字标签，不以窄图标态悬浮
+        if (document.documentElement.dataset.sidebarCollapsed === "true") {
+          applyCollapsed(false, false);
+        }
+      }
+      if (!isHidden) {
+        delete document.documentElement.dataset.sidebarHoverOpen;
+      }
       updateSplitterToggleVisual(splitter, hideBtn, "left", isHidden);
+      syncSidebarControlsUi();
       if (persist) {
         writeHorizontalSplitEntry("__appSidebar", { size: Math.round(expandedWidth), hidden: isHidden });
+        try {
+          localStorage.setItem("polarSidebarMode", sidebarMode);
+          localStorage.setItem("polarSidebarHidden", isHidden ? "1" : "0");
+        } catch (_e) {}
       }
       setTimeout(dispatchLayoutResize, 60);
     }
 
+    function setSidebarMode(nextMode, persist = true) {
+      if (nextMode !== "docked" && nextMode !== "overlay") return;
+      sidebarMode = nextMode;
+      if (sidebarMode === "overlay") {
+        delete document.documentElement.dataset.sidebarHoverOpen;
+      }
+      applySidebarState(persist);
+    }
+
+    function setSidebarHidden(nextHidden, persist = true) {
+      isHidden = Boolean(nextHidden);
+      if (isHidden) {
+        delete document.documentElement.dataset.sidebarHoverOpen;
+      }
+      applySidebarState(persist);
+    }
+
+    window.__polarSidebarControl = {
+      getState: () => ({ mode: sidebarMode, hidden: isHidden }),
+      setMode: (mode) => setSidebarMode(mode, true),
+      setHidden: (hidden) => setSidebarHidden(hidden, true),
+      toggleHidden: () => setSidebarHidden(!isHidden, true),
+      syncUi: () => syncSidebarControlsUi(),
+    };
+
+    // 悬浮模式展开时：点击工作区空白处、点击菜单项切页或按 Esc 自动隐藏
+    sidebar.querySelectorAll(".page-nav button[data-nav-page]").forEach((navBtn) => {
+      navBtn.addEventListener("click", () => {
+        if (sidebarMode === "overlay") {
+          setSidebarHidden(true, true);
+        }
+      });
+    });
+    document.addEventListener("click", (event) => {
+      if (sidebarMode !== "overlay" || isHidden) return;
+      const target = event.target;
+      if (!(target instanceof Node) || !target.isConnected) return;
+      if (sidebar.contains(target)) return;
+      const topToggle = document.getElementById("uxSidebarToggleBtn");
+      if (topToggle && topToggle.contains(target)) return;
+      const displayHub = document.getElementById("uxDisplayHub");
+      if (displayHub && displayHub.contains(target)) return;
+      setSidebarHidden(true, true);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && sidebarMode === "overlay" && !isHidden) {
+        setSidebarHidden(true, true);
+      }
+    });
+
     sidebar.addEventListener("ux-sidebar-sync", () => {
       isHidden = document.documentElement.dataset.sidebarHidden === "true";
       updateSplitterToggleVisual(splitter, hideBtn, "left", isHidden);
+      syncSidebarControlsUi();
       writeHorizontalSplitEntry("__appSidebar", { size: Math.round(expandedWidth), hidden: isHidden });
+      try {
+        localStorage.setItem("polarSidebarHidden", isHidden ? "1" : "0");
+      } catch (_e) {}
     });
 
     if (typeof appBody.insertBefore === "function") {
@@ -1148,6 +1324,8 @@
       }
     }
     syncThemeQuickButtons();
+    syncTopbarHubReadouts();
+    renderDisplayHubSwatches(document.getElementById("uxDisplayHubSwatches"));
   }
 
   let themePopoverEl = null;
@@ -1272,6 +1450,7 @@
     toggleBtn.setAttribute("aria-label", tr("切换日/夜风格"));
     toggleBtn.addEventListener("click", (event) => {
       event.preventDefault();
+      event.stopPropagation();
       toggleLightDarkTheme();
     });
 
@@ -1280,6 +1459,8 @@
     const themeSel = document.getElementById("themeSelector");
     themeSel?.addEventListener("change", () => setTimeout(syncThemeQuickButtons, 0));
     syncThemeQuickButtons();
+    syncTopbarHubReadouts();
+    renderDisplayHubSwatches(document.getElementById("uxDisplayHubSwatches"));
   }
 
   /**
@@ -1580,7 +1761,36 @@
       const zoomBadge = document.createElement("div");
       zoomBadge.className = "ux-chart-zoom-stats";
       zoomBadge.hidden = true;
-      host.append(tools, zoomBadge);
+
+      // 优先将导出/重置工具条流式嵌入所属面板的标题控制栏末尾，彻底杜绝遮挡图例或曲线
+      const panel = host.closest(".renewable-trend-panel, .panel, section");
+      const inlineSlot = panel?.querySelector(
+        ".renewable-trend-head-meta, .panel-head .panel-actions, .curve-toolbar, .panel-head",
+      );
+      if (inlineSlot && !inlineSlot.querySelector(".ux-chart-tools")) {
+        tools.classList.add("is-inline");
+        inlineSlot.appendChild(tools);
+      } else {
+        host.appendChild(tools);
+      }
+      host.appendChild(zoomBadge);
+
+      // 若容器内包含水平图例条，绑定滚轮横向滚动提升浏览效率
+      const legendBar = host.querySelector(".renewable-trend-inline-legend");
+      if (legendBar && legendBar.dataset.uxWheelBound !== "true") {
+        legendBar.dataset.uxWheelBound = "true";
+        legendBar.addEventListener(
+          "wheel",
+          (ev) => {
+            if (legendBar.scrollWidth <= legendBar.clientWidth + 2) return;
+            if (Math.abs(ev.deltaY) >= Math.abs(ev.deltaX)) {
+              ev.preventDefault();
+              legendBar.scrollLeft += ev.deltaY;
+            }
+          },
+          { passive: false },
+        );
+      }
 
       let zoomStart = 0;
       let zoomEnd = 1;
@@ -1733,22 +1943,23 @@
       strip.className = "ux-overview-live-strip";
       strip.innerHTML = `
         <div class="ux-overview-kpi-group">
-          <div class="ux-overview-kpi"><span>${tr("绿电占比")}</span><strong id="uxKpiGreenShare">--</strong></div>
-          <div class="ux-overview-kpi"><span>${tr("总发电")}</span><strong id="uxKpiTotalGen">--</strong></div>
-          <div class="ux-overview-kpi"><span>${tr("总负荷")}</span><strong id="uxKpiTotalLoad">--</strong></div>
-          <div class="ux-overview-kpi"><span>${tr("母线电压")}</span><strong id="uxKpiBusVoltage">--</strong></div>
-          <div class="ux-overview-kpi"><span>${tr("综合 SOC")}</span><strong id="uxKpiAvgSoc">--</strong></div>
-          <div class="ux-overview-kpi"><span>${tr("储氢余量")}</span><strong id="uxKpiHydrogen">--</strong></div>
+          <div class="ux-overview-kpi"><span data-ux-zh="绿电占比"></span><strong id="uxKpiGreenShare">--</strong></div>
+          <div class="ux-overview-kpi"><span data-ux-zh="总发电"></span><strong id="uxKpiTotalGen">--</strong></div>
+          <div class="ux-overview-kpi"><span data-ux-zh="总负荷"></span><strong id="uxKpiTotalLoad">--</strong></div>
+          <div class="ux-overview-kpi"><span data-ux-zh="母线电压"></span><strong id="uxKpiBusVoltage">--</strong></div>
+          <div class="ux-overview-kpi"><span data-ux-zh="综合 SOC"></span><strong id="uxKpiAvgSoc">--</strong></div>
+          <div class="ux-overview-kpi"><span data-ux-zh="储氢余量"></span><strong id="uxKpiHydrogen">--</strong></div>
         </div>
         <div class="ux-overview-sparkline-wrap">
           <span class="ux-overview-sparkline-legend">
-            <span><i class="ux-spark-dot" style="background:var(--green)"></i>${tr("绿电出力")}</span>
-            <span><i class="ux-spark-dot" style="background:var(--teal)"></i>${tr("净负荷")}</span>
+            <span><i class="ux-spark-dot" style="background:var(--green)"></i><em data-ux-zh="绿电出力" style="font-style:normal"></em></span>
+            <span><i class="ux-spark-dot" style="background:var(--teal)"></i><em data-ux-zh="净负荷" style="font-style:normal"></em></span>
           </span>
           <canvas id="uxOverviewSparkline" class="ux-overview-sparkline" width="264" height="48"></canvas>
         </div>
       `;
       energyPanel.prepend(strip);
+      syncDynamicUxI18n(strip);
     }
 
     // 为能量流卡片挂载底部微型进度条与点击穿透事件
@@ -1777,8 +1988,8 @@
 
   function extractLiveOverviewMetrics() {
     const snap = typeof state !== "undefined" ? (state.snapshot || state.localSnapshot || null) : null;
-    if (!snap) return null;
-    const devices = Array.isArray(snap.devices) ? snap.devices : [];
+    const overviewSection = document.querySelector('.page-section[data-page="overview"]');
+
     let renewableKw = 0;
     let dieselKw = 0;
     let loadKw = 0;
@@ -1788,49 +1999,98 @@
     const h2List = [];
     const violations = [];
 
-    for (let i = 0; i < devices.length; i += 1) {
-      const d = devices[i];
-      if (!d || typeof d !== "object") continue;
-      const type = String(d.dev_type || d.type || "");
-      const name = String(d.name || d.dev_name || "");
-      const m = d.measurements || d.meas || d.state || d;
-      const p = Number(m.p ?? m.P ?? m.active_power ?? d.p);
-      if (Number.isFinite(p)) {
-        if (/Wind|PV/i.test(type)) renewableKw += Math.max(0, p);
-        else if (/Diesel/i.test(type)) dieselKw += Math.max(0, p);
-        else if (/Load/i.test(type)) loadKw += Math.abs(p);
+    // 1. 优先从页面已由核心业务模块精准聚合的能量流卡片读取发电 / 负荷 / 储能 SOC / 储氢余量，保证与下方卡片 100% 一致
+    if (overviewSection) {
+      const readGroupPower = (key) => {
+        const el = overviewSection.querySelector(`[data-overview-group="${key}"]`);
+        if (!el || el.hidden) return 0;
+        const val = parseNumericReading(el.querySelector("[data-overview-power]")?.textContent);
+        return Number.isFinite(val) ? val : 0;
+      };
+      const dcWind = Math.max(0, readGroupPower("dcWind"));
+      const acWind = Math.max(0, readGroupPower("acWind"));
+      const dcSolar = Math.max(0, readGroupPower("dcSolar"));
+      const acSolar = Math.max(0, readGroupPower("acSolar"));
+      renewableKw = dcWind + acWind + dcSolar + acSolar;
+      dieselKw = Math.max(0, readGroupPower("diesel"));
+      const dcLoad = Math.abs(readGroupPower("dcLoad"));
+      const acLoad = Math.abs(readGroupPower("acLoad"));
+      const elecLoad = Math.max(0, readGroupPower("electrolyzer"));
+      loadKw = dcLoad + acLoad + elecLoad;
+
+      ["dcStorage", "acStorage", "dcGridFormingStorage", "acGridFormingStorage"].forEach((key) => {
+        const el = overviewSection.querySelector(`[data-overview-group="${key}"]`);
+        if (!el || el.hidden) return;
+        const txt = `${el.querySelector("[data-overview-soc]")?.textContent || ""} ${el.querySelector("[data-overview-meta]")?.textContent || ""}`;
+        const m = txt.match(/SOC\s*(\d+(?:\.\d+)?)\s*%/i);
+        if (m) socList.push(Number(m[1]));
+      });
+
+      const h2El = overviewSection.querySelector('[data-overview-group="hydrogenStorage"]');
+      if (h2El && !h2El.hidden) {
+        const socVal = parseNumericReading(h2El.querySelector("[data-overview-soc]")?.textContent);
+        const presVal = parseNumericReading(h2El.querySelector("[data-overview-gas-pressure]")?.textContent);
+        if (Number.isFinite(socVal)) h2List.push(socVal);
+        else if (Number.isFinite(presVal)) h2List.push(presVal);
       }
-      const vpu = Number(m.v_pu ?? m.u_pu ?? m.vm_pu ?? d.v_pu);
-      if (Number.isFinite(vpu) && vpu > 0.1 && vpu < 2.5) {
-        if (vpu < minPu) minPu = vpu;
-        if (vpu > maxPu) maxPu = vpu;
-        if (vpu < 0.93 || vpu > 1.07) {
-          violations.push({ name: name || type, score: Math.abs(vpu - 1), text: `${vpu.toFixed(3)} p.u.` });
+    }
+
+    // 2. 从真实快照 measurements 数组或 devices 补充母线电压极值（p.u.）与越限节点列表
+    if (snap) {
+      const measRows = Array.isArray(snap.measurements)
+        ? snap.measurements
+        : (Array.isArray(snap.scada_measurements) ? snap.scada_measurements : []);
+      for (let i = 0; i < measRows.length; i += 1) {
+        const row = measRows[i];
+        if (!row || typeof row !== "object") continue;
+        const mKey = String(row.key || row.meas_type || row.field || row.name || "").toLowerCase();
+        const devName = String(row.dev_name || row.device || row.name || "");
+        const devType = String(row.dev_type || row.type || "");
+        const val = Number(row.value ?? row.meas ?? row.val ?? row.v);
+        if (!Number.isFinite(val)) continue;
+        if ((/(?:^|_)(?:v_pu|u_pu|vm_pu|voltage_pu|u_mag)(?:$|_)/.test(mKey) || (/node/i.test(devType) && /(?:^|\.)v$|u_pu|v_pu/.test(mKey))) && val > 0.1 && val < 2.5) {
+          if (val < minPu) minPu = val;
+          if (val > maxPu) maxPu = val;
+          if (val < 0.93 || val > 1.07) {
+            violations.push({ name: devName || devType, score: Math.abs(val - 1), text: `${val.toFixed(3)} p.u.` });
+          }
+        }
+        if (/loading|load_ratio/.test(mKey)) {
+          const pct = val <= 2 ? val * 100 : val;
+          if (pct >= 85) {
+            violations.push({ name: devName || devType, score: pct / 100, text: `${pct.toFixed(0)}%` });
+          }
         }
       }
-      const soc = Number(m.soc ?? m.SOC ?? d.soc);
-      if (Number.isFinite(soc) && /Storage/i.test(type)) {
-        socList.push(soc <= 1.05 ? soc * 100 : soc);
-      }
-      const h2 = Number(m.pressure ?? m.soc ?? m.level ?? d.pressure);
-      if (Number.isFinite(h2) && /HydroStorage/i.test(type)) {
-        h2List.push(h2);
-      }
-      const loadRatio = Number(m.loading_percent ?? m.load_ratio ?? d.loading_percent);
-      if (Number.isFinite(loadRatio)) {
-        const pct = loadRatio <= 2 ? loadRatio * 100 : loadRatio;
-        if (pct >= 85) {
-          violations.push({ name: name || type, score: pct / 100, text: `${pct.toFixed(0)}%` });
+
+      // 兼容结构化设备数组
+      const devices = Array.isArray(snap.devices) ? snap.devices : [];
+      for (let i = 0; i < devices.length; i += 1) {
+        const d = devices[i];
+        if (!d || typeof d !== "object") continue;
+        const type = String(d.dev_type || d.type || "");
+        const name = String(d.name || d.dev_name || "");
+        const m = d.measurements || d.meas || d.state || d;
+        const vpu = Number(m.v_pu ?? m.u_pu ?? m.vm_pu ?? d.v_pu);
+        if (Number.isFinite(vpu) && vpu > 0.1 && vpu < 2.5) {
+          if (vpu < minPu) minPu = vpu;
+          if (vpu > maxPu) maxPu = vpu;
+          if (vpu < 0.93 || vpu > 1.07) {
+            violations.push({ name: name || type, score: Math.abs(vpu - 1), text: `${vpu.toFixed(3)} p.u.` });
+          }
         }
       }
     }
+
     const totalGen = renewableKw + dieselKw;
-    const greenShare = totalGen > 1e-4 ? Math.min(100, (renewableKw / totalGen) * 100) : null;
+    const greenShare = loadKw > 1e-4
+      ? Math.max(0, Math.min(100, ((loadKw - dieselKw) / loadKw) * 100))
+      : (totalGen > 1e-4 ? Math.min(100, (renewableKw / totalGen) * 100) : null);
     const avgSoc = socList.length ? socList.reduce((a, b) => a + b, 0) / socList.length : null;
     const avgH2 = h2List.length ? h2List.reduce((a, b) => a + b, 0) / h2List.length : null;
     violations.sort((a, b) => b.score - a.score);
     return {
-      step: snap.clock?.step_count ?? snap.step_count ?? snap.sim_time ?? "",
+      step: snap?.clock?.step_count ?? snap?.step_count ?? snap?.sim_time ?? document.getElementById("simTime")?.textContent ?? "",
       renewableKw,
       totalGen,
       loadKw,
@@ -2247,6 +2507,7 @@
       else if (ms > 300) dot.classList.add("is-warn");
     }
     pill.title = `${tr("查看性能状态")} · ${ms}ms (max ${perfStats.maxLatencyMs}ms, req ${perfStats.samples}, err ${perfStats.errors})`;
+    syncTopbarHubReadouts();
   }
 
   function ensurePerfPillAndAlertPopover() {
@@ -2313,8 +2574,553 @@
 
   let liveEnhanceTimerId = null;
 
+  /**
+   * 8. 动态注入节点三语同步 + 双端顶栏极简三胶囊聚合架构（模型管理 / 时钟管理 / 显示管理）
+   */
+  function syncDynamicUxI18n(root = document) {
+    if (!root || typeof root.querySelectorAll !== "function") return;
+    root.querySelectorAll("[data-ux-zh]").forEach((el) => {
+      const zh = el.dataset.uxZh || "";
+      if (!zh) return;
+      el.textContent = tr(zh);
+    });
+    const swatchContainer = document.getElementById("uxDisplayHubSwatches");
+    if (swatchContainer) renderDisplayHubSwatches(swatchContainer, true);
+  }
+
+  function renderDisplayHubSwatches(container, forceRebuild = false) {
+    if (!container) return;
+    const currentId = document.documentElement.dataset.theme || "minimalist-light";
+    if (!forceRebuild && container.dataset.uxSwatchesBuilt === "true") {
+      container.querySelectorAll(".ux-theme-card").forEach((card) => {
+        card.classList.toggle("is-active", card.dataset.themeId === currentId);
+      });
+      return;
+    }
+    container.dataset.uxSwatchesBuilt = "true";
+    container.innerHTML = UX_THEME_GROUPS.map((g) => {
+      const groupTitle = typeof t === "function" ? t(g.labelKey) : tr(g.fallback);
+      const cardsHtml = g.ids
+        .map((id) => {
+          const name = typeof t === "function" ? t(`theme.${id}`) : id;
+          const activeCls = id === currentId ? " is-active" : "";
+          return `<button type="button" class="ux-theme-card${activeCls}" data-theme-id="${id}"><span>${name}</span>${renderThemeSwatchDots(id)}</button>`;
+        })
+        .join("");
+      return `<div class="ux-theme-group-title">${groupTitle}</div><div class="ux-theme-grid">${cardsHtml}</div>`;
+    }).join("");
+    container.querySelectorAll(".ux-theme-card").forEach((card) => {
+      card.addEventListener("click", () => {
+        const nextId = card.dataset.themeId;
+        if (!nextId) return;
+        if (typeof applyUiTheme === "function") {
+          applyUiTheme(nextId, { persist: true, notify: true, redraw: true });
+        } else {
+          const sel = document.getElementById("themeSelector");
+          if (sel) {
+            sel.value = nextId;
+            sel.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        }
+        syncThemeQuickButtons();
+        syncTopbarHubReadouts();
+        renderDisplayHubSwatches(container, false);
+      });
+    });
+  }
+
+  const topbarHubInstances = [];
+
+  function closeAllTopbarHubs(exceptHub = null) {
+    topbarHubInstances.forEach((hub) => {
+      if (hub === exceptHub) return;
+      hub.classList.remove("is-open", "is-pinned");
+      const trig = hub.querySelector(".ux-hub-trigger");
+      trig?.setAttribute("aria-expanded", "false");
+      const active = document.activeElement;
+      if (active && hub.contains(active) && typeof active.blur === "function") {
+        active.blur();
+      }
+    });
+  }
+
+  function bindHubHoverAndPin(hub, trigger) {
+    if (!hub || !trigger) return;
+    topbarHubInstances.push(hub);
+    let closeTimer = null;
+    const openHub = (pin = false) => {
+      clearTimeout(closeTimer);
+      closeAllTopbarHubs(hub);
+      hub.classList.add("is-open");
+      if (pin) hub.classList.add("is-pinned");
+      trigger.setAttribute("aria-expanded", "true");
+    };
+    const scheduleClose = () => {
+      clearTimeout(closeTimer);
+      closeTimer = setTimeout(() => {
+        if (hub.classList.contains("is-pinned")) return;
+        const active = document.activeElement;
+        if (active && hub.contains(active) && (active.tagName === "SELECT" || active.tagName === "INPUT")) return;
+        hub.classList.remove("is-open");
+        trigger.setAttribute("aria-expanded", "false");
+      }, 180);
+    };
+    hub.addEventListener("mouseenter", () => openHub(false));
+    hub.addEventListener("mouseleave", scheduleClose);
+    trigger.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (hub.classList.contains("is-open") && hub.classList.contains("is-pinned")) {
+        hub.classList.remove("is-open", "is-pinned");
+        trigger.setAttribute("aria-expanded", "false");
+      } else {
+        openHub(true);
+      }
+    });
+  }
+
+  function syncTopbarHubReadouts() {
+    const isTrainee = Boolean(document.getElementById("traineeRunToggle"));
+    // 1. 模型胶囊当前值同步
+    const modelSel = document.getElementById("modelSelector");
+    const activeModelSpan = document.getElementById("activeModelName");
+    const modelName = (
+      modelSel?.options?.[modelSel.selectedIndex]?.text
+      || activeModelSpan?.textContent
+      || "—"
+    ).trim();
+    const modelPrimary = document.getElementById("uxModelHubName");
+    if (modelPrimary) modelPrimary.textContent = modelName || "—";
+    const crestModel = document.getElementById("uxCrestModel");
+    if (crestModel) crestModel.textContent = modelName || "—";
+
+    const modelSub = document.getElementById("uxModelHubSub");
+    const modelDot = document.getElementById("uxModelHubDot");
+    if (isTrainee) {
+      const connText = (document.getElementById("connectionText")?.textContent || "").trim();
+      const connDot = document.getElementById("connectionDot");
+      if (modelSub) modelSub.textContent = connText || "—";
+      if (modelDot) {
+        const cls = connDot?.className || "";
+        const st = connDot?.dataset?.state || "";
+        if (/connected|ok|running/i.test(cls + st) || /已连接|接收中|Connected/i.test(connText)) {
+          modelDot.dataset.state = "connected";
+        } else if (/error|fail|disconnect|中断|失败/i.test(cls + st + connText)) {
+          modelDot.dataset.state = "error";
+        } else if (/重连|等待|连接中|Connecting|Reconnect/i.test(connText)) {
+          modelDot.dataset.state = "warn";
+        } else {
+          modelDot.dataset.state = "stopped";
+        }
+      }
+    } else {
+      const modeSel = document.getElementById("simulationModeSelector");
+      const modeTxt = (modeSel?.options?.[modeSel.selectedIndex]?.text || "").trim();
+      const svcStateEl = document.getElementById("modelServiceState");
+      const svcState = svcStateEl?.dataset?.state || "";
+      const svcTxt = (svcStateEl?.textContent || "").trim();
+      if (modelSub) modelSub.textContent = modeTxt || svcTxt || "—";
+      if (modelDot) {
+        modelDot.dataset.state = svcState === "running" ? "running" : (svcState === "error" ? "error" : "stopped");
+      }
+    }
+
+    // 2. 时钟胶囊当前值同步
+    const simTimeEl = document.getElementById("simTime");
+    const clockTimeEl = document.getElementById("uxClockHubTime");
+    if (clockTimeEl && simTimeEl) {
+      clockTimeEl.textContent = (simTimeEl.textContent || "00:00:00").trim();
+    }
+    const speedSrc = document.getElementById("overviewClockSpeed") || document.getElementById("simSpeed");
+    const clockSpeedEl = document.getElementById("uxClockHubSpeed");
+    if (clockSpeedEl && speedSrc) {
+      clockSpeedEl.textContent = (speedSrc.textContent || "x1").trim();
+    }
+    const clockDot = document.getElementById("uxClockHubDot");
+    if (clockDot) {
+      const rawClockState = (
+        document.getElementById("topbarClockControls")?.dataset?.clockState
+        || document.getElementById("simState")?.textContent
+        || ""
+      ).trim().toLowerCase();
+      clockDot.dataset.state = rawClockState === "running" ? "running" : (rawClockState === "paused" ? "paused" : "stopped");
+    }
+
+    // 3. 显示胶囊当前值同步（主题 3 色点 + 语言简码 + 接口延迟）
+    const curTheme = document.documentElement.dataset.theme || "minimalist-light";
+    const swatchSlot = document.getElementById("uxDisplayHubSwatchDots");
+    if (swatchSlot) swatchSlot.innerHTML = renderThemeSwatchDots(curTheme);
+    const curLang = document.documentElement.lang || "zh-CN";
+    const langCodeMap = { "zh-CN": "中", "en-US": "EN", "ru-RU": "RU" };
+    const langShortEl = document.getElementById("uxDisplayHubLang");
+    if (langShortEl) langShortEl.textContent = langCodeMap[curLang] || "中";
+    const perfShortEl = document.getElementById("uxDisplayHubPerf");
+    if (perfShortEl) perfShortEl.textContent = perfStats.samples ? `${perfStats.lastLatencyMs}ms` : "—";
+    const perfDotEl = document.getElementById("uxDisplayHubPerfDot");
+    if (perfDotEl) {
+      perfDotEl.classList.remove("is-warn", "is-danger");
+      if (perfStats.errors > 0 && perfStats.lastLatencyMs > 800) perfDotEl.classList.add("is-danger");
+      else if (perfStats.lastLatencyMs > 300) perfDotEl.classList.add("is-warn");
+    }
+  }
+
+  function initCompactTopbarHubs() {
+    const topbar = document.querySelector("header.topbar");
+    if (!topbar || topbar.dataset.uxHubCollapsed === "true") return;
+    if (!document.getElementById("themeSelector") || !document.getElementById("langSelector")) return;
+    topbar.dataset.uxHubCollapsed = "true";
+    topbar.classList.add("ux-topbar-compact");
+
+    const isTrainee = Boolean(document.getElementById("traineeRunToggle"));
+
+    // 顶栏最左侧注入常驻极简「左栏显隐」按钮（内嵌与悬浮模式通用，一键隐藏或呼出左栏）
+    const brandEl = topbar.querySelector(".brand");
+    if (brandEl && !document.getElementById("uxSidebarToggleBtn")) {
+      const sbToggle = document.createElement("button");
+      sbToggle.id = "uxSidebarToggleBtn";
+      sbToggle.type = "button";
+      sbToggle.className = "ux-sidebar-topbar-btn";
+      sbToggle.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>';
+      sbToggle.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        window.__polarSidebarControl?.toggleHidden();
+      });
+      brandEl.prepend(sbToggle);
+    }
+
+    const hubsWrap = document.createElement("div");
+    hubsWrap.className = "ux-topbar-hubs";
+
+    // 按需告警徽章紧邻三胶囊左侧
+    const alertBadge = document.getElementById("topbarAlertBadge");
+    if (alertBadge) hubsWrap.appendChild(alertBadge);
+
+    const chevronSvg = '<svg class="ux-hub-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>';
+
+    // ---------------- 分块 ①：模型管理胶囊 ----------------
+    const modelHub = document.createElement("div");
+    modelHub.id = "uxModelHub";
+    modelHub.className = "ux-hub";
+    const modelTrigger = document.createElement("button");
+    modelTrigger.id = "uxModelHubTrigger";
+    modelTrigger.type = "button";
+    modelTrigger.className = "ux-hub-trigger";
+    modelTrigger.setAttribute("aria-haspopup", "true");
+    modelTrigger.setAttribute("aria-expanded", "false");
+    modelTrigger.innerHTML = `
+      <span id="uxModelHubDot" class="ux-hub-dot" data-state="stopped" aria-hidden="true"></span>
+      <span id="uxModelHubName" class="ux-hub-primary">—</span>
+      <span class="ux-hub-sep" aria-hidden="true">·</span>
+      <span id="uxModelHubSub" class="ux-hub-sub">—</span>
+      ${chevronSvg}
+    `;
+    const modelPop = document.createElement("div");
+    modelPop.id = "uxModelHubPopover";
+    modelPop.className = "ux-hub-popover";
+
+    const modelHead = document.createElement("div");
+    modelHead.className = "ux-hub-popover-head";
+    const modelTitle = document.createElement("span");
+    modelTitle.className = "ux-hub-popover-title";
+    modelTitle.dataset.uxZh = isTrainee ? "模型与接收" : "模型与运行";
+    const modelMeta = document.createElement("span");
+    modelMeta.className = "ux-hub-popover-meta";
+    modelHead.append(modelTitle, modelMeta);
+    modelPop.appendChild(modelHead);
+
+    const modelSwitcher = document.querySelector(".model-switcher");
+    if (modelSwitcher) {
+      const row1 = document.createElement("div");
+      row1.className = "ux-hub-row";
+      const lbl1 = document.createElement("span");
+      lbl1.className = "ux-hub-row-label";
+      lbl1.dataset.uxZh = "当前模型";
+      row1.append(lbl1, modelSwitcher);
+      modelPop.appendChild(row1);
+    }
+
+    if (isTrainee) {
+      const diagBtn = document.getElementById("openTraineeDiagnosticsBtn");
+      if (diagBtn) {
+        const diagP = diagBtn.closest("p");
+        modelMeta.appendChild(diagBtn);
+        if (diagP && !diagP.textContent?.trim()) diagP.remove();
+      }
+      const actions = document.createElement("div");
+      actions.className = "ux-hub-actions";
+      const runToggle = document.getElementById("traineeRunToggle");
+      const initBtn = document.getElementById("modelInitializeButton");
+      const mgmtBtn = document.getElementById("modelManagementButton");
+      if (runToggle) actions.appendChild(runToggle);
+      if (initBtn) actions.appendChild(initBtn);
+      if (mgmtBtn) actions.appendChild(mgmtBtn);
+      modelPop.appendChild(actions);
+    } else {
+      const svcState = document.getElementById("modelServiceState");
+      if (svcState) modelMeta.appendChild(svcState);
+      const modeSwitcher = document.querySelector(".simulation-mode-switcher");
+      if (modeSwitcher) {
+        const row2 = document.createElement("div");
+        row2.className = "ux-hub-row";
+        const lbl2 = document.createElement("span");
+        lbl2.className = "ux-hub-row-label";
+        lbl2.dataset.uxZh = "仿真模式";
+        row2.append(lbl2, modeSwitcher);
+        modelPop.appendChild(row2);
+      }
+      const actions = document.createElement("div");
+      actions.className = "ux-hub-actions";
+      const svcToggle = document.getElementById("modelServiceToggle");
+      const mgmtBtn = document.getElementById("modelManagementButton");
+      const linkBtn = document.getElementById("traineeLinkButton");
+      if (svcToggle) actions.appendChild(svcToggle);
+      if (mgmtBtn) actions.appendChild(mgmtBtn);
+      if (linkBtn) actions.appendChild(linkBtn);
+      modelPop.appendChild(actions);
+    }
+    modelHub.append(modelTrigger, modelPop);
+    bindHubHoverAndPin(modelHub, modelTrigger);
+    hubsWrap.appendChild(modelHub);
+
+    // 清理旧的空 .model-toolbar 容器
+    const oldModelToolbar = topbar.querySelector(".model-toolbar");
+    if (oldModelToolbar) oldModelToolbar.classList.add("ux-hub-hidden-slot");
+
+    // ---------------- 分块 ②：时钟管理胶囊 ----------------
+    const clockHub = document.createElement("div");
+    clockHub.id = "uxClockHub";
+    clockHub.className = "ux-hub";
+    const clockTrigger = document.createElement("button");
+    clockTrigger.id = "uxClockHubTrigger";
+    clockTrigger.type = "button";
+    clockTrigger.className = "ux-hub-trigger";
+    clockTrigger.setAttribute("aria-haspopup", "true");
+    clockTrigger.setAttribute("aria-expanded", "false");
+    clockTrigger.innerHTML = `
+      <span id="uxClockHubDot" class="ux-hub-dot" data-state="stopped" aria-hidden="true"></span>
+      <span id="uxClockHubTime" class="ux-hub-primary ux-hub-mono">00:00:00</span>
+      <span class="ux-hub-sep" aria-hidden="true">·</span>
+      <span id="uxClockHubSpeed" class="ux-hub-sub ux-hub-mono">x1</span>
+      ${isTrainee ? "" : chevronSvg}
+    `;
+    clockHub.appendChild(clockTrigger);
+
+    const oldClockStrip = topbar.querySelector(".clock-strip");
+    if (oldClockStrip) oldClockStrip.classList.add("ux-hub-hidden-slot");
+
+    const topbarClockControls = document.getElementById("topbarClockControls");
+    const clockPopover = document.getElementById("clockControlPopover");
+    if (!isTrainee && clockPopover) {
+      const clockPop = document.createElement("div");
+      clockPop.id = "uxClockHubPopover";
+      clockPop.className = "ux-hub-popover";
+      clockPop.appendChild(clockPopover);
+      clockHub.appendChild(clockPop);
+      if (topbarClockControls) topbarClockControls.classList.add("ux-hub-hidden-slot");
+      bindHubHoverAndPin(clockHub, clockTrigger);
+    }
+    hubsWrap.appendChild(clockHub);
+
+    // ---------------- 分块 ③：显示管理胶囊 ----------------
+    const displayHub = document.createElement("div");
+    displayHub.id = "uxDisplayHub";
+    displayHub.className = "ux-hub";
+    const displayTrigger = document.createElement("button");
+    displayTrigger.id = "uxDisplayHubTrigger";
+    displayTrigger.type = "button";
+    displayTrigger.className = "ux-hub-trigger";
+    displayTrigger.setAttribute("aria-haspopup", "true");
+    displayTrigger.setAttribute("aria-expanded", "false");
+    displayTrigger.innerHTML = `
+      <span id="uxDisplayHubSwatchDots">${renderThemeSwatchDots(document.documentElement.dataset.theme || "minimalist-light")}</span>
+      <span class="ux-hub-sep" aria-hidden="true">·</span>
+      <span id="uxDisplayHubLang" class="ux-hub-primary">中</span>
+      <span class="ux-hub-sep" aria-hidden="true">·</span>
+      <span id="uxDisplayHubPerfDot" class="ux-perf-dot" aria-hidden="true"></span>
+      <span id="uxDisplayHubPerf" class="ux-hub-sub ux-hub-mono">—</span>
+      ${chevronSvg}
+    `;
+
+    const displayPop = document.createElement("div");
+    displayPop.id = "uxDisplayHubPopover";
+    displayPop.className = "ux-hub-popover ux-hub-display-popover";
+
+    const displayHead = document.createElement("div");
+    displayHead.className = "ux-hub-popover-head";
+    const displayTitle = document.createElement("span");
+    displayTitle.className = "ux-hub-popover-title";
+    displayTitle.dataset.uxZh = "显示与工具";
+    displayHead.appendChild(displayTitle);
+    const perfPill = document.getElementById("uxPerfTelemetryPill");
+    if (perfPill) displayHead.appendChild(perfPill);
+    displayPop.appendChild(displayHead);
+
+    const quickBar = document.createElement("div");
+    quickBar.className = "ux-hub-quick-bar";
+    const cmdBtn = document.getElementById("uxCommandPaletteButton");
+    if (cmdBtn) quickBar.appendChild(cmdBtn);
+    const dayNightBtn = document.getElementById("uxDayNightToggleBtn");
+    if (dayNightBtn) {
+      dayNightBtn.classList.add("compact-action-btn");
+      quickBar.appendChild(dayNightBtn);
+    }
+    // 保留独立的旧色卡按钮隐藏（色卡已直接内嵌在显示管理面板中，一跳直达）
+    const oldSwatchBtn = document.getElementById("uxThemeSwatchBtn");
+    if (oldSwatchBtn) oldSwatchBtn.classList.add("ux-hub-hidden-slot");
+    displayPop.appendChild(quickBar);
+
+    const langSwitcher = document.querySelector(".lang-switcher");
+    if (langSwitcher) {
+      const langRow = document.createElement("div");
+      langRow.className = "ux-hub-row";
+      langRow.appendChild(langSwitcher);
+      displayPop.appendChild(langRow);
+    }
+    const themeSwitcher = document.querySelector(".theme-switcher");
+    if (themeSwitcher) {
+      const themeRow = document.createElement("div");
+      themeRow.className = "ux-hub-row";
+      themeRow.appendChild(themeSwitcher);
+      displayPop.appendChild(themeRow);
+    }
+
+    // 左栏模式（内嵌 / 悬浮）与显隐控制行
+    const sidebarRow = document.createElement("div");
+    sidebarRow.className = "ux-hub-row ux-sidebar-mode-row";
+    sidebarRow.innerHTML = `
+      <span class="ux-hub-row-label" data-ux-zh="左栏"></span>
+      <div class="ux-sidebar-mode-seg" role="group" aria-label="左栏模式">
+        <button type="button" data-ux-sidebar-mode="docked"><span data-ux-zh="内嵌"></span></button>
+        <button type="button" data-ux-sidebar-mode="overlay"><span data-ux-zh="悬浮"></span></button>
+      </div>
+      <button id="uxDisplaySidebarHideBtn" type="button" class="compact-action-btn ux-sidebar-disp-hide"></button>
+    `;
+    sidebarRow.querySelectorAll("[data-ux-sidebar-mode]").forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        window.__polarSidebarControl?.setMode(btn.dataset.uxSidebarMode);
+      });
+    });
+    sidebarRow.querySelector("#uxDisplaySidebarHideBtn")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      window.__polarSidebarControl?.toggleHidden();
+    });
+    displayPop.appendChild(sidebarRow);
+
+    const swatchesBox = document.createElement("div");
+    swatchesBox.id = "uxDisplayHubSwatches";
+    swatchesBox.className = "ux-hub-display-swatches";
+    renderDisplayHubSwatches(swatchesBox);
+    displayPop.appendChild(swatchesBox);
+
+    displayHub.append(displayTrigger, displayPop);
+    bindHubHoverAndPin(displayHub, displayTrigger);
+    hubsWrap.appendChild(displayHub);
+
+    const oldUtility = topbar.querySelector(".topbar-utility-group");
+    if (oldUtility) oldUtility.classList.add("ux-hub-hidden-slot");
+
+    // 全站共享中央梯形主桥徽标（从大屏提升至顶栏，各页面共享）
+    const crestWrap = document.createElement("div");
+    crestWrap.id = "uxTopbarCrest";
+    crestWrap.className = "ux-topbar-crest";
+    const crestTitleZh = isTrainee ? "极地微电网智能调控大屏" : "极地微电网仿真主控大屏";
+    crestWrap.innerHTML = `
+      <div class="ux-crest-plate">
+        <span class="ux-crest-wing left" aria-hidden="true"></span>
+        <span id="uxCrestTitle" class="ux-crest-title" data-ux-zh="${crestTitleZh}"></span>
+        <span id="uxCrestModel" class="ux-crest-model">—</span>
+        <span class="ux-crest-wing right" aria-hidden="true"></span>
+      </div>
+    `;
+    topbar.appendChild(crestWrap);
+
+    // 全站共享「沉浸全屏」极简按钮（位于右侧胶囊区末尾，所有页面可用）
+    const immBtn = document.createElement("button");
+    immBtn.id = "scImmersiveToggle";
+    immBtn.type = "button";
+    immBtn.className = "ux-topbar-immersive-btn";
+    immBtn.dataset.uxTitleZh = "沉浸全屏";
+    immBtn.title = tr("沉浸全屏");
+    immBtn.setAttribute("aria-label", tr("沉浸全屏"));
+    immBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>';
+    immBtn.addEventListener("click", () => {
+      const active = document.documentElement.dataset.scadaImmersive === "true";
+      if (active) {
+        delete document.documentElement.dataset.scadaImmersive;
+        immBtn.classList.remove("is-active");
+      } else {
+        document.documentElement.dataset.scadaImmersive = "true";
+        immBtn.classList.add("is-active");
+      }
+      window.dispatchEvent(new Event("resize"));
+    });
+    hubsWrap.appendChild(immBtn);
+
+    topbar.appendChild(hubsWrap);
+
+    // 全局点击外部或 Esc 收起悬浮面板（兼容内部按钮点击后自刷新导致原 SVG target 脱离 DOM 的场景）
+    document.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (target.isConnected === false) return;
+      const path = typeof event.composedPath === "function" ? event.composedPath() : null;
+      if (topbarHubInstances.some((h) => h.contains(target) || (path && path.includes(h)))) return;
+      closeAllTopbarHubs();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeAllTopbarHubs();
+    });
+
+    // 监听语言、主题、模型与仿真模式切换，实时刷新胶囊读数与动态标签
+    document.getElementById("langSelector")?.addEventListener("change", () => {
+      setTimeout(() => {
+        syncDynamicUxI18n(document);
+        syncTopbarHubReadouts();
+        window.__polarSidebarControl?.syncUi();
+      }, 20);
+    });
+    document.getElementById("themeSelector")?.addEventListener("change", () => {
+      setTimeout(() => {
+        syncTopbarHubReadouts();
+        renderDisplayHubSwatches(swatchesBox);
+      }, 10);
+    });
+    document.getElementById("modelSelector")?.addEventListener("change", () => setTimeout(syncTopbarHubReadouts, 20));
+    document.getElementById("simulationModeSelector")?.addEventListener("change", () => setTimeout(syncTopbarHubReadouts, 20));
+
+    // 对仿真时钟、倍率与连接态节点建立零延迟观察，避免 1.2s 轮询造成胶囊显示滞后
+    if (typeof MutationObserver === "function") {
+      let readoutSyncRaf = 0;
+      const scheduleReadoutSync = () => {
+        if (readoutSyncRaf) return;
+        readoutSyncRaf = requestAnimationFrame(() => {
+          readoutSyncRaf = 0;
+          syncTopbarHubReadouts();
+        });
+      };
+      const clockObs = new MutationObserver(scheduleReadoutSync);
+      ["simTime", "simSpeed", "overviewClockSpeed", "simState", "connectionText", "modelServiceState", "activeModelName"].forEach((id) => {
+        const node = document.getElementById(id);
+        if (node) clockObs.observe(node, { childList: true, characterData: true, subtree: true, attributes: true });
+      });
+    }
+
+    syncDynamicUxI18n(topbar);
+    syncTopbarHubReadouts();
+    window.__polarSidebarControl?.syncUi();
+    window.__syncUxI18n = () => {
+      syncDynamicUxI18n(document);
+      syncTopbarHubReadouts();
+      window.__polarSidebarControl?.syncUi();
+    };
+  }
+
   function runActivePageEnhancementTick() {
     if (document.hidden) return;
+    syncTopbarHubReadouts();
+    ensureOverviewLiveEnhancements();
     enhanceHorizontalTabsScroll();
     enhanceGenericTableCsvExports();
     enhanceCurveCanvases();
@@ -2331,6 +3137,18 @@
     initSharedSidebarToggle();
     enhanceTopbarThemeQuickControls();
     ensurePerfPillAndAlertPopover();
+    const utilityGroup = document.querySelector(".topbar-utility-group");
+    if (utilityGroup && !document.getElementById("uxCommandPaletteButton")) {
+      const btn = document.createElement("button");
+      btn.id = "uxCommandPaletteButton";
+      btn.type = "button";
+      btn.className = "ux-palette-trigger";
+      btn.title = `${tr("快捷命令")} (Ctrl+K)`;
+      btn.innerHTML = `<span data-i18n-skip="true">Ctrl+K</span>`;
+      btn.addEventListener("click", openCommandPalette);
+      utilityGroup.prepend(btn);
+    }
+    initCompactTopbarHubs();
     enhanceAllHorizontalSplitters();
     enhanceHorizontalTabsScroll();
     enhanceTableFilterClearButtons();
@@ -2357,29 +3175,6 @@
         });
       });
       splitObserver.observe(pageMain, { childList: true });
-    }
-    const modelParamWrap = document.getElementById("modelParamTable");
-    if (modelParamWrap && typeof MutationObserver === "function") {
-      let tabsSyncRaf = 0;
-      const tabsObserver = new MutationObserver(() => {
-        if (tabsSyncRaf) return;
-        tabsSyncRaf = requestAnimationFrame(() => {
-          tabsSyncRaf = 0;
-          enhanceHorizontalTabsScroll();
-        });
-      });
-      tabsObserver.observe(modelParamWrap, { childList: true, subtree: true });
-    }
-    const utilityGroup = document.querySelector(".topbar-utility-group");
-    if (utilityGroup && !document.getElementById("uxCommandPaletteButton")) {
-      const btn = document.createElement("button");
-      btn.id = "uxCommandPaletteButton";
-      btn.type = "button";
-      btn.className = "ux-palette-trigger";
-      btn.title = `${tr("快捷命令")} (Ctrl+K)`;
-      btn.innerHTML = `<span data-i18n-skip="true">Ctrl+K</span>`;
-      btn.addEventListener("click", openCommandPalette);
-      utilityGroup.prepend(btn);
     }
 
     document.querySelectorAll(".page-nav button[data-nav-page]").forEach((btn) => {

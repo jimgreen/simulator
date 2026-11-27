@@ -732,6 +732,12 @@ process.exit(0);
         self.assertEqual(sim_theme_css, trn_theme_css, "教员端与学员端 themes-common.css 内容应保持一致")
         self.assertEqual(common_theme_css, sim_theme_css, "shared/simu/web/common/themes-common.css 真源应与双端完全一致")
 
+        sim_sc_js = (REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "js" / "10-scada-cockpit.js").read_text(encoding="utf-8")
+        trn_sc_js = (REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "js" / "10-scada-cockpit.js").read_text(encoding="utf-8")
+        common_sc_js = (REPO_ROOT / "shared" / "simu" / "web" / "common" / "scada-cockpit.js").read_text(encoding="utf-8")
+        self.assertEqual(sim_sc_js, trn_sc_js, "教员端与学员端 10-scada-cockpit.js 内容应保持一致")
+        self.assertEqual(common_sc_js, sim_sc_js, "shared/simu/web/common/scada-cockpit.js 真源应与双端完全一致")
+
         # 校验 StaticAssetCache 版本化强缓存与高压缩率 gzip 策略
         cache = StaticAssetCache()
         self.assertEqual(
