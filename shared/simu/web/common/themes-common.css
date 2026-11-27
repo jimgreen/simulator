@@ -1316,6 +1316,12 @@ header.topbar.ux-topbar-compact .brand-mark {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
+  z-index: 10;
+}
+
+.ux-hub.is-open,
+.ux-hub:focus-within {
+  z-index: 1260;
 }
 
 .ux-hub-trigger {
@@ -1410,10 +1416,10 @@ header.topbar.ux-topbar-compact .brand-mark {
   color: var(--teal);
 }
 
-/* 悬浮操作面板（带顶部 8px 透明桥接防止鼠标移动时误关） */
+/* 悬浮操作面板（带加宽顶部透明桥接防止鼠标斜向移入时断档误关） */
 .ux-hub-popover {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 4px);
   right: 0;
   z-index: 1250;
   min-width: 300px;
@@ -1431,13 +1437,19 @@ header.topbar.ux-topbar-compact .brand-mark {
   transition: opacity 120ms ease, transform 120ms ease, visibility 0s linear 120ms;
 }
 
+.ux-hub:not(.is-open):not(:focus-within) > .ux-hub-popover,
+.ux-hub:not(.is-open):not(:focus-within) > .ux-hub-popover * {
+  pointer-events: none !important;
+  visibility: hidden !important;
+}
+
 .ux-hub-popover::before {
   content: "";
   position: absolute;
-  left: 0;
-  right: 0;
-  top: -10px;
-  height: 10px;
+  left: -12px;
+  right: -12px;
+  top: -14px;
+  height: 16px;
 }
 
 .ux-hub.is-open > .ux-hub-popover,
@@ -1533,8 +1545,8 @@ header.topbar.ux-topbar-compact .brand-mark {
 .ux-hub-popover .clock-control-popover {
   position: static !important;
   opacity: 1 !important;
-  visibility: visible !important;
-  pointer-events: auto !important;
+  visibility: inherit !important;
+  pointer-events: inherit !important;
   transform: none !important;
   box-shadow: none !important;
   border: 0 !important;

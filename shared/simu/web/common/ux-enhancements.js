@@ -2663,10 +2663,15 @@
         if (active && hub.contains(active) && (active.tagName === "SELECT" || active.tagName === "INPUT")) return;
         hub.classList.remove("is-open");
         trigger.setAttribute("aria-expanded", "false");
-      }, 180);
+      }, 260);
     };
     hub.addEventListener("mouseenter", () => openHub(false));
     hub.addEventListener("mouseleave", scheduleClose);
+    const popover = hub.querySelector(".ux-hub-popover");
+    popover?.addEventListener("pointerdown", () => {
+      // 用户在悬浮面板内开始点击/下拉选择时自动锁定面板，避免展开原生下拉列表时触发 mouseleave 误关
+      openHub(true);
+    });
     trigger.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();

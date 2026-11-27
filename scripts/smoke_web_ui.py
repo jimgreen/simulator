@@ -191,6 +191,30 @@ def run_playwright_smoke(simulator_url: str, trainee_url: str) -> tuple[bool, li
                 if not page.locator("#uxModelHubPopover").is_visible():
                     errors.append(f"{label} 模型管理悬浮面板未打开")
                 page.keyboard.press("Escape")
+                page.wait_for_timeout(120)
+
+                # 回归校验：纯鼠标悬停触发「模型管理」悬浮面板并平滑滑入点击内部按钮（防相邻幽灵层拦截）
+                trig_box = page.locator("#uxModelHubTrigger").bounding_box()
+                page.mouse.move(trig_box["x"] + trig_box["width"] / 2, trig_box["y"] + trig_box["height"] / 2)
+                page.wait_for_timeout(140)
+                mgmt_box = page.locator("#modelManagementButton").bounding_box()
+                page.mouse.move(mgmt_box["x"] + mgmt_box["width"] / 2, mgmt_box["y"] + mgmt_box["height"] / 2, steps=12)
+                page.wait_for_timeout(320)
+                hover_ok = page.evaluate(
+                    """([x, y]) => {
+                        const pop = document.getElementById('uxModelHubPopover');
+                        const el = document.elementFromPoint(x, y);
+                        return {
+                            vis: pop ? getComputedStyle(pop).visibility : 'none',
+                            inHub: Boolean(el && el.closest('#uxModelHub')),
+                            hitId: el?.id || el?.tagName || ''
+                        };
+                    }""",
+                    [mgmt_box["x"] + mgmt_box["width"] / 2, mgmt_box["y"] + mgmt_box["height"] / 2],
+                )
+                if hover_ok.get("vis") != "visible" or not hover_ok.get("inHub"):
+                    errors.append(f"{label} 鼠标从顶栏胶囊滑入模型悬浮框时被拦截或意外关闭：{hover_ok}")
+                page.keyboard.press("Escape")
                 page.wait_for_timeout(100)
 
                 # 校验侧边导航拥有独立「大屏主画面」与「能流总览」目录项，默认首屏呈现 SCADA 大屏幕主画面且无页内切换按钮
