@@ -256,6 +256,8 @@ const PHRASE_TRANSLATIONS = {
   "极地微电网仿真主控大屏": ["Polar Microgrid Simulation Cockpit", "Пульт симуляции микросети"],
   "极地微电网智能调控大屏": ["Polar Microgrid Dispatch Cockpit", "Пульт управления микросетью"],
   "沉浸全屏": ["Full Screen", "Полный экран"],
+  "全屏显示": ["Fullscreen", "На весь экран"],
+  "退出全屏": ["Exit Fullscreen", "Выйти из полноэкранного"],
   "左栏": ["Sidebar", "Боковая панель"],
   "内嵌": ["Docked", "Встроенная"],
   "悬浮": ["Floating", "Плавающая"],

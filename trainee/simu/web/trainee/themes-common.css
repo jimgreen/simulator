@@ -1155,15 +1155,24 @@ canvas.ux-diagram-minimap-canvas {
 header.topbar.ux-topbar-compact {
   position: relative !important;
   z-index: 500 !important;
-  display: flex !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) !important;
   align-items: center !important;
-  justify-content: space-between !important;
-  flex-wrap: nowrap !important;
   gap: 10px !important;
   height: 48px !important;
   min-height: 48px !important;
   padding: 0 14px !important;
   overflow: visible !important;
+}
+
+.ux-topbar-left {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+  justify-self: start;
+  max-width: 100%;
 }
 
 header.topbar.ux-topbar-compact .brand {
@@ -1173,12 +1182,12 @@ header.topbar.ux-topbar-compact .brand {
 }
 
 header.topbar.ux-topbar-compact .brand h1 {
-  font-size: 14.5px !important;
+  font-size: 14px !important;
   line-height: 1.2 !important;
   white-space: nowrap !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
-  max-width: 190px;
+  max-width: 170px;
 }
 
 header.topbar.ux-topbar-compact .brand-mark {
@@ -1187,15 +1196,16 @@ header.topbar.ux-topbar-compact .brand-mark {
   flex: 0 0 26px !important;
 }
 
-/* 全站共享顶栏中央梯形全息主桥徽标（自适应防重叠） */
+/* 全站共享顶栏中央梯形全息主桥徽标（严格居中于整条顶栏中轴线） */
 .ux-topbar-crest {
-  flex: 1 1 0;
+  justify-self: center;
   min-width: 0;
+  max-width: min(460px, 42vw);
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  padding: 0 6px;
+  padding: 0 4px;
 }
 
 .ux-crest-plate {
@@ -1309,10 +1319,31 @@ header.topbar.ux-topbar-compact .brand-mark {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  justify-self: end;
   gap: 6px;
-  flex: 0 0 auto;
   min-width: 0;
+  max-width: 100%;
   margin-left: 0;
+}
+
+.ux-hub.is-left-anchored > .ux-hub-popover {
+  left: 0;
+  right: auto;
+}
+
+@media (max-width: 1360px) {
+  header.topbar.ux-topbar-compact .brand h1 {
+    max-width: 132px;
+  }
+  .ux-topbar-crest {
+    max-width: min(360px, 34vw);
+  }
+  .ux-hub-primary {
+    max-width: 96px;
+  }
+  .ux-hub-sub {
+    max-width: 78px;
+  }
 }
 
 .ux-hub {

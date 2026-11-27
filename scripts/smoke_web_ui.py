@@ -122,12 +122,22 @@ def run_playwright_smoke(simulator_url: str, trainee_url: str) -> tuple[bool, li
                             }
                             const items = [
                                 header.querySelector('.brand'),
+                                ...Array.from(header.querySelectorAll('.ux-topbar-left > .ux-hub')),
                                 header.querySelector('#uxTopbarCrest'),
                                 ...Array.from(header.querySelectorAll('.ux-topbar-hubs > .ux-hub, .ux-topbar-hubs > #scImmersiveToggle')),
                             ].filter(Boolean).map((el) => {
                                 const r = el.getBoundingClientRect();
                                 return { id: el.id || el.className, left: r.left, right: r.right, top: r.top, bottom: r.bottom };
                             });
+                            const crest = header.querySelector('#uxTopbarCrest');
+                            if (crest) {
+                                const cr = crest.getBoundingClientRect();
+                                const headerMid = hr.left + hr.width / 2;
+                                const crestMid = cr.left + cr.width / 2;
+                                if (Math.abs(crestMid - headerMid) > 8) {
+                                    return { ok: false, reason: `crest not centered (mid=${crestMid.toFixed(1)} vs headerMid=${headerMid.toFixed(1)})` };
+                                }
+                            }
                             for (const it of items) {
                                 if (it.right > hr.right + 2 || it.left < hr.left - 2) {
                                     return { ok: false, reason: `${it.id} clipped (${it.left.toFixed(0)}..${it.right.toFixed(0)} vs ${hr.right.toFixed(0)})` };

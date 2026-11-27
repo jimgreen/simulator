@@ -2778,7 +2778,11 @@
 
     const isTrainee = Boolean(document.getElementById("traineeRunToggle"));
 
-    // 顶栏最左侧注入常驻极简「左栏显隐」按钮（内嵌与悬浮模式通用，一键隐藏或呼出左栏）
+    // 左侧容器：左栏显隐开关 + 系统品牌 + 「模型管理」胶囊（左右视觉天平对称，确保中央主桥严格居中）
+    const leftGroup = document.createElement("div");
+    leftGroup.className = "ux-topbar-left";
+    topbar.prepend(leftGroup);
+
     const brandEl = topbar.querySelector(".brand");
     if (brandEl && !document.getElementById("uxSidebarToggleBtn")) {
       const sbToggle = document.createElement("button");
@@ -2793,6 +2797,7 @@
       });
       brandEl.prepend(sbToggle);
     }
+    if (brandEl) leftGroup.appendChild(brandEl);
 
     const hubsWrap = document.createElement("div");
     hubsWrap.className = "ux-topbar-hubs";
@@ -2884,9 +2889,10 @@
       if (linkBtn) actions.appendChild(linkBtn);
       modelPop.appendChild(actions);
     }
+    modelHub.classList.add("is-left-anchored");
     modelHub.append(modelTrigger, modelPop);
     bindHubHoverAndPin(modelHub, modelTrigger);
-    hubsWrap.appendChild(modelHub);
+    leftGroup.appendChild(modelHub);
 
     // 清理旧的空 .model-toolbar 容器
     const oldModelToolbar = topbar.querySelector(".model-toolbar");
@@ -3041,26 +3047,105 @@
     `;
     topbar.appendChild(crestWrap);
 
-    // 全站共享「沉浸全屏」极简按钮（位于右侧胶囊区末尾，所有页面可用）
+    // 全站各页面共享「全屏显示 / 退出全屏」图标按钮（位于顶栏最右侧）
+    const FULLSCREEN_ENTER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>';
+    const FULLSCREEN_EXIT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>';
     const immBtn = document.createElement("button");
     immBtn.id = "scImmersiveToggle";
     immBtn.type = "button";
     immBtn.className = "ux-topbar-immersive-btn";
-    immBtn.dataset.uxTitleZh = "沉浸全屏";
-    immBtn.title = tr("沉浸全屏");
-    immBtn.setAttribute("aria-label", tr("沉浸全屏"));
-    immBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>';
-    immBtn.addEventListener("click", () => {
-      const active = document.documentElement.dataset.scadaImmersive === "true";
-      if (active) {
-        delete document.documentElement.dataset.scadaImmersive;
-        immBtn.classList.remove("is-active");
-      } else {
-        document.documentElement.dataset.scadaImmersive = "true";
-        immBtn.classList.add("is-active");
+
+    const isNativeFullscreen = () => Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+    const isAppFullscreen = () => document.documentElement.dataset.scadaImmersive === "true" || isNativeFullscreen();
+
+    const syncFullscreenButtonUi = (forcedActive = null) => {
+      const active = typeof forcedActive === "boolean" ? forcedActive : isAppFullscreen();
+      const label = tr(active ? "退出全屏" : "全屏显示");
+      immBtn.classList.toggle("is-active", active);
+      immBtn.setAttribute("aria-pressed", active ? "true" : "false");
+      immBtn.title = label;
+      immBtn.setAttribute("aria-label", label);
+      immBtn.dataset.uxTitleZh = active ? "退出全屏" : "全屏显示";
+      immBtn.innerHTML = active ? FULLSCREEN_EXIT_SVG : FULLSCREEN_ENTER_SVG;
+    };
+
+    let fsExiting = false;
+
+    const enterFullscreen = async () => {
+      fsExiting = false;
+      document.documentElement.dataset.scadaImmersive = "true";
+      document.documentElement.dataset.appFullscreen = "true";
+      syncFullscreenButtonUi(true);
+      const root = document.documentElement;
+      const req = root.requestFullscreen || root.webkitRequestFullscreen;
+      if (typeof req === "function" && !isNativeFullscreen()) {
+        try {
+          await req.call(root);
+        } catch (_err) {
+          // 无头或受限权限环境优雅保持页面内全屏态
+        }
+      }
+      if (fsExiting && isNativeFullscreen()) {
+        const exitFn = document.exitFullscreen || document.webkitExitFullscreen;
+        if (typeof exitFn === "function") {
+          try { await exitFn.call(document); } catch (_err) {}
+        }
+        syncFullscreenButtonUi(false);
+      } else if (!fsExiting) {
+        syncFullscreenButtonUi(true);
       }
       window.dispatchEvent(new Event("resize"));
+    };
+
+    const exitFullscreen = async () => {
+      fsExiting = true;
+      delete document.documentElement.dataset.scadaImmersive;
+      delete document.documentElement.dataset.appFullscreen;
+      syncFullscreenButtonUi(false);
+      const exitFn = document.exitFullscreen || document.webkitExitFullscreen;
+      if (typeof exitFn === "function" && isNativeFullscreen()) {
+        try {
+          await exitFn.call(document);
+        } catch (_err) {}
+      }
+      syncFullscreenButtonUi(false);
+      window.dispatchEvent(new Event("resize"));
+    };
+
+    immBtn.addEventListener("click", () => {
+      if (isAppFullscreen()) {
+        exitFullscreen();
+      } else {
+        enterFullscreen();
+      }
     });
+
+    const handleNativeFullscreenChange = () => {
+      if (fsExiting) {
+        if (isNativeFullscreen()) {
+          const exitFn = document.exitFullscreen || document.webkitExitFullscreen;
+          if (typeof exitFn === "function") {
+            try { exitFn.call(document); } catch (_err) {}
+          }
+        }
+        return;
+      }
+      if (!isNativeFullscreen() && document.documentElement.dataset.appFullscreen === "true") {
+        // 用户按 Esc 或系统键退出原生全屏时自动同步页面状态
+        delete document.documentElement.dataset.scadaImmersive;
+        delete document.documentElement.dataset.appFullscreen;
+        syncFullscreenButtonUi(false);
+      } else if (isNativeFullscreen()) {
+        document.documentElement.dataset.scadaImmersive = "true";
+        document.documentElement.dataset.appFullscreen = "true";
+        syncFullscreenButtonUi(true);
+      }
+      window.dispatchEvent(new Event("resize"));
+    };
+    document.addEventListener("fullscreenchange", handleNativeFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleNativeFullscreenChange);
+    window.__syncFullscreenButtonUi = syncFullscreenButtonUi;
+    syncFullscreenButtonUi();
     hubsWrap.appendChild(immBtn);
 
     topbar.appendChild(hubsWrap);
@@ -3084,6 +3169,7 @@
         syncDynamicUxI18n(document);
         syncTopbarHubReadouts();
         window.__polarSidebarControl?.syncUi();
+        window.__syncFullscreenButtonUi?.();
       }, 20);
     });
     document.getElementById("themeSelector")?.addEventListener("change", () => {
@@ -3119,6 +3205,7 @@
       syncDynamicUxI18n(document);
       syncTopbarHubReadouts();
       window.__polarSidebarControl?.syncUi();
+      window.__syncFullscreenButtonUi?.();
     };
   }
 
