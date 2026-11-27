@@ -1009,10 +1009,14 @@ canvas.ux-diagram-minimap-canvas {
 }
 
 .ux-chart-tools .compact-action-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 4px !important;
   height: 24px !important;
   min-height: 24px !important;
   padding: 0 7px !important;
-  font-size: 11.5px !important;
+  font-size: 11px !important;
   line-height: 22px !important;
   white-space: nowrap;
 }
@@ -1894,7 +1898,7 @@ button[disabled].primary {
   line-height: 1 !important;
   white-space: nowrap;
   cursor: pointer;
-  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+  transition: border-color 140ms ease, color 140ms ease !important;
 }
 
 .ux-sidebar-mini-btn svg {
@@ -2036,6 +2040,346 @@ html[data-sidebar-mode="overlay"][data-sidebar-hidden="true"] .ux-sidebar-edge-s
 html[data-sidebar-mode="overlay"][data-sidebar-hidden="true"] .ux-sidebar-edge-sensor:hover {
   background: linear-gradient(90deg, var(--teal-soft), transparent);
 }
+
+/* ==========================================================================
+   9. 全局「极地仙境 × 柔和科幻（Ethereal Polar Sci-Fi）」美学升华层
+   覆盖全部 14 套深浅/科幻主题与全站所有页面：
+   去工业硬边、融极光云雾底场、通透冰晶流璃卡片、柔光微晕与温润圆角
+   ========================================================================== */
+:root {
+  --eth-aurora-1: color-mix(in srgb, var(--teal) 22%, transparent);
+  --eth-aurora-2: color-mix(in srgb, var(--green) 16%, transparent);
+  --eth-aurora-3: color-mix(in srgb, #a78bfa 16%, transparent);
+  --eth-glass-edge: rgba(255, 255, 255, 0.14);
+  --eth-glass-sheen: rgba(255, 255, 255, 0.08);
+  --eth-glow-soft: 0 8px 28px -8px color-mix(in srgb, var(--teal) 24%, transparent);
+}
+
+:root[data-color-scheme="light"] {
+  --eth-aurora-1: color-mix(in srgb, var(--teal) 14%, transparent);
+  --eth-aurora-2: color-mix(in srgb, #67e8f9 18%, transparent);
+  --eth-aurora-3: color-mix(in srgb, #c4b5fd 16%, transparent);
+  --eth-glass-edge: rgba(255, 255, 255, 0.85);
+  --eth-glass-sheen: rgba(255, 255, 255, 0.55);
+  --eth-glow-soft: 0 10px 28px -10px color-mix(in srgb, var(--teal) 22%, rgba(15, 23, 42, 0.12));
+}
+
+/* 统一柔化过硬直角（保留便当盒等大圆角主题特征） */
+:root[data-theme="precision-dark"],
+:root[data-theme="ocean-slate"],
+:root[data-theme="nord-dark"],
+:root[data-theme="industrial-amber"],
+:root[data-theme="sci-fi-cyan"],
+:root[data-theme="sci-fi-purple"],
+:root[data-theme="sci-fi-matrix"],
+:root[data-theme="slate-daylight"],
+:root[data-theme="warm-paper"],
+:root[data-theme="arctic-frost"],
+:root[data-theme="editorial"] {
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+}
+
+/* 全站柔和极光云雾氛围背景（彻底取代单调纯色与尖锐硬网格） */
+html,
+body {
+  background-color: var(--bg) !important;
+  background-image:
+    radial-gradient(ellipse 68% 52% at 14% 8%, var(--eth-aurora-1), transparent 72%),
+    radial-gradient(ellipse 62% 54% at 86% 12%, var(--eth-aurora-3), transparent 74%),
+    radial-gradient(ellipse 70% 48% at 52% 96%, var(--eth-aurora-2), transparent 76%) !important;
+  background-attachment: fixed !important;
+}
+
+/* 顶栏：冰晶流璃 + 底部柔和极光丝带 */
+header.topbar.ux-topbar-compact {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface) 84%, transparent) 0%,
+    color-mix(in srgb, var(--surface) 72%, transparent) 100%
+  ) !important;
+  backdrop-filter: blur(18px) saturate(1.35) !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--teal) 22%, var(--line)) !important;
+  box-shadow:
+    inset 0 1px 0 var(--eth-glass-edge),
+    0 6px 24px -10px rgba(4, 12, 28, 0.32) !important;
+}
+
+:root[data-color-scheme="light"] header.topbar.ux-topbar-compact {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 6px 22px -12px rgba(15, 23, 42, 0.14) !important;
+}
+
+header.topbar.ux-topbar-compact .brand-mark {
+  border-radius: 9px !important;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--teal) 40%, transparent) !important;
+}
+
+/* 中央共享全息主桥：星纱柔光玉璃质感 */
+.ux-crest-plate {
+  border: 1px solid color-mix(in srgb, var(--teal) 42%, var(--eth-glass-edge)) !important;
+  border-top: 0 !important;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--teal) 18%, color-mix(in srgb, var(--surface) 84%, transparent)) 0%,
+    color-mix(in srgb, var(--surface) 74%, transparent) 100%
+  ) !important;
+  backdrop-filter: blur(16px) saturate(1.3);
+  box-shadow:
+    inset 0 -1px 0 color-mix(in srgb, var(--teal) 45%, transparent),
+    0 6px 20px -8px color-mix(in srgb, var(--teal) 36%, transparent);
+}
+
+.ux-crest-plate::after {
+  height: 2px;
+  opacity: 0.85;
+  filter: blur(0.4px);
+}
+
+.ux-crest-title {
+  letter-spacing: 0.06em;
+  background: linear-gradient(
+    90deg,
+    var(--ink) 0%,
+    color-mix(in srgb, var(--teal) 38%, var(--ink)) 50%,
+    var(--ink) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+:root[data-color-scheme="dark"] .ux-crest-title {
+  text-shadow: none;
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--teal) 32%, transparent));
+}
+
+/* 顶栏胶囊与悬浮面板：通透玉璃 + 柔和呼吸光晕 */
+.ux-hub-trigger,
+.ux-sidebar-topbar-btn,
+.ux-topbar-immersive-btn {
+  border-color: color-mix(in srgb, var(--line-strong) 72%, var(--eth-glass-edge)) !important;
+  background: color-mix(in srgb, var(--surface-subtle) 74%, transparent) !important;
+  backdrop-filter: blur(12px);
+  box-shadow: inset 0 1px 0 var(--eth-glass-sheen);
+  transition: border-color 180ms ease, box-shadow 220ms ease, transform 180ms ease !important;
+}
+
+.ux-hub-trigger:hover,
+.ux-hub.is-open > .ux-hub-trigger,
+.ux-sidebar-topbar-btn:hover,
+.ux-topbar-immersive-btn:hover,
+.ux-topbar-immersive-btn.is-active {
+  border-color: color-mix(in srgb, var(--teal) 65%, var(--eth-glass-edge)) !important;
+  background: color-mix(in srgb, var(--teal) 14%, var(--surface)) !important;
+  box-shadow:
+    inset 0 1px 0 var(--eth-glass-edge),
+    0 0 16px -4px color-mix(in srgb, var(--teal) 45%, transparent) !important;
+}
+
+.ux-hub-popover,
+.ux-theme-popover,
+.ux-alert-summary-popover {
+  border-radius: var(--radius-md) !important;
+  border: 1px solid color-mix(in srgb, var(--teal) 26%, var(--line-strong)) !important;
+  background: color-mix(in srgb, var(--surface) 88%, transparent) !important;
+  backdrop-filter: blur(22px) saturate(1.4) !important;
+  box-shadow:
+    inset 0 1px 0 var(--eth-glass-edge),
+    0 18px 46px -14px rgba(4, 12, 32, 0.42),
+    0 0 28px -12px color-mix(in srgb, var(--teal) 28%, transparent) !important;
+}
+
+:root[data-color-scheme="light"] .ux-hub-popover,
+:root[data-color-scheme="light"] .ux-theme-popover,
+:root[data-color-scheme="light"] .ux-alert-summary-popover {
+  background: rgba(255, 255, 255, 0.88) !important;
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 16px 40px -14px rgba(15, 23, 42, 0.16),
+    0 0 24px -10px color-mix(in srgb, var(--teal) 20%, transparent) !important;
+}
+
+/* 侧边导航栏：雾纱冰晶 + 极光流光选中态 */
+#appSidebar.app-sidebar {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface) 76%, transparent) 0%,
+    color-mix(in srgb, var(--surface) 64%, transparent) 100%
+  ) !important;
+  backdrop-filter: blur(18px) saturate(1.3) !important;
+  border-right: 1px solid color-mix(in srgb, var(--teal) 18%, var(--line)) !important;
+}
+
+#appSidebar .page-nav button {
+  border-radius: 10px !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  transition: border-color 180ms ease, color 180ms ease, box-shadow 200ms ease, transform 160ms ease !important;
+}
+
+#appSidebar .page-nav button:hover {
+  background: color-mix(in srgb, var(--teal) 10%, var(--surface-subtle)) !important;
+  border-color: color-mix(in srgb, var(--teal) 24%, transparent) !important;
+}
+
+#appSidebar .page-nav button.is-active {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--teal) 22%, transparent) 0%,
+    color-mix(in srgb, #a78bfa 12%, color-mix(in srgb, var(--teal) 10%, transparent)) 100%
+  ) !important;
+  border-color: color-mix(in srgb, var(--teal) 48%, transparent) !important;
+  box-shadow:
+    inset 0 1px 0 var(--eth-glass-edge),
+    0 4px 14px -6px color-mix(in srgb, var(--teal) 45%, transparent) !important;
+}
+
+/* 全站业务卡片（.panel）：柔和冰晶玻璃 + 顶边丝光 + 柔化阴影 */
+.page-main .panel,
+.overview-status-panel,
+.overview-energy-panel,
+.overview-boundary-panel,
+.overview-events-panel,
+.overview-pending-panel,
+.renewable-detail-panel,
+.curve-chart-panel,
+.curve-table-panel,
+.curve-tree-panel,
+.model-hub-shell .panel {
+  border-radius: var(--radius-md) !important;
+  border: 1px solid color-mix(in srgb, var(--teal) 16%, var(--line)) !important;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface) 82%, transparent) 0%,
+    color-mix(in srgb, var(--surface) 72%, transparent) 100%
+  ) !important;
+  backdrop-filter: blur(14px) saturate(1.25);
+  box-shadow:
+    inset 0 1px 0 var(--eth-glass-sheen),
+    var(--eth-glow-soft) !important;
+}
+
+:root[data-color-scheme="light"] .page-main .panel,
+:root[data-color-scheme="light"] .overview-status-panel,
+:root[data-color-scheme="light"] .overview-energy-panel,
+:root[data-color-scheme="light"] .overview-boundary-panel {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.86) 0%,
+    rgba(255, 255, 255, 0.76) 100%
+  ) !important;
+  border-color: color-mix(in srgb, var(--teal) 18%, rgba(255, 255, 255, 0.9)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 8px 26px -12px rgba(15, 23, 42, 0.12),
+    0 0 20px -10px color-mix(in srgb, var(--teal) 16%, transparent) !important;
+}
+
+/* 按钮与子页签：去机械硬框，用温润柔光渐变 */
+button.primary,
+.primary-button {
+  border-radius: var(--radius-sm) !important;
+  border: 1px solid color-mix(in srgb, var(--teal) 60%, #ffffff) !important;
+  background: linear-gradient(
+    135deg,
+    var(--teal) 0%,
+    color-mix(in srgb, var(--teal) 72%, #818cf8) 100%
+  ) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    0 4px 14px -4px color-mix(in srgb, var(--teal) 55%, transparent) !important;
+  transition: filter 160ms ease, box-shadow 180ms ease, transform 140ms ease !important;
+}
+
+button.primary:hover:not(:disabled),
+.primary-button:hover:not(:disabled) {
+  filter: brightness(1.06);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    0 6px 20px -4px color-mix(in srgb, var(--teal) 65%, transparent) !important;
+}
+
+.sub-tab,
+.model-param-tab,
+.renewable-strategy-tabs button,
+.renewable-detail-tabs button,
+.compact-action-btn {
+  border-radius: 8px !important;
+  transition: border-color 160ms ease, color 160ms ease, box-shadow 180ms ease !important;
+}
+
+.sub-tab.is-active,
+.model-param-tab.is-active,
+.renewable-strategy-tabs button.is-active,
+.renewable-detail-tabs button.is-active {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--teal) 22%, transparent) 0%,
+    color-mix(in srgb, var(--teal) 10%, transparent) 100%
+  ) !important;
+  border-color: color-mix(in srgb, var(--teal) 55%, transparent) !important;
+  box-shadow: 0 0 12px -4px color-mix(in srgb, var(--teal) 40%, transparent);
+}
+
+/* 表格柔化：轻盈分隔线与柔和悬停流光（保持单元格内嵌控件无独立边框规范） */
+table thead th {
+  background: color-mix(in srgb, var(--surface-subtle) 78%, transparent) !important;
+  backdrop-filter: blur(8px);
+  border-bottom-color: color-mix(in srgb, var(--teal) 18%, var(--line)) !important;
+}
+
+table tbody tr {
+  transition: background 140ms ease;
+}
+
+table tbody tr:hover {
+  background: color-mix(in srgb, var(--teal) 9%, transparent) !important;
+}
+
+/* 模态对话框与 Toast：冰晶浮光质感 */
+dialog,
+.modal-card,
+.ui-toast {
+  border-radius: var(--radius-md) !important;
+  border: 1px solid color-mix(in srgb, var(--teal) 32%, var(--line-strong)) !important;
+  backdrop-filter: blur(20px) saturate(1.35) !important;
+  box-shadow:
+    inset 0 1px 0 var(--eth-glass-edge),
+    0 20px 50px -16px rgba(4, 12, 32, 0.45),
+    0 0 28px -10px color-mix(in srgb, var(--teal) 26%, transparent) !important;
+}
+
+/* 能流总览能量卡片柔美流光 */
+.energy-device-card {
+  border-radius: 12px !important;
+  border-color: color-mix(in srgb, var(--teal) 18%, var(--line)) !important;
+  background: color-mix(in srgb, var(--surface) 78%, transparent) !important;
+  backdrop-filter: blur(10px);
+  box-shadow: inset 0 1px 0 var(--eth-glass-sheen);
+  transition: border-color 180ms ease, box-shadow 200ms ease, transform 160ms ease !important;
+}
+
+.energy-device-card:hover {
+  border-color: color-mix(in srgb, var(--teal) 50%, transparent) !important;
+  box-shadow:
+    inset 0 1px 0 var(--eth-glass-edge),
+    0 6px 18px -6px color-mix(in srgb, var(--teal) 32%, transparent) !important;
+}
+
+.ux-overview-live-strip {
+  border-radius: 10px !important;
+  border-color: color-mix(in srgb, var(--teal) 20%, var(--line)) !important;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--teal) 8%, var(--surface-subtle)) 0%,
+    color-mix(in srgb, var(--surface-subtle) 76%, transparent) 55%,
+    color-mix(in srgb, #a78bfa 8%, var(--surface-subtle)) 100%
+  ) !important;
+}
+
 
 
 

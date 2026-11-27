@@ -132,12 +132,33 @@
     }
   }
 
+  const SC_ICONS = Object.freeze({
+    wind: '<svg class="sc-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.6 4.6A2 2 0 1 1 11 8H2m10.6 11.4A2 2 0 1 0 14 16H2m15.7-8.3A2.5 2.5 0 1 1 19.5 12H2"/></svg>',
+    sun: '<svg class="sc-ico is-amber" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+    temp: '<svg class="sc-ico is-purple" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0Z"/><path d="M12 9v7"/></svg>',
+    press: '<svg class="sc-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 12l4-3M12 7v1M7 12h1M16 12h1"/></svg>',
+    hum: '<svg class="sc-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.6C8.5 7 6 10.2 6 13.8a6 6 0 0 0 12 0C18 10.2 15.5 7 12 2.6Z"/></svg>',
+    load: '<svg class="sc-ico is-amber" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 10-12h-7Z"/></svg>',
+    turbine: '<svg class="sc-ico is-green" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12v9M9 21h6"/><circle cx="12" cy="10" r="1.8"/><path d="M12 8 10.5 3c2.4 0 4 1.5 3.3 4.2M10.4 11l-5 1.8c.2-2.4 1.8-4 4.2-3.3M13.6 11l3.6 4c-2.4.7-4.5-.8-3.8-3.3"/></svg>',
+    pv: '<svg class="sc-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16l1.5 10h-19L4 6ZM9 6 8 16M15 6l1 10M3.5 11h17M9 20h6M12 16v4"/></svg>',
+    bess: '<svg class="sc-ico is-purple" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="15" height="12" rx="2"/><path d="M19 10h2v4h-2M8 10v4M11.5 10v4M15 10v4"/></svg>',
+    wave: '<svg class="sc-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h4l2.5-6 4 12 2.5-6H22"/></svg>',
+    h2: '<svg class="sc-ico is-green" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M9 9v6M15 9v6M9 12h6"/></svg>',
+    leaf: '<svg class="sc-ico is-green" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 5c-6 0-11 3.5-13 9 2.5 1 5.5 1.5 8 0 3.5-2 5-5.5 5-9Z"/><path d="M6 19c1.5-2.5 4-4.5 7-6"/></svg>',
+    link: '<svg class="sc-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
+    ping: '<svg class="sc-ico is-green" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1"/></svg>',
+    spark: '<svg class="sc-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"/></svg>',
+    moon: '<svg class="sc-ico is-purple" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z"/></svg>',
+    storm: '<svg class="sc-ico is-amber" viewBox="0 0 24 24" aria-hidden="true"><path d="M17.5 18a4 4 0 0 0 .5-7.9A5.5 5.5 0 0 0 7.2 8.5 4 4 0 0 0 6.5 16h2"/><path d="M13 12l-3 5h4l-2 4"/></svg>',
+    cloud: '<svg class="sc-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M17.5 18H7a4 4 0 0 1-.5-7.9A5.5 5.5 0 0 1 17 8.5a3.5 3.5 0 0 1 .5 9.5Z"/></svg>',
+  });
+
   const POLAR_ENV_PRESETS = Object.freeze([
-    { id: "polar-night", labelZh: "极夜极寒静风", wind: 1.5, irr: 0, temp: -42, press: 952, hum: 62 },
-    { id: "blizzard", labelZh: "暴风雪切出", wind: 28.0, irr: 0, temp: -36, press: 928, hum: 92 },
-    { id: "cold-gale", labelZh: "寒潮强风高发", wind: 16.5, irr: 80, temp: -30, press: 945, hum: 78 },
-    { id: "polar-day", labelZh: "极昼晴好微风", wind: 7.5, irr: 780, temp: -8, press: 985, hum: 55 },
-    { id: "low-press", labelZh: "低气压寒流", wind: 12.0, irr: 180, temp: -24, press: 938, hum: 84 },
+    { id: "polar-night", icon: SC_ICONS.moon, labelZh: "极夜极寒静风", wind: 1.5, irr: 0, temp: -42, press: 952, hum: 62 },
+    { id: "blizzard", icon: SC_ICONS.storm, labelZh: "暴风雪切出", wind: 28.0, irr: 0, temp: -36, press: 928, hum: 92 },
+    { id: "cold-gale", icon: SC_ICONS.wind, labelZh: "寒潮强风高发", wind: 16.5, irr: 80, temp: -30, press: 945, hum: 78 },
+    { id: "polar-day", icon: SC_ICONS.sun, labelZh: "极昼晴好微风", wind: 7.5, irr: 780, temp: -8, press: 985, hum: 55 },
+    { id: "low-press", icon: SC_ICONS.cloud, labelZh: "低气压寒流", wind: 12.0, irr: 180, temp: -24, press: 938, hum: 84 },
   ]);
 
   let lastLiveEnv = { wind: null, irr: null, temp: null, press: null, hum: null };
@@ -248,7 +269,7 @@
     backdrop.className = "sc-env-modal-backdrop";
     backdrop.hidden = true;
     const presetsHtml = POLAR_ENV_PRESETS.map(
-      (p) => `<button type="button" class="sc-env-preset-btn" data-sc-preset="${p.id}"><span data-sc-zh="${p.labelZh}"></span></button>`,
+      (p) => `<button type="button" class="sc-env-preset-btn" data-sc-preset="${p.id}">${p.icon}<span data-sc-zh="${p.labelZh}"></span></button>`,
     ).join("");
     backdrop.innerHTML = `
       <div class="sc-env-modal" role="dialog" aria-modal="true" aria-labelledby="scEnvModalTitle">
@@ -532,20 +553,20 @@
               <h2 data-sc-zh="${trainee ? leftMidTitleZh : "极地气象与环境工况"}"></h2>
               <span class="sc-head-slash" aria-hidden="true"></span>
               <span class="sc-regime-badge" id="scClimateRegime" data-sc-zh="常规极地"></span>
-              ${trainee ? '<span class="sc-head-meta" id="scBoundaryTime">--</span>' : '<button type="button" id="scOpenEnvInjectBtn" class="sc-env-inject-btn"><span data-sc-zh="工况注入"></span></button>'}
+              ${trainee ? '<span class="sc-head-meta" id="scBoundaryTime">--</span>' : `<button type="button" id="scOpenEnvInjectBtn" class="sc-env-inject-btn">${SC_ICONS.spark}<span data-sc-zh="工况注入"></span></button>`}
             </header>
             <div class="sc-env-grid">
-              <div class="sc-env-box"><span data-sc-zh="风速"></span><strong id="scEnvWind">--</strong></div>
-              <div class="sc-env-box"><span data-sc-zh="太阳辐照"></span><strong id="scEnvIrr">--</strong></div>
-              <div class="sc-env-box"><span data-sc-zh="气温"></span><strong id="scEnvTemp">--</strong></div>
-              <div class="sc-env-box"><span data-sc-zh="气压"></span><strong id="scEnvPress">--</strong></div>
-              <div class="sc-env-box"><span data-sc-zh="相对湿度"></span><strong id="scEnvHum">--</strong></div>
-              <div class="sc-env-box"><span data-sc-zh="负荷需求"></span><strong id="scEnvLoad">--</strong></div>
+              <div class="sc-env-box" title="风速"><span>${SC_ICONS.wind}<em data-sc-zh="风速" style="font-style:normal"></em></span><strong id="scEnvWind">--</strong></div>
+              <div class="sc-env-box" title="太阳辐照"><span>${SC_ICONS.sun}<em data-sc-zh="太阳辐照" style="font-style:normal"></em></span><strong id="scEnvIrr">--</strong></div>
+              <div class="sc-env-box" title="气温"><span>${SC_ICONS.temp}<em data-sc-zh="气温" style="font-style:normal"></em></span><strong id="scEnvTemp">--</strong></div>
+              <div class="sc-env-box" title="气压"><span>${SC_ICONS.press}<em data-sc-zh="气压" style="font-style:normal"></em></span><strong id="scEnvPress">--</strong></div>
+              <div class="sc-env-box" title="相对湿度"><span>${SC_ICONS.hum}<em data-sc-zh="相对湿度" style="font-style:normal"></em></span><strong id="scEnvHum">--</strong></div>
+              <div class="sc-env-box" title="负荷需求"><span>${SC_ICONS.load}<em data-sc-zh="负荷需求" style="font-style:normal"></em></span><strong id="scEnvLoad">--</strong></div>
             </div>
             <div class="sc-coupling-strip" aria-label="气象与能源耦合状态">
-              <div class="sc-coupling-chip" id="scCoupleWind"><span data-sc-zh="风电耦合"></span><strong id="scCoupleWindVal">--</strong></div>
-              <div class="sc-coupling-chip" id="scCouplePv"><span data-sc-zh="光伏耦合"></span><strong id="scCouplePvVal">--</strong></div>
-              <div class="sc-coupling-chip" id="scCoupleBess"><span data-sc-zh="储能温控"></span><strong id="scCoupleBessVal">--</strong></div>
+              <div class="sc-coupling-chip" id="scCoupleWind" title="风电耦合">${SC_ICONS.turbine}<strong id="scCoupleWindVal">--</strong></div>
+              <div class="sc-coupling-chip" id="scCouplePv" title="光伏耦合">${SC_ICONS.pv}<strong id="scCouplePvVal">--</strong></div>
+              <div class="sc-coupling-chip" id="scCoupleBess" title="储能温控">${SC_ICONS.bess}<strong id="scCoupleBessVal">--</strong></div>
             </div>
           </article>
 
@@ -577,11 +598,11 @@
           <article class="sc-panel sc-panel-hub" id="scHubPanel">
             <div class="sc-hub-stage">
               <div class="sc-hub-env-tag" id="scHubEnvTag">
-                <span id="scHubEnvRegime">--</span>
+                ${SC_ICONS.spark}<span id="scHubEnvRegime">--</span>
                 <i aria-hidden="true"></i>
-                <span id="scHubEnvWind">--</span>
+                ${SC_ICONS.wind}<span id="scHubEnvWind">--</span>
                 <i aria-hidden="true"></i>
-                <span id="scHubEnvTemp">--</span>
+                ${SC_ICONS.temp}<span id="scHubEnvTemp">--</span>
               </div>
               <svg class="sc-hub-svg" viewBox="0 0 680 340" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
                 <defs>
@@ -694,12 +715,12 @@
               <button type="button" class="sc-head-link" data-sc-nav="${trainee ? "renewable" : "scada104"}" data-sc-zh="详情"></button>
             </header>
             <div class="sc-stat-grid">
-              <div class="sc-stat-box"><span data-sc-zh="母线电压"></span><strong id="scStatBus">--</strong></div>
-              <div class="sc-stat-box"><span data-sc-zh="综合 SOC"></span><strong id="scStatSoc">--</strong></div>
-              <div class="sc-stat-box"><span data-sc-zh="储氢压力"></span><strong id="scStatH2">--</strong></div>
-              <div class="sc-stat-box"><span data-sc-zh="绿电占比"></span><strong id="scStatGreen">--</strong></div>
-              <div class="sc-stat-box"><span data-sc-zh="${trainee ? "数据源" : "仿真模式"}"></span><strong id="scStatExtra1">--</strong></div>
-              <div class="sc-stat-box"><span data-sc-zh="接口延迟"></span><strong id="scStatLatency">--</strong></div>
+              <div class="sc-stat-box"><span>${SC_ICONS.wave}<em data-sc-zh="母线电压" style="font-style:normal"></em></span><strong id="scStatBus">--</strong></div>
+              <div class="sc-stat-box"><span>${SC_ICONS.bess}<em data-sc-zh="综合 SOC" style="font-style:normal"></em></span><strong id="scStatSoc">--</strong></div>
+              <div class="sc-stat-box"><span>${SC_ICONS.h2}<em data-sc-zh="储氢压力" style="font-style:normal"></em></span><strong id="scStatH2">--</strong></div>
+              <div class="sc-stat-box"><span>${SC_ICONS.leaf}<em data-sc-zh="绿电占比" style="font-style:normal"></em></span><strong id="scStatGreen">--</strong></div>
+              <div class="sc-stat-box"><span>${SC_ICONS.link}<em data-sc-zh="${trainee ? "数据源" : "仿真模式"}" style="font-style:normal"></em></span><strong id="scStatExtra1">--</strong></div>
+              <div class="sc-stat-box"><span>${SC_ICONS.ping}<em data-sc-zh="接口延迟" style="font-style:normal"></em></span><strong id="scStatLatency">--</strong></div>
             </div>
           </article>
 
