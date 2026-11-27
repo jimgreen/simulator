@@ -33,6 +33,13 @@ SHARED_ASSET_MAP: tuple[tuple[Path, tuple[Path, ...]], ...] = (
             REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "js" / "09-ux-enhancements.js",
         ),
     ),
+    (
+        COMMON_DIR / "themes-common.css",
+        (
+            REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "themes-common.css",
+            REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "themes-common.css",
+        ),
+    ),
 )
 
 

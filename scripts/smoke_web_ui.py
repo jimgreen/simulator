@@ -123,6 +123,62 @@ def run_playwright_smoke(simulator_url: str, trainee_url: str) -> tuple[bool, li
                 page.select_option("#langSelector", "zh-CN")
                 page.select_option("#themeSelector", "minimalist-light")
 
+                # 验证本次升级的新增交互组件：色卡预览弹层、日/夜快切、主页 KPI+Sparkline、性能胶囊、接线图 HUD 与曲线工具条
+                page.click("#uxDayNightToggleBtn")
+                if page.evaluate("document.documentElement.dataset.colorScheme") != "dark":
+                    errors.append(f"{label} 日/夜一键快切未切换至暗色主题")
+                page.click("#uxThemeSwatchBtn")
+                if not page.locator("#uxThemeSwatchPopover").is_visible():
+                    errors.append(f"{label} 风格色卡预览弹层未打开")
+                page.click('#uxThemeSwatchPopover .ux-theme-card[data-theme-id="arctic-frost"]')
+                if page.evaluate("document.documentElement.dataset.theme") != "arctic-frost":
+                    errors.append(f"{label} 色卡预览弹层点击切换 arctic-frost 失败")
+                page.select_option("#themeSelector", "minimalist-light")
+
+                if page.locator(".ux-overview-live-strip").count() == 0:
+                    errors.append(f"{label} 主页缺少紧凑运行 KPI + Sparkline 条")
+                if page.locator("#uxPerfTelemetryPill").count() == 0:
+                    errors.append(f"{label} 顶栏缺少性能可观测胶囊")
+
+                page.click('.page-nav button[data-nav-page="model"]')
+                page.wait_for_timeout(200)
+                if page.locator(".model-param-tabs").count() > 0:
+                    if page.locator(".ux-tabs-scroll-shell").count() == 0:
+                        errors.append(f"{label} 电网模型页缺少横向分类标签步进容器")
+                else:
+                    # 若当前模型服务尚未启动，注入临时 .model-param-tabs 验证 MutationObserver 自动装配步进外壳
+                    ok_shell = page.evaluate(
+                        """() => {
+                            const host = document.getElementById('modelParamTable');
+                            if (!host) return false;
+                            const probe = document.createElement('div');
+                            probe.className = 'model-param-tabs';
+                            probe.dataset.smokeProbe = '1';
+                            probe.innerHTML = '<button type="button" class="model-param-tab">A</button>';
+                            host.appendChild(probe);
+                            return true;
+                        }"""
+                    )
+                    page.wait_for_timeout(120)
+                    if not ok_shell or page.locator(".ux-tabs-scroll-shell").count() == 0:
+                        errors.append(f"{label} 电网模型页动态渲染分类标签未自动装配步进容器")
+                    page.evaluate(
+                        """() => {
+                            document.querySelector('.ux-tabs-scroll-shell:has([data-smoke-probe="1"])')?.remove();
+                            document.querySelector('[data-smoke-probe="1"]')?.remove();
+                        }"""
+                    )
+
+                page.click('.page-nav button[data-nav-page="diagram"]')
+                page.wait_for_timeout(250)
+                if page.locator(".ux-diagram-hud").count() == 0 or page.locator(".ux-diagram-minimap").count() == 0:
+                    errors.append(f"{label} 接线图页缺少快搜 HUD 或缩略图 Minimap")
+
+                page.click('.page-nav button[data-nav-page="curves"]')
+                page.wait_for_timeout(200)
+                if page.locator(".ux-chart-tools").count() == 0:
+                    errors.append(f"{label} 曲线页缺少 PNG/CSV 导出与缩放工具条")
+
                 if console_errors:
                     errors.extend(f"{label} {item}" for item in console_errors[:10])
                 page.close()

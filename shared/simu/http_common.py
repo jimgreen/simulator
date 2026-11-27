@@ -385,15 +385,45 @@ def resolve_static_target(root: Path, request_path: str) -> Optional[Path]:
 
 
 class StaticAssetCache:
-    """线程安全的静态资源内存缓存，支持 mtime/size 校验、ETag 与 gzip 压缩。"""
+    """线程安全的静态资源内存缓存，支持 mtime/size 校验、ETag、高压缩率 gzip 与版本化强缓存。"""
 
     _COMPRESSIBLE_TYPES = frozenset(
         {
             "application/javascript",
+            "application/x-javascript",
             "text/javascript",
+            "text/css",
             "application/json",
             "application/xml",
             "image/svg+xml",
+        }
+    )
+    _COMPRESSIBLE_SUFFIXES = frozenset(
+        {
+            ".js",
+            ".mjs",
+            ".css",
+            ".html",
+            ".htm",
+            ".json",
+            ".svg",
+            ".xml",
+            ".txt",
+        }
+    )
+    _IMMUTABLE_SUFFIXES = frozenset(
+        {
+            ".js",
+            ".mjs",
+            ".css",
+            ".svg",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".woff",
+            ".woff2",
+            ".ico",
         }
     )
 
@@ -414,16 +444,27 @@ class StaticAssetCache:
                 return cached
 
         data = target.read_bytes()
+        suffix = target.suffix.lower()
         content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
-        compressible = content_type.startswith("text/") or content_type in self._COMPRESSIBLE_TYPES
+        if suffix == ".js" and content_type in {"text/plain", "application/octet-stream"}:
+            content_type = "application/javascript; charset=utf-8"
+        elif suffix == ".css" and content_type in {"text/plain", "application/octet-stream"}:
+            content_type = "text/css; charset=utf-8"
+        compressible = (
+            content_type.startswith("text/")
+            or content_type.split(";", 1)[0].strip() in self._COMPRESSIBLE_TYPES
+            or suffix in self._COMPRESSIBLE_SUFFIXES
+        )
         gzip_data = b""
         if compressible and len(data) >= 512:
-            candidate = gzip.compress(data, compresslevel=1, mtime=0)
+            # 静态文件只在首次加载或磁盘变更时压缩一次并缓存于内存，采用 level=6 可多省 ~20% 传输流量。
+            candidate = gzip.compress(data, compresslevel=6, mtime=0)
             if len(candidate) + 32 < len(data):
                 gzip_data = candidate
         loaded = {
             "mtime_ns": stat.st_mtime_ns,
             "size": stat.st_size,
+            "suffix": suffix,
             "content_type": content_type,
             "data": data,
             "gzip_data": gzip_data,
@@ -434,6 +475,14 @@ class StaticAssetCache:
                 self._entries.pop(next(iter(self._entries)))
             self._entries[target] = loaded
         return loaded
+
+    def _resolve_cache_control(self, request_path: str, target_suffix: str, fallback: str) -> str:
+        """对携带 ?v= 版本戳的非 HTML 静态资源自动启用强缓存，二次刷新免 304 往返。"""
+        if target_suffix in self._IMMUTABLE_SUFFIXES:
+            query = urlparse(str(request_path or "")).query
+            if query and ("v=" in query):
+                return "public, max-age=31536000, immutable"
+        return fallback
 
     def serve(
         self,
@@ -449,6 +498,11 @@ class StaticAssetCache:
         if target is None:
             return False
         asset = self.load(target)
+        effective_cache_control = self._resolve_cache_control(
+            request_path,
+            str(asset.get("suffix") or target.suffix.lower()),
+            cache_control,
+        )
         etag = str(asset["etag"])
         accepted = str(handler.headers.get("Accept-Encoding", "")).lower()
         use_gzip = bool(asset["gzip_data"] and "gzip" in accepted)
@@ -457,7 +511,7 @@ class StaticAssetCache:
             try:
                 handler.send_response(304)
                 if cors_fn is not None:
-                    cors_fn(cache_control)
+                    cors_fn(effective_cache_control)
                 handler.send_header("ETag", etag)
                 handler.send_header("Vary", "Accept-Encoding")
                 handler.send_header("Content-Length", "0")
@@ -468,7 +522,7 @@ class StaticAssetCache:
         try:
             handler.send_response(200)
             if cors_fn is not None:
-                cors_fn(cache_control)
+                cors_fn(effective_cache_control)
             handler.send_header("Content-Type", str(asset["content_type"]))
             handler.send_header("ETag", etag)
             handler.send_header("Vary", "Accept-Encoding")

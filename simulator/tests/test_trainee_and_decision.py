@@ -668,27 +668,34 @@ process.exit(0);
         pages = [
             (
                 REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "index.html",
-                REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "styles.css",
+                (
+                    REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "styles.css",
+                    REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "themes-common.css",
+                ),
             ),
             (
                 REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "index.html",
-                REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "styles.css",
+                (
+                    REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "styles.css",
+                    REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "themes-common.css",
+                ),
             ),
             (
                 REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "scada104.html",
-                REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "scada104.css",
+                (REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "scada104.css",),
             ),
         ]
-        for html_path, css_path in pages:
+        for html_path, css_paths in pages:
             html_text = html_path.read_text(encoding="utf-8")
-            css_text = css_path.read_text(encoding="utf-8")
+            css_text = "\n".join(p.read_text(encoding="utf-8") for p in css_paths)
+            css_names = "+".join(p.name for p in css_paths)
             self.assertIn('id="themeSelector"', html_text, f"{html_path.name} 缺少风格选择器")
             for theme_id in expected_themes:
                 self.assertIn(f'value="{theme_id}"', html_text, f"{html_path.name} 缺少风格选项 {theme_id}")
-                self.assertIn(f'[data-theme="{theme_id}"]', css_text, f"{css_path.name} 缺少风格样式 {theme_id}")
+                self.assertIn(f'[data-theme="{theme_id}"]', css_text, f"{css_names} 缺少风格样式 {theme_id}")
             for old_id in removed_themes:
                 self.assertNotIn(f'value="{old_id}"', html_text, f"{html_path.name} 仍残留已废弃选项 {old_id}")
-                self.assertNotIn(f'[data-theme="{old_id}"]', css_text, f"{css_path.name} 仍残留已废弃样式 {old_id}")
+                self.assertNotIn(f'[data-theme="{old_id}"]', css_text, f"{css_names} 仍残留已废弃样式 {old_id}")
 
     def test_all_web_pages_support_trilingual_i18n(self) -> None:
         """三套 Web 页面均应提供 zh-CN / en-US / ru-RU 实时切换器且三语词典键完整对齐。"""
@@ -718,6 +725,25 @@ process.exit(0);
         common_ux = (REPO_ROOT / "shared" / "simu" / "web" / "common" / "ux-enhancements.js").read_text(encoding="utf-8")
         self.assertEqual(sim_ux, trn_ux, "教员端与学员端 ux-enhancements.js 内容应保持一致")
         self.assertEqual(common_ux, sim_ux, "shared/simu/web/common/ux-enhancements.js 真源应与双端完全一致")
+
+        sim_theme_css = (REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "themes-common.css").read_text(encoding="utf-8")
+        trn_theme_css = (REPO_ROOT / "trainee" / "simu" / "web" / "trainee" / "themes-common.css").read_text(encoding="utf-8")
+        common_theme_css = (REPO_ROOT / "shared" / "simu" / "web" / "common" / "themes-common.css").read_text(encoding="utf-8")
+        self.assertEqual(sim_theme_css, trn_theme_css, "教员端与学员端 themes-common.css 内容应保持一致")
+        self.assertEqual(common_theme_css, sim_theme_css, "shared/simu/web/common/themes-common.css 真源应与双端完全一致")
+
+        # 校验 StaticAssetCache 版本化强缓存与高压缩率 gzip 策略
+        cache = StaticAssetCache()
+        self.assertEqual(
+            cache._resolve_cache_control("/themes-common.css?v=20261127-pro-v1", ".css", "no-cache"),
+            "public, max-age=31536000, immutable",
+        )
+        self.assertEqual(
+            cache._resolve_cache_control("/index.html?v=20261127-pro-v1", ".html", "no-cache"),
+            "no-cache",
+        )
+        loaded_css = cache.load(REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "themes-common.css")
+        self.assertTrue(loaded_css["gzip_data"] and len(loaded_css["gzip_data"]) < len(loaded_css["data"]) * 0.4)
 
         sim_html = (REPO_ROOT / "simulator" / "simu" / "web" / "simulator" / "index.html").read_text(encoding="utf-8")
         for token in (
