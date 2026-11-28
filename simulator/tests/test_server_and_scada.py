@@ -72,7 +72,7 @@ class _FakeChannel:
     def stop(self) -> None:
         self.running = False
 
-    def status(self) -> dict:
+    def status(self, **_kwargs) -> dict:
         return {"running": self.running, "endpoint": {"host": "127.0.0.1", "port": 2405}}
 
 
@@ -81,7 +81,9 @@ class _FakeScadaServer:
         self.store = _MemoryStore(db_path)
         self._channels: dict[str, _FakeChannel] = {}
 
-    def channel_services(self, rtu_id: int) -> dict[str, _FakeChannel]:
+    def channel_services(self, rtu_id: int | None = None) -> dict[str, _FakeChannel]:
+        if rtu_id is None:
+            return dict(self._channels)
         key = f"iec104-rtu-{rtu_id}"
         return {key: self._channels.setdefault(key, _FakeChannel())}
 
@@ -575,6 +577,136 @@ class ServerAndScadaTests(unittest.TestCase):
         self.assertIn("iter_services", text)
         self.assertIn("_command_signature_cache", text)
         self.assertIn("_device_runtime_supplement_cache", text)
+
+    def test_scada104_strict_point_sync_keeps_rtu_channel_unchanged(self):
+        """验证模型四遥定义变更时：RTU 与通道定义保持不变，仅严格增删改四遥点表。"""
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "scdfe_s.db"
+            fake_srv = _FakeScadaServer(db_path)
+            bridge = scada104.Bridge(
+                fake_srv,
+                "http://127.0.0.1:18710",
+                first_port=2405,
+                interval=0.5,
+            )
+            with patch.object(scada104, "port_available", return_value=True):
+                rtu = bridge.channel("qinling")
+            # 模拟用户修改 RTU 名称与通道端口，后续四遥变更不得覆写 RTU 与通道
+            with fake_srv.store.connection() as db, db:
+                db.execute("UPDATE fes_rtu_define SET name='自定义秦岭站' WHERE rtu_id=?", (rtu,))
+                db.execute("UPDATE fes_channel_iec104_define SET name='自定义通道', remote_port=2499 WHERE channel_id=?", (rtu,))
+
+            initial_points = {
+                "yc": {
+                    "ACLoad.a.p": {"value": 10.0, "valid": 1},
+                    "ACLoad.b.p": {"value": 20.0, "valid": 1},
+                },
+                "yx": {"DCBreak.1.status": {"value": 1, "valid": 1}},
+                "yk": {"DCBreak.1.status": None, "DCBreak.2.status": None},
+                "yt": {"ACLoad.a.p_set": None},
+            }
+            self.assertTrue(bridge.sync_points(rtu, initial_points))
+            # 模拟操作员手工修改保留测点的展示名
+            with fake_srv.store.connection() as db, db:
+                a_pnt_no = db.execute(
+                    "SELECT pnt_no FROM fes_yc_define WHERE rtu_id=? AND name='ACLoad.a.p'",
+                    (rtu,),
+                ).fetchone()[0]
+                db.execute(
+                    "UPDATE fes_yc_define SET name='人工命名-负荷A' WHERE rtu_id=? AND pnt_no=?",
+                    (rtu, a_pnt_no),
+                )
+
+            # 第二次同步：移除 ACLoad.b.p 与 DCBreak.2.status，新增 ACLoad.c.p 与 ACLoad.c.p_set
+            updated_points = {
+                "yc": {
+                    "ACLoad.a.p": {"value": 12.5, "valid": 1},
+                    "ACLoad.c.p": {"value": 33.0, "valid": 1},
+                },
+                "yx": {"DCBreak.1.status": {"value": 0, "valid": 1}},
+                "yk": {"DCBreak.1.status": None},
+                "yt": {"ACLoad.a.p_set": None, "ACLoad.c.p_set": None},
+            }
+            self.assertTrue(bridge.sync_points(rtu, updated_points))
+
+            # 1) RTU 与通道定义完全不变且仍只有 1 个 RTU 与 1 个通道
+            with fake_srv.store.connection() as db:
+                rtus = db.execute("SELECT rtu_id, channel_id, name FROM fes_rtu_define").fetchall()
+                chs = db.execute("SELECT channel_id, name, remote_port FROM fes_channel_iec104_define").fetchall()
+                yc_rows = db.execute("SELECT pnt_no, name, value FROM fes_yc_define WHERE rtu_id=? ORDER BY pnt_no", (rtu,)).fetchall()
+                yk_rows = db.execute("SELECT name FROM fes_yk_define WHERE rtu_id=? ORDER BY pnt_no", (rtu,)).fetchall()
+                yt_rows = db.execute("SELECT name FROM fes_yt_define WHERE rtu_id=? ORDER BY pnt_no", (rtu,)).fetchall()
+            self.assertEqual(rtus, [(rtu, rtu, "自定义秦岭站")])
+            self.assertEqual(chs, [(rtu, "自定义通道", 2499)])
+            # 2) 四遥点表严格同步：保留点 A 原点号与人工名，旧点 B 与 DCBreak.2 被彻底删除，新点 C 已添加
+            self.assertEqual(len(yc_rows), 2)
+            self.assertEqual(yc_rows[0], (a_pnt_no, "人工命名-负荷A", 12.5))
+            self.assertEqual(yc_rows[1][1], "ACLoad.c.p")
+            self.assertEqual(yc_rows[1][2], 33.0)
+            self.assertEqual(yk_rows, [("DCBreak.1.status",)])
+            self.assertEqual(yt_rows, [("ACLoad.a.p_set",), ("ACLoad.c.p_set",)])
+
+    def test_scada104_model_filter_isolates_single_rtu_and_channel(self):
+        """验证按模型过滤 status 与 service_overview 时，严格仅返回当前模型对应的 1 个 RTU 和 1 个通道。"""
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "scdfe_s.db"
+            fake_srv = _FakeScadaServer(db_path)
+            bridge = scada104.Bridge(
+                fake_srv,
+                "http://127.0.0.1:18710",
+                first_port=2405,
+                interval=0.5,
+            )
+            with patch.object(scada104, "port_available", return_value=True):
+                rtu_a = bridge.channel("ModelA")
+                rtu_b = bridge.channel("ModelB")
+            self.assertNotEqual(rtu_a, rtu_b)
+            bridge.models[rtu_a] = {"model": "ModelA", "rtu_id": rtu_a, "online": True, "running": True}
+            bridge.models[rtu_b] = {"model": "ModelB", "rtu_id": rtu_b, "online": True, "running": False}
+
+            # 1) status(model=...) 仅返回目标模型
+            st_a = bridge.status(model="ModelA")
+            self.assertEqual([m["model"] for m in st_a["models"]], ["ModelA"])
+            self.assertEqual(st_a["bound_rtu_id"], rtu_a)
+            st_b = bridge.status(model="ModelB")
+            self.assertEqual([m["model"] for m in st_b["models"]], ["ModelB"])
+            self.assertEqual(st_b["bound_rtu_id"], rtu_b)
+            st_none = bridge.status(model="UnboundModel")
+            self.assertEqual(st_none["models"], [])
+            self.assertIsNone(st_none["bound_rtu_id"])
+
+            # 2) EmbeddedScada104Host.service_overview(model=...) 严格隔离 services/rtus/channels
+            host = object.__new__(scada104.EmbeddedScada104Host)
+            host.store = fake_srv.store
+            host.bridge = bridge
+            host.db_path = db_path
+            host.bridge_db_path = bridge.bridge_db_path
+            host._closed = False
+            host._started_at_ms = 123456
+            host._first_iec104_port = 2405
+            host._interval = 0.5
+            host._worker = type("_W", (), {"is_alive": staticmethod(lambda: True)})()
+            host.channel_services = fake_srv.channel_services
+
+            ov_a = host.service_overview(model="ModelA")
+            self.assertEqual(ov_a["rtu_id"], rtu_a)
+            self.assertEqual(ov_a["channel_id"], rtu_a)
+            self.assertEqual([s["rtu_id"] for s in ov_a["services"]], [rtu_a])
+            self.assertEqual([r["rtu_id"] for r in ov_a["rtus"]], [rtu_a])
+            self.assertEqual([c["channel_id"] for c in ov_a["channels"]], [rtu_a])
+
+            ov_b = host.service_overview(model="ModelB")
+            self.assertEqual(ov_b["rtu_id"], rtu_b)
+            self.assertEqual(ov_b["channel_id"], rtu_b)
+            self.assertEqual([s["rtu_id"] for s in ov_b["services"]], [rtu_b])
+            self.assertEqual([r["rtu_id"] for r in ov_b["rtus"]], [rtu_b])
+            self.assertEqual([c["channel_id"] for c in ov_b["channels"]], [rtu_b])
+
+            ov_unbound = host.service_overview(model="UnboundModel")
+            self.assertIsNone(ov_unbound["rtu_id"])
+            self.assertEqual(ov_unbound["services"], [])
+            self.assertEqual(ov_unbound["rtus"], [])
+            self.assertEqual(ov_unbound["channels"], [])
 
 
 if __name__ == "__main__":

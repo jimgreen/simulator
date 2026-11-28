@@ -142,6 +142,8 @@ def make_simulator_proxy_server(
                 elif path == "/api/trainee-link":
                     self._send_trainee_link()
                 elif path == "/api/simulator104/status":
+                    query = parse_qs(urlparse(self.path).query)
+                    model_filter = str((query.get("model") or query.get("model_id") or [""])[0]).strip() or None
                     if iec104_host is None:
                         self._send_json(
                             {
@@ -151,10 +153,16 @@ def make_simulator_proxy_server(
                                 "scada_web_url": "",
                                 "models": [],
                                 "errors": {"iec104": "IEC104 联动后台服务未启用"},
+                                **({"active_model": model_filter, "bound_rtu_id": None} if model_filter else {}),
                             }
                         )
                     else:
-                        self._send_json(iec104_host.status())
+                        payload = (
+                            iec104_host.status(model=model_filter)
+                            if model_filter
+                            else iec104_host.status()
+                        )
+                        self._send_json(payload)
                 elif path == "/api/simulator104/points":
                     host = _require_iec104_host()
                     query = parse_qs(urlparse(self.path).query)
@@ -175,12 +183,17 @@ def make_simulator_proxy_server(
                     items = host.channel_logs(int(raw_rtu), limit=limit)
                     self._send_json({"rtu_id": int(raw_rtu), "items": items})
                 elif path == "/api/simulator104/service":
+                    query = parse_qs(urlparse(self.path).query)
+                    model_filter = str((query.get("model") or query.get("model_id") or [""])[0]).strip() or None
                     if iec104_host is None or not callable(getattr(iec104_host, "service_overview", None)):
                         self._send_json(
                             {
                                 "available": False,
                                 "hosted_by": "simulator",
                                 "reason": "IEC104 联动后台服务未启用",
+                                "active_model": model_filter or "",
+                                "rtu_id": None,
+                                "channel_id": None,
                                 "host": {"pid": 0, "running": False, "running_channels": 0, "total_channels": 0},
                                 "services": [],
                                 "rtus": [],
@@ -188,10 +201,14 @@ def make_simulator_proxy_server(
                             }
                         )
                     else:
-                        query = parse_qs(urlparse(self.path).query)
                         raw_rtu = str((query.get("rtu_id") or [""])[0]).strip()
                         rtu_filter = int(raw_rtu) if raw_rtu.isdigit() else None
-                        self._send_json(iec104_host.service_overview(rtu_id=rtu_filter))
+                        overview = (
+                            iec104_host.service_overview(rtu_id=rtu_filter, model=model_filter)
+                            if model_filter
+                            else iec104_host.service_overview(rtu_id=rtu_filter)
+                        )
+                        self._send_json(overview)
                 elif path == "/api/simulator104/point-definitions":
                     host = _require_iec104_host()
                     query = parse_qs(urlparse(self.path).query)
@@ -354,10 +371,15 @@ def make_simulator_proxy_server(
                     action = str(payload.get("action") or "").strip().lower()
                     scope = str(payload.get("scope") or "single").strip().lower()
                     rtu_raw = payload.get("rtu_id")
+                    model_filter = str(payload.get("model") or payload.get("model_id") or "").strip() or None
                     if not action:
                         raise ValueError("请提供 action（start/stop/restart）")
                     rtu_val = int(rtu_raw) if rtu_raw is not None and str(rtu_raw).strip() != "" else None
-                    result = host.control_service_process(action, rtu_id=rtu_val, scope=scope)
+                    result = (
+                        host.control_service_process(action, rtu_id=rtu_val, scope=scope, model=model_filter)
+                        if model_filter
+                        else host.control_service_process(action, rtu_id=rtu_val, scope=scope)
+                    )
                     self._send_json(result)
                     return
                 elif path == "/api/simulator104/service/config":

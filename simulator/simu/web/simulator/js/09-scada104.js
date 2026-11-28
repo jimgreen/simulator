@@ -52,6 +52,50 @@
   let pendingCommandTarget = null;
   let pendingExportPayload = null;
 
+  /**
+   * 获取当前顶栏选中的仿真模型标识，确保 IEC104 页面始终与当前仿真模型 1:1 对应。
+   */
+  function currentActiveModelId() {
+    if (preferredModelName) return preferredModelName;
+    if (typeof state !== "undefined" && state?.activeModelId) {
+      return String(state.activeModelId).trim();
+    }
+    const sel = document.getElementById("modelSelector");
+    if (sel && sel.value) return String(sel.value).trim();
+    return "";
+  }
+
+  function resetChannelDefFormEmpty() {
+    const form = get("scada104ChDefForm");
+    if (!form) return;
+    form.querySelectorAll("input, select").forEach((el) => {
+      if (el.id === "scada104CfgAutoRestart") return;
+      if (el.tagName === "SELECT") {
+        if (el.options.length) el.selectedIndex = 0;
+      } else {
+        el.value = "";
+      }
+    });
+    const customWrap = get("scada104CfgCustomHostWrap");
+    if (customWrap) customWrap.hidden = true;
+    const saveBtn = get("scada104SaveChDefBtn");
+    if (saveBtn) saveBtn.disabled = true;
+  }
+
+  function syncToolbarButtonsState(services) {
+    const svc = Array.isArray(services) && services.length ? services[0] : null;
+    const startBtn = get("scada104StartAllBtn");
+    const restartBtn = get("scada104RestartAllBtn");
+    const stopBtn = get("scada104StopAllBtn");
+    const exportBtn = get("scada104ExportEfileBtn");
+    const saveChBtn = get("scada104SaveChDefBtn");
+    if (startBtn) startBtn.disabled = !svc || Boolean(svc.running);
+    if (restartBtn) restartBtn.disabled = !svc;
+    if (stopBtn) stopBtn.disabled = !svc || !svc.running;
+    if (exportBtn) exportBtn.disabled = !svc;
+    if (saveChBtn) saveChBtn.disabled = !svc;
+  }
+
   async function api(path, body, { signal } = {}) {
     const url = `${apiBase()}${path}`;
     const init = body === undefined
@@ -389,7 +433,11 @@
 
     if (!slice.length) {
       lastPointsStructureKey = "";
-      const cell = textNode("td", loadedPointsTableItems.length ? tr("无匹配点表") : tr("请选择模型查看点表"), "empty-state");
+      const activeModel = currentActiveModelId();
+      const emptyMsg = loadedPointsTableItems.length
+        ? tr("无匹配点表")
+        : (activeModel ? `${activeModel} · ${tr("尚未绑定 IEC104 通道，请先启动该模型模拟服务")}` : tr("请选择模型查看点表"));
+      const cell = textNode("td", emptyMsg, "empty-state");
       cell.colSpan = 9;
       const trEl = document.createElement("tr");
       trEl.append(cell);
@@ -598,7 +646,11 @@
     if (!tbody) return;
     if (!rtu) {
       loadedChannelLogItems = [];
-      const cell = textNode("td", tr("请选择模型查看通信日志"), "empty-state");
+      const activeModel = currentActiveModelId();
+      const emptyMsg = activeModel
+        ? `${activeModel} · ${tr("尚未绑定 IEC104 通道，请先启动该模型模拟服务")}`
+        : tr("请选择模型查看通信日志");
+      const cell = textNode("td", emptyMsg, "empty-state");
       cell.colSpan = 3;
       const trEl = document.createElement("tr");
       trEl.append(cell);
@@ -823,15 +875,21 @@
   }
 
   async function controlServiceProcess(action, { rtuId = null, scope = "single", label = "" } = {}) {
+    const activeModel = currentActiveModelId();
+    const resolvedRtuId = (rtuId !== null && rtuId !== undefined)
+      ? Number(rtuId)
+      : (latestServiceOverview?.services?.[0]?.rtu_id ?? latestServiceOverview?.rtu_id ?? null);
+    const effectiveScope = resolvedRtuId !== null && resolvedRtuId !== undefined ? "single" : scope;
     if (action === "stop" || action === "restart") {
-      const isAll = scope === "all";
+      const isAll = effectiveScope === "all";
       const title = isAll
         ? (action === "stop" ? "确认停止全部 IEC104 服务？" : "确认重启全部 IEC104 服务？")
         : (action === "stop" ? "确认停止 IEC104 通道？" : "确认重启 IEC104 服务？");
       const message = action === "stop"
         ? "停止后对应的 IEC104 通信将中断，直至重新启动。"
         : "重启期间活动 IEC104 客户端连接将短暂断开并重新监听。";
-      const ok = await confirmAction(label || (isAll ? "全部 IEC104 服务" : `RTU ${rtuId}`), {
+      const targetLabel = label || (resolvedRtuId ? resolveModelDisplayName(resolvedRtuId) : (activeModel || "IEC104 通道"));
+      const ok = await confirmAction(targetLabel, {
         title,
         message,
         confirmLabel: action === "stop" ? "停止通道" : "重启",
@@ -841,13 +899,15 @@
     try {
       await api("/api/simulator104/service/process", {
         action,
-        scope,
-        ...(rtuId !== null && rtuId !== undefined ? { rtu_id: Number(rtuId) } : {}),
+        scope: effectiveScope,
+        ...(resolvedRtuId !== null && resolvedRtuId !== undefined ? { rtu_id: Number(resolvedRtuId) } : {}),
+        ...(activeModel ? { model: activeModel } : {}),
       });
       lastServiceRowsKey = "";
       lastRtuDefRowsKey = "";
-      showServiceNotice(`${label || "IEC104"} · ${action.toUpperCase()}`, false);
-      toast(`${label || "IEC104"} · ${action.toUpperCase()}`, "ok", 1800);
+      const noticeTarget = label || (resolvedRtuId ? resolveModelDisplayName(resolvedRtuId) : "IEC104");
+      showServiceNotice(`${noticeTarget} · ${action.toUpperCase()}`, false);
+      toast(`${noticeTarget} · ${action.toUpperCase()}`, "ok", 1800);
       await loadServiceOverview(true);
       await refresh(true);
     } catch (err) {
@@ -861,6 +921,15 @@
     const services = Array.isArray(data?.services) ? data.services : [];
     const rtus = Array.isArray(data?.rtus) ? data.rtus : [];
     const channels = Array.isArray(data?.channels) ? data.channels : [];
+    const activeModel = String(data?.active_model || currentActiveModelId() || "").trim();
+
+    // 使用当前模型专属 RTU 同步四遥点表和通信日志的 RTU 选择器（即便模拟服务离线也能查看历史定义与日志）
+    const rtuSource = services.length
+      ? services.map((s) => ({ rtu_id: s.rtu_id, model: s.model || s.name || activeModel, points: s.points }))
+      : rtus.map((r) => ({ rtu_id: r.rtu_id, model: r.model || r.name || activeModel }));
+    syncAuxiliaryRtuSelects(rtuSource);
+    syncToolbarButtonsState(services);
+    syncPointsKindCounts();
 
     const setTxt = (id, txt) => {
       const node = get(id);
@@ -868,23 +937,33 @@
     };
     setTxt("scada104HostState", data?.available ? (host.bridge_alive ? tr("运行中") : tr("已停止")) : tr("未启用"));
     setTxt("scada104HostPid", host.pid ? String(host.pid) : "—");
-    setTxt("scada104HostChannels", `${host.running_channels ?? 0} / ${host.total_channels ?? 0}`);
-    setTxt("scada104HostFirstPort", host.first_iec104_port ? String(host.first_iec104_port) : "—");
+    const boundSvc = services[0] || null;
+    setTxt(
+      "scada104HostChannels",
+      boundSvc
+        ? `RTU ${boundSvc.rtu_id} / CH ${boundSvc.channel_id ?? boundSvc.rtu_id}`
+        : `${host.running_channels ?? 0} / ${host.total_channels ?? 0}`,
+    );
+    setTxt("scada104HostFirstPort", boundSvc?.port ? String(boundSvc.port) : "—");
     setTxt("scada104HostInterval", host.interval ? `${host.interval} s` : "—");
     setTxt("scada104HostStartedAt", formatEpochMs(host.started_at));
 
-    const svcKey = JSON.stringify(
-      services.map((s) => [
+    const svcKey = JSON.stringify([
+      activeModel,
+      ...services.map((s) => [
         s.rtu_id, s.bind_ip, s.port, s.common_address, s.running, s.pid,
         s.points?.yc ?? 0, s.points?.yx ?? 0, s.points?.yk ?? 0, s.points?.yt ?? 0,
         s.active_connections, s.open_connections, s.rx_count, s.tx_count, s.error_count, s.last_error,
       ]),
-    );
+    ]);
     const tbody = get("scada104ServiceRows");
     if (tbody && svcKey !== lastServiceRowsKey) {
       lastServiceRowsKey = svcKey;
       if (!services.length) {
-        const td = textNode("td", tr("暂无 IEC104 服务实例"), "empty-state");
+        const emptyText = activeModel
+          ? `${activeModel} · ${tr("尚未绑定 IEC104 通道，请先启动该模型模拟服务")}`
+          : tr("暂无 IEC104 服务实例");
+        const td = textNode("td", emptyText, "empty-state");
         td.colSpan = 10;
         const trEl = document.createElement("tr");
         trEl.append(td);
@@ -969,7 +1048,7 @@
       const prev = connSel.value;
       const opts = services.length
         ? services.map((s) => new Option(`${s.model} · RTU ${s.rtu_id}`, String(s.rtu_id)))
-        : [new Option(tr("选择模型"), "")];
+        : [new Option(activeModel ? `${activeModel} · ${tr("未绑定")}` : tr("选择模型"), "")];
       const nextKey = opts.map((o) => `${o.value}:${o.text}`).join("|");
       if (connSel.dataset.optKey !== nextKey) {
         connSel.dataset.optKey = nextKey;
@@ -988,7 +1067,7 @@
       const prev = chSel.value;
       const opts = channels.length
         ? channels.map((c) => new Option(`CH ${c.channel_id} · ${c.name || c.model || ""} (${c.remote_host}:${c.remote_port})`, String(c.channel_id)))
-        : [new Option(tr("暂无通道"), "")];
+        : [new Option(activeModel ? `${activeModel} · ${tr("暂无通道")}` : tr("暂无通道"), "")];
       const nextKey = opts.map((o) => `${o.value}:${o.text}`).join("|");
       if (chSel.dataset.optKey !== nextKey) {
         chSel.dataset.optKey = nextKey;
@@ -1000,7 +1079,10 @@
       const activeSvc = activeCh
         ? services.find((s) => String(s.channel_id) === String(activeCh.channel_id) || String(s.rtu_id) === String(activeCh.rtu_id)) || null
         : null;
-      if (activeCh && (forcePopulate || lastChDefLoaded !== String(activeCh.channel_id)) && !isFocusInside("scada104ChDefForm")) {
+      if (!activeCh) {
+        lastChDefLoaded = "";
+        resetChannelDefFormEmpty();
+      } else if ((forcePopulate || lastChDefLoaded !== String(activeCh.channel_id)) && !isFocusInside("scada104ChDefForm")) {
         populateChannelDefForm(activeCh, activeSvc);
         lastChDefLoaded = String(activeCh.channel_id);
       }
@@ -1011,8 +1093,10 @@
     const reqSeq = ++serviceReqSeq;
     if (serviceAbortController) serviceAbortController.abort();
     serviceAbortController = new AbortController();
+    const activeModel = currentActiveModelId();
+    const qs = activeModel ? `?model=${encodeURIComponent(activeModel)}` : "";
     try {
-      const data = await api("/api/simulator104/service", undefined, {
+      const data = await api(`/api/simulator104/service${qs}`, undefined, {
         signal: serviceAbortController.signal,
       });
       if (reqSeq !== serviceReqSeq || !isActive) return;
@@ -1048,7 +1132,8 @@
   }
 
   function syncAuxiliaryRtuSelects(models) {
-    const key = models.map((m) => `${m.rtu_id}:${m.model}`).join("|");
+    const activeModel = currentActiveModelId();
+    const key = `${activeModel}::` + models.map((m) => `${m.rtu_id}:${m.model}`).join("|");
     if (key === lastAllRtuOptionsKey) return;
     lastAllRtuOptionsKey = key;
     for (const id of ["scada104PointsRtuSelect", "scada104LogsRtuSelect"]) {
@@ -1057,7 +1142,7 @@
       const prev = sel.value;
       const opts = models.length
         ? models.map((m) => new Option(`${m.model} · RTU ${m.rtu_id}`, String(m.rtu_id)))
-        : [new Option(tr("选择模型"), "")];
+        : [new Option(activeModel ? `${activeModel} · ${tr("未绑定")}` : tr("选择模型"), "")];
       sel.replaceChildren(...opts);
       if (opts.some((opt) => opt.value === prev)) sel.value = prev;
       else if (opts.length) sel.value = opts[0].value;
@@ -1073,8 +1158,10 @@
     refreshInFlight = true;
     if (statusAbortController) statusAbortController.abort();
     statusAbortController = new AbortController();
+    const activeModel = currentActiveModelId();
+    const statusQs = activeModel ? `?model=${encodeURIComponent(activeModel)}` : "";
     try {
-      const payload = await api("/api/simulator104/status", undefined, {
+      const payload = await api(`/api/simulator104/status${statusQs}`, undefined, {
         signal: statusAbortController.signal,
       });
       if (!isActive) return;
@@ -1096,13 +1183,18 @@
         extLink.hidden = true;
       }
 
-      syncAuxiliaryRtuSelects(models);
-      applyPreferredModelSelection(models);
+      if (models.length) {
+        syncAuxiliaryRtuSelects(models);
+        applyPreferredModelSelection(models);
+      } else if (activeViewTab === "points" || activeViewTab === "logs") {
+        // 模型服务未在线但库中已有 RTU 绑定时，从 service 接口补齐 RTU 以便查看四遥定义与通信日志
+        await loadServiceOverview(false);
+      }
       syncPointsKindCounts();
 
       const pausedPoints = Boolean(get("scada104PausePointsRefresh")?.checked);
       if (activeViewTab === "service" || activeViewTab === "config") {
-        await loadServiceOverview(false);
+        await loadServiceOverview(manual);
       } else if (activeViewTab === "points" && (manual || !pausedPoints)) {
         await loadPointsTable();
       } else if (activeViewTab === "logs") {
@@ -1151,9 +1243,9 @@
       btn.addEventListener("click", () => setActiveViewTab(btn.dataset.scada104Tab));
     });
 
-    get("scada104StartAllBtn")?.addEventListener("click", () => controlServiceProcess("start", { scope: "all", label: "全部 IEC104 服务" }));
-    get("scada104RestartAllBtn")?.addEventListener("click", () => controlServiceProcess("restart", { scope: "all", label: "全部 IEC104 服务" }));
-    get("scada104StopAllBtn")?.addEventListener("click", () => controlServiceProcess("stop", { scope: "all", label: "全部 IEC104 服务" }));
+    get("scada104StartAllBtn")?.addEventListener("click", () => controlServiceProcess("start", { scope: "single" }));
+    get("scada104RestartAllBtn")?.addEventListener("click", () => controlServiceProcess("restart", { scope: "single" }));
+    get("scada104StopAllBtn")?.addEventListener("click", () => controlServiceProcess("stop", { scope: "single" }));
     get("scada104ReloadServiceBtn")?.addEventListener("click", () => loadServiceOverview(true));
     get("scada104ExportEfileBtn")?.addEventListener("click", () => exportChannelEfile());
     get("scada104ReloadConfigBtn")?.addEventListener("click", () => {
@@ -1467,13 +1559,24 @@
   }
 
   function syncActiveModel(modelName, { refreshNow = true } = {}) {
-    preferredModelName = String(modelName || "").trim();
+    const nextModel = String(modelName || "").trim();
+    preferredModelName = nextModel;
+    // 切换仿真模型时，立即清空上一个模型的 RTU/通道/四遥点表/通信日志缓存，实现零残留同步切换
+    lastServiceRowsKey = "";
+    lastRtuDefRowsKey = "";
+    lastChDefLoaded = "";
+    lastAllRtuOptionsKey = "";
+    lastPointsStructureKey = "";
+    latestServiceOverview = null;
+    latestModelsList = [];
+    loadedPointsTableItems = [];
+    loadedChannelLogItems = [];
+    pointsTablePage = 0;
     if (!isActive) return;
     if (refreshNow) {
-      lastServiceRowsKey = "";
       refresh(true);
     } else {
-      applyPreferredModelSelection(latestModelsList);
+      loadServiceOverview(true);
     }
   }
 

@@ -392,8 +392,27 @@ class Bridge:
         self._model_rtu_cache[model] = rtu
         return rtu
 
+    def get_model_rtu(self, model_name):
+        """只读查询指定模型已绑定的唯一 RTU 编号，未绑定时返回 None（不自动新建 RTU/通道）。"""
+        name = str(model_name or "").strip()
+        if not name:
+            return None
+        cached = self._model_rtu_cache.get(name)
+        if cached is not None:
+            return int(cached)
+        with closing(self._bridge_con()) as bdb:
+            row = bdb.execute(
+                "SELECT rtu_id FROM simulator104_models WHERE model=?",
+                (name,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        rtu_id = int(row[0])
+        self._model_rtu_cache[name] = rtu_id
+        return rtu_id
+
     def sync_points(self, rtu, points):
-        """增量同步测点定义与数值，仅在定义或采样发生变化时才开启 SQLite 写事务。"""
+        """增量严格同步四遥测点定义与数值：保持 RTU 与通道定义不变，仅增删改 4 遥定义。"""
         def_signature = tuple(
             (kind, tuple(sorted(current.keys())))
             for kind, current in points.items()
@@ -463,6 +482,14 @@ class Bridge:
         with closing(self._bridge_con()) as bdb, bdb, self.server.store.connection() as db, db:
             bdb.execute("BEGIN IMMEDIATE")
             db.execute("BEGIN IMMEDIATE")
+            rtu_row = db.execute("SELECT channel_id FROM fes_rtu_define WHERE rtu_id=?", (rtu,)).fetchone()
+            channel_id = int(rtu_row[0]) if rtu_row and rtu_row[0] is not None else int(rtu)
+            has_point_map_table = (
+                db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fes_channel_iec104_point_define'"
+                ).fetchone()
+                is not None
+            )
             for kind, current in points.items():
                 table = f"fes_{kind}_define"
                 known = {name: (no, active) for name, no, active in bdb.execute(
@@ -471,6 +498,7 @@ class Bridge:
                 existing = {no: (value, status) for no, value, status in db.execute(
                     f"SELECT pnt_no,value,status FROM {table} WHERE rtu_id=?", (rtu,))}
                 number = max([0, *existing, *(entry[0] for entry in known.values())])
+                active_pnt_nos = set()
                 for name, row in current.items():
                     if name not in known:
                         number += 1
@@ -481,6 +509,7 @@ class Bridge:
                         existing[number] = (0, 128)
                         changed = True
                     no, active = known[name]
+                    active_pnt_nos.add(int(no))
                     if no not in existing:
                         # 若 SCADA 点表行被手工删除但边车仍有绑定，自动补插定义行避免永久跳过更新。
                         db.execute(
@@ -511,16 +540,33 @@ class Bridge:
                             db.execute(f"UPDATE {table} SET {fields} WHERE rtu_id=? AND pnt_no=?",
                                        (*values, rtu, no))
                         pending_samples[(kind, no)] = (value, quality)
-                for name, (no, active) in known.items():
-                    if active and name not in current:
-                        bdb.execute("UPDATE simulator104_points SET active=0 WHERE rtu_id=? AND kind=? AND source_name=?",
-                                    (rtu, kind, name))
-                        raw_status_sql = ",raw_status=128" if kind == "yc" else ""
-                        db.execute(
-                            f"UPDATE {table} SET status=128{raw_status_sql},refresh_time=? WHERE rtu_id=? AND pnt_no=?",
-                            (now, rtu, no),
+                # 严格同步：彻底删除当前模型中已移除的旧测点（含历史 active=0 残留），保持 RTU/通道定义不变
+                for name, (no, _active) in list(known.items()):
+                    if name not in current:
+                        bdb.execute(
+                            "DELETE FROM simulator104_points WHERE rtu_id=? AND kind=? AND source_name=?",
+                            (rtu, kind, name),
                         )
-                        removed_samples.append((kind, no))
+                        if int(no) not in active_pnt_nos:
+                            db.execute(f"DELETE FROM {table} WHERE rtu_id=? AND pnt_no=?", (rtu, no))
+                            if has_point_map_table:
+                                db.execute(
+                                    "DELETE FROM fes_channel_iec104_point_define WHERE channel_id=? AND kind=? AND pnt_no=?",
+                                    (channel_id, kind, no),
+                                )
+                            removed_samples.append((kind, no))
+                        known.pop(name, None)
+                        changed = True
+                # 清理点表内未绑定任何当前模型源名的孤立测点行，保证四遥定义与模型 100% 一致
+                for stale_no in list(existing.keys()):
+                    if int(stale_no) not in active_pnt_nos:
+                        db.execute(f"DELETE FROM {table} WHERE rtu_id=? AND pnt_no=?", (rtu, stale_no))
+                        if has_point_map_table:
+                            db.execute(
+                                "DELETE FROM fes_channel_iec104_point_define WHERE channel_id=? AND kind=? AND pnt_no=?",
+                                (channel_id, kind, stale_no),
+                            )
+                        removed_samples.append((kind, stale_no))
                         changed = True
                 known_cache[kind] = {name: no for name, (no, _active) in known.items() if name in current}
         # 双库事务全部提交成功后再更新内存状态缓存。
@@ -722,12 +768,35 @@ class Bridge:
             self._point_def_cache.pop(rtu, None)
             self._invalidated_rtus.add(rtu)
 
-    def status(self):
+    def status(self, *, model=None):
+        target_model = str(model or "").strip()
+        target_rtu = self.get_model_rtu(target_model) if target_model else None
         with self.lock:
-            models = [dict(value) for value in self.models.values()]
-            errors = dict(self.last_errors)
-        return {"simulator_url": self.simulator_url, "database": self.server.database_info()["database"],
-                "models": models, "errors": errors}
+            if target_model:
+                models = [
+                    dict(value)
+                    for rid, value in self.models.items()
+                    if str(value.get("model") or "") == target_model
+                    or (target_rtu is not None and int(rid) == int(target_rtu))
+                ]
+                errors = {
+                    k: v
+                    for k, v in self.last_errors.items()
+                    if k in {target_model, "catalog", "database"}
+                }
+            else:
+                models = [dict(value) for value in self.models.values()]
+                errors = dict(self.last_errors)
+        payload = {
+            "simulator_url": self.simulator_url,
+            "database": self.server.database_info()["database"],
+            "models": models,
+            "errors": errors,
+        }
+        if target_model:
+            payload["active_model"] = target_model
+            payload["bound_rtu_id"] = target_rtu
+        return payload
 
     def list_points(self, rtu, kind):
         """查询指定 RTU 的四遥点表（yc/yx/yk/yt），供前端点表预览与指令选择使用。"""
@@ -1358,8 +1427,8 @@ class _UnavailableScada104Host:
         self.reason = str(reason or "IEC104 联动服务未启用")
         self.scada_web_url = str(scada_web_url or "").strip().rstrip("/")
 
-    def status(self) -> dict:
-        return {
+    def status(self, *, model: str | None = None) -> dict:
+        payload = {
             "available": False,
             "hosted_by": "simulator",
             "database": "",
@@ -1367,6 +1436,10 @@ class _UnavailableScada104Host:
             "models": [],
             "errors": {"iec104": self.reason},
         }
+        if model:
+            payload["active_model"] = str(model).strip()
+            payload["bound_rtu_id"] = None
+        return payload
 
     def list_points(self, rtu: int, kind: str) -> list:
         raise RuntimeError(self.reason)
@@ -1383,11 +1456,14 @@ class _UnavailableScada104Host:
     def channel_logs(self, rtu: int, limit: int = 120) -> list:
         return []
 
-    def service_overview(self, rtu_id: int | None = None) -> dict:
+    def service_overview(self, rtu_id: int | None = None, *, model: str | None = None) -> dict:
         return {
             "available": False,
             "hosted_by": "simulator",
             "reason": self.reason,
+            "active_model": str(model or "").strip(),
+            "rtu_id": None,
+            "channel_id": None,
             "host": {
                 "pid": os.getpid(),
                 "running": False,
@@ -1408,7 +1484,14 @@ class _UnavailableScada104Host:
     def list_point_definitions(self, rtu: int, kind: str) -> list:
         raise RuntimeError(self.reason)
 
-    def control_service_process(self, action: str, *, rtu_id: int | None = None, scope: str = "single") -> dict:
+    def control_service_process(
+        self,
+        action: str,
+        *,
+        rtu_id: int | None = None,
+        scope: str = "single",
+        model: str | None = None,
+    ) -> dict:
         raise RuntimeError(self.reason)
 
     def update_service_config(self, rtu: int, values: dict, *, apply_restart: bool = True) -> dict:
@@ -1590,8 +1673,8 @@ class EmbeddedScada104Host:
                 result[slug] = service
             return result
 
-    def status(self) -> dict:
-        payload = self.bridge.status()
+    def status(self, *, model: str | None = None) -> dict:
+        payload = self.bridge.status(model=model)
         payload["available"] = True
         payload["hosted_by"] = "simulator"
         payload["scada_web_url"] = self.scada_web_url
@@ -1708,29 +1791,64 @@ class EmbeddedScada104Host:
                     bucket[kind] = int(cnt or 0)
         return counts
 
-    def service_overview(self, rtu_id: int | None = None) -> dict:
-        """聚合内嵌 IEC104 宿主进程、各通道服务运行态、连接监控以及 RTU/通道定义表。"""
+    def service_overview(self, rtu_id: int | None = None, *, model: str | None = None) -> dict:
+        """聚合内嵌 IEC104 宿主进程、各通道服务运行态、连接监控以及 RTU/通道定义表。
+        传入 model 或 rtu_id 时，严格仅返回该模型对应的唯一 1 个 RTU 与 1 个通道，实现切模即切 RTU/通道。
+        """
+        target_model = str(model or "").strip()
+        effective_rtu_id = int(rtu_id) if rtu_id is not None else None
+        model_unbound = False
+        if target_model:
+            bound_rtu = self.bridge.get_model_rtu(target_model)
+            if bound_rtu is None:
+                model_unbound = True
+            else:
+                effective_rtu_id = bound_rtu
+
         model_by_rtu = self._model_name_by_rtu()
         counts_by_rtu = self._point_counts_by_rtu()
         total_points_by_rtu = {rid: sum(v.values()) for rid, v in counts_by_rtu.items()}
 
         with self.store.connection() as con:
             con.row_factory = sqlite3.Row
-            rtu_rows = [
+            all_rtu_rows = [
                 dict(row)
                 for row in con.execute(
                     "SELECT * FROM fes_rtu_define WHERE channel_type='iec104' ORDER BY rtu_id"
                 ).fetchall()
             ]
-            channel_rows = [
+            all_channel_rows = [
                 dict(row)
                 for row in con.execute(
                     "SELECT * FROM fes_channel_iec104_define ORDER BY channel_id, id"
                 ).fetchall()
             ]
+
+        if model_unbound:
+            rtu_rows = []
+            channel_rows = []
+        elif effective_rtu_id is not None:
+            rtu_rows = [row for row in all_rtu_rows if int(row["rtu_id"]) == effective_rtu_id]
+            allowed_cids = {
+                int(row.get("channel_id") or row["rtu_id"])
+                for row in rtu_rows
+            }
+            channel_rows = [
+                row
+                for row in all_channel_rows
+                if row.get("channel_id") is not None and int(row["channel_id"]) in allowed_cids
+            ]
+        else:
+            rtu_rows = all_rtu_rows
+            channel_rows = all_channel_rows
+
         channel_by_cid = {int(row["channel_id"]): row for row in channel_rows if row.get("channel_id") is not None}
 
-        services_map = self.channel_services(rtu_id=int(rtu_id) if rtu_id is not None else None)
+        services_map = (
+            {}
+            if model_unbound
+            else self.channel_services(rtu_id=effective_rtu_id)
+        )
         service_items = []
         running_count = 0
         with self.bridge.lock:
@@ -1739,8 +1857,6 @@ class EmbeddedScada104Host:
 
         for rtu_row in rtu_rows:
             rid = int(rtu_row["rtu_id"])
-            if rtu_id is not None and rid != int(rtu_id):
-                continue
             rtu_row["model"] = model_by_rtu.get(rid, str(rtu_row.get("name") or ""))
             cid = int(rtu_row.get("channel_id") or rid)
             ch_def = channel_by_cid.get(cid, {})
@@ -1801,9 +1917,19 @@ class EmbeddedScada104Host:
             row["rtu_id"] = int(matched_rtu["rtu_id"]) if matched_rtu else None
             row["model"] = matched_rtu.get("model", "") if matched_rtu else ""
 
+        bound_channel_id = (
+            int(rtu_rows[0].get("channel_id") or rtu_rows[0]["rtu_id"])
+            if len(rtu_rows) == 1
+            else None
+        )
+        bound_rtu_out = int(rtu_rows[0]["rtu_id"]) if len(rtu_rows) == 1 else effective_rtu_id
+
         return {
             "available": True,
             "hosted_by": "simulator",
+            "active_model": target_model,
+            "rtu_id": bound_rtu_out,
+            "channel_id": bound_channel_id,
             "host": {
                 "pid": os.getpid(),
                 "running": not self._closed,
@@ -1911,11 +2037,25 @@ class EmbeddedScada104Host:
             )
         return items
 
-    def control_service_process(self, action: str, *, rtu_id: int | None = None, scope: str = "single") -> dict:
-        """管控单个或全部 IEC104 通道服务的启动、停止与重启。"""
+    def control_service_process(
+        self,
+        action: str,
+        *,
+        rtu_id: int | None = None,
+        scope: str = "single",
+        model: str | None = None,
+    ) -> dict:
+        """管控单个模型专属或全部 IEC104 通道服务的启动、停止与重启。"""
         act = str(action or "").strip().lower()
         if act not in {"start", "stop", "restart"}:
             raise ValueError("服务操作仅支持 start、stop 或 restart")
+        target_model = str(model or "").strip()
+        if target_model and rtu_id is None:
+            bound_rtu = self.bridge.get_model_rtu(target_model)
+            if bound_rtu is None:
+                raise ValueError(f"模型 {target_model} 尚未分配 IEC104 RTU 与通道，请先启动该模型模拟服务")
+            rtu_id = bound_rtu
+            scope = "single"
         if scope == "all" or rtu_id is None:
             with self.store.connection() as con:
                 rtus = [
